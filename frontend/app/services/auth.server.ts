@@ -67,19 +67,19 @@ const MOCK_PROFILES: Record<string, Profile> = {
         id: "admin-001", email: "admin@grindproject.com", full_name: "Carlos Admin",
         role: "admin", avatar_url: null, credits: 999, phone: "+52 55 1234 5678",
         created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z",
-        gym_id: "gym-001",
+        gym_id: "00000000-0000-0000-0000-000000000001",
     } as unknown as Profile,
     member: {
         id: "member-001", email: "maria@gmail.com", full_name: "María García",
         role: "member", avatar_url: null, credits: 8, phone: "+52 55 9876 5432",
         created_at: "2025-02-01T00:00:00Z", updated_at: "2025-02-01T00:00:00Z",
-        gym_id: "gym-001",
+        gym_id: "00000000-0000-0000-0000-000000000001",
     } as unknown as Profile,
     coach: {
         id: "coach-001", email: "barista@grindproject.com", full_name: "Diego Barista",
         role: "coach", avatar_url: null, credits: 0, phone: "+52 55 5555 1234",
         created_at: "2025-01-15T00:00:00Z", updated_at: "2025-01-15T00:00:00Z",
-        gym_id: "gym-001",
+        gym_id: "00000000-0000-0000-0000-000000000001",
     } as unknown as Profile,
 };
 

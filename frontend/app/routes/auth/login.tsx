@@ -1,11 +1,16 @@
 import type { Route } from "./+types/login";
-import { Form, useNavigation } from "react-router";
+import { Form, useNavigation, useRouteLoaderData } from "react-router";
+import { useTenant } from "~/context/TenantContext";
 // Auth and Supabase services moved to dynamic imports inside action
 import { useState } from "react";
 
-export function meta({ }: Route.MetaArgs) {
+export async function loader() {
+    return { tenantName: "Grind Project" }; // Fallback for meta
+}
+
+export function meta({ data }: Route.MetaArgs) {
     return [
-        { title: "Login - Project Studio" },
+        { title: `Login - ${data?.tenantName || "Grind Project"}` },
         { name: "description", content: "Selecciona tu panel de acceso" },
     ];
 }
@@ -70,6 +75,7 @@ export async function action({ request }: Route.ActionArgs) {
 
 export default function Login({ actionData }: Route.ComponentProps) {
     const navigation = useNavigation();
+    const { config } = useTenant();
     const [view, setView] = useState<"real" | "demo">("real");
     const isSubmitting = navigation.state === "submitting";
 
@@ -78,11 +84,11 @@ export default function Login({ actionData }: Route.ComponentProps) {
             <div className="w-full max-w-md space-y-8">
                 {/* Header */}
                 <div className="text-center">
-                    <h1 className="text-4xl font-black text-white tracking-tight">
-                        PROJECT STUDIO
+                    <h1 className="text-4xl font-black text-white tracking-tight uppercase">
+                        {config.name}
                     </h1>
                     <p className="text-gray-400 mt-2 text-sm italic font-medium">
-                        BY GRIND PROJECT
+                        POWERED BY GRIND PROJECT
                     </p>
                 </div>
 
