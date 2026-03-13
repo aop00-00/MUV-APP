@@ -1,167 +1,183 @@
 // app/services/booking.server.ts
-// Booking business logic – transactional class reservation.
+// Real Supabase booking operations using the book_class/cancel_booking/join_waitlist RPCs.
 
-import { supabase } from "~/lib/db.server";
-import type { Booking } from "~/types/database";
+import { supabaseAdmin } from "./supabase.server";
+import { redirect } from "react-router";
+import { requireAuth } from "./auth.server";
 
-/**
- * Books a class for a user with full validation:
- *  1. Verifies user has credits > 0
- *  2. Verifies class has available capacity (capacity > confirmed bookings)
- *  3. Creates booking + decrements credits atomically via Supabase RPC
- *
- * @param userId  - The authenticated user's ID
- * @param classId - The class to book
- * @returns The newly created Booking row
- * @throws Error with descriptive message if validation fails
- */
-export async function bookClass(
-    userId: string,
-    classId: string
-): Promise<Booking> {
-    // ── Step 1: Verify user has credits ──────────────────────────
-    const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("id, credits")
-        .eq("id", userId)
-        .single();
-
-    if (profileError || !profile) {
-        throw new Error("Usuario no encontrado.");
-    }
-
-    if (profile.credits <= 0) {
-        throw new Error(
-            "No tienes créditos disponibles. Compra un paquete para continuar."
-        );
-    }
-
-    // ── Step 2: Verify class has capacity ────────────────────────
-    const { data: classData, error: classError } = await supabase
-        .from("classes")
-        .select("id, title, capacity")
-        .eq("id", classId)
-        .single();
-
-    if (classError || !classData) {
-        throw new Error("Clase no encontrada.");
-    }
-
-    // Count existing confirmed bookings for this class
-    const { count: confirmedBookings, error: countError } = await supabase
-        .from("bookings")
-        .select("*", { count: "exact", head: true })
-        .eq("class_id", classId)
-        .eq("status", "confirmed");
-
-    if (countError) {
-        throw new Error("Error al verificar disponibilidad de la clase.");
-    }
-
-    if ((confirmedBookings ?? 0) >= classData.capacity) {
-        throw new Error(
-            `La clase "${classData.title}" está llena. No hay cupos disponibles.`
-        );
-    }
-
-    // Check if user already booked this class
-    const { data: existingBooking } = await supabase
-        .from("bookings")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("class_id", classId)
-        .eq("status", "confirmed")
-        .maybeSingle();
-
-    if (existingBooking) {
-        throw new Error("Ya tienes una reserva confirmada para esta clase.");
-    }
-
-    // ── Step 3: Create booking + decrement credits (transaction) ─
-    // Using Supabase RPC for atomicity. If the RPC doesn't exist yet,
-    // we fall back to sequential operations.
-    const { data: rpcResult, error: rpcError } = await supabase.rpc(
-        "book_class_transaction",
-        {
-            p_user_id: userId,
-            p_class_id: classId,
-        }
-    );
-
-    // If the RPC exists and succeeded
-    if (!rpcError && rpcResult) {
-        return rpcResult as Booking;
-    }
-
-    // ── Fallback: Sequential operations ──────────────────────────
-    // (Use this until the RPC is created in the database)
-
-    // 3a. Insert the booking
-    const { data: booking, error: bookingError } = await supabase
-        .from("bookings")
-        .insert({
-            user_id: userId,
-            class_id: classId,
-            status: "confirmed",
-        })
-        .select()
-        .single();
-
-    if (bookingError || !booking) {
-        throw new Error("Error al crear la reserva: " + (bookingError?.message ?? ""));
-    }
-
-    // 3b. Decrement user credits by 1
-    const { error: creditError } = await supabase
-        .from("profiles")
-        .update({ credits: profile.credits - 1 })
-        .eq("id", userId);
-
-    if (creditError) {
-        // Rollback: delete the booking if credit update failed
-        await supabase.from("bookings").delete().eq("id", booking.id);
-        throw new Error("Error al descontar créditos. La reserva fue cancelada.");
-    }
-
-    return booking as Booking;
+// ── Types ─────────────────────────────────────────────────────────
+export interface ClassSlot {
+    id: string;
+    title: string;
+    description: string | null;
+    start_time: string;
+    end_time: string;
+    location: string | null;
+    capacity: number;
+    current_enrolled: number;
+    coach_id: string;
+    gym_id: string;
+    coach?: { full_name: string };
 }
 
-/**
- * Cancels a booking and refunds the credit.
- */
-export async function cancelBooking(
-    userId: string,
-    bookingId: string
-): Promise<void> {
-    const { data: booking, error } = await supabase
+export interface UserBooking {
+    id: string;
+    status: string;
+    created_at: string;
+    class: ClassSlot;
+}
+
+// ── Get classes for a specific date ──────────────────────────────
+export async function getClassesByDate(date: string, gymId: string): Promise<ClassSlot[]> {
+    if (!gymId) {
+        throw new Error("gymId is required for getClassesByDate");
+    }
+
+    const start = `${date}T00:00:00Z`;
+    const end = `${date}T23:59:59Z`;
+
+    const { data, error } = await supabaseAdmin
+        .from("classes")
+        .select("*, coach:profiles!classes_coach_id_fkey(full_name)")
+        .eq("gym_id", gymId)
+        .gte("start_time", start)
+        .lte("start_time", end)
+        .order("start_time", { ascending: true });
+
+    if (error) throw new Error(`Error fetching classes: ${error.message}`);
+    return (data ?? []) as ClassSlot[];
+}
+
+// ── Get user's upcoming bookings ──────────────────────────────────
+export async function getUserBookings(userId: string, gymId: string): Promise<UserBooking[]> {
+    if (!gymId) {
+        throw new Error("gymId is required for getUserBookings");
+    }
+
+    const { data, error } = await supabaseAdmin
         .from("bookings")
-        .select("*")
-        .eq("id", bookingId)
+        .select("*, class:classes(*)")
         .eq("user_id", userId)
+        .eq("gym_id", gymId)
         .eq("status", "confirmed")
-        .single();
+        .gte("classes.start_time", new Date().toISOString())
+        .order("created_at", { ascending: false });
 
-    if (error || !booking) {
-        throw new Error("Reserva no encontrada o ya fue cancelada.");
+    if (error) throw new Error(`Error fetching bookings: ${error.message}`);
+    return (data ?? []) as UserBooking[];
+}
+
+// ── Book a class (atomic RPC) ─────────────────────────────────────
+export async function bookClass(
+    classId: string,
+    userId: string,
+    gymId: string
+): Promise<{ success: boolean; booking_id?: string; credits_remaining?: number; error?: string }> {
+    if (!gymId) {
+        throw new Error("gymId is required for bookClass");
     }
 
-    // Cancel booking
-    await supabase
-        .from("bookings")
-        .update({ status: "cancelled", updated_at: new Date().toISOString() })
-        .eq("id", bookingId);
+    const { data, error } = await supabaseAdmin
+        .rpc("book_class", {
+            p_class_id: classId,
+            p_user_id: userId,
+            p_gym_id: gymId,
+        });
 
-    // Refund 1 credit
-    const { data: profile } = await supabase
-        .from("profiles")
-        .select("credits")
-        .eq("id", userId)
+    if (error) throw new Error(`RPC error: ${error.message}`);
+    return data as { success: boolean; booking_id?: string; credits_remaining?: number; error?: string };
+}
+
+// ── Cancel a booking (atomic RPC, refund if >2h before) ──────────
+export async function cancelBooking(
+    bookingId: string,
+    userId: string,
+    gymId: string
+): Promise<{ success: boolean; refunded: boolean; error?: string }> {
+    if (!gymId) {
+        throw new Error("gymId is required for cancelBooking");
+    }
+
+    const { data, error } = await supabaseAdmin
+        .rpc("cancel_booking", {
+            p_booking_id: bookingId,
+            p_user_id: userId,
+            p_gym_id: gymId,
+        });
+
+    if (error) throw new Error(`RPC error: ${error.message}`);
+    return data as { success: boolean; refunded: boolean; error?: string };
+}
+
+// ── Join waitlist ─────────────────────────────────────────────────
+export async function joinWaitlist(
+    classId: string,
+    userId: string,
+    gymId: string
+): Promise<{ success: boolean; position?: number; error?: string }> {
+    if (!gymId) {
+        throw new Error("gymId is required for joinWaitlist");
+    }
+
+    const { data, error } = await supabaseAdmin
+        .rpc("join_waitlist", {
+            p_class_id: classId,
+            p_user_id: userId,
+            p_gym_id: gymId,
+        });
+
+    if (error) throw new Error(`RPC error: ${error.message}`);
+    return data as { success: boolean; position?: number; error?: string };
+}
+
+// ── Get waitlist position for a user+class ────────────────────────
+export async function getWaitlistPosition(
+    classId: string,
+    userId: string,
+    gymId: string
+): Promise<number | null> {
+    if (!gymId) {
+        throw new Error("gymId is required for getWaitlistPosition");
+    }
+
+    const { data } = await supabaseAdmin
+        .from("waitlist")
+        .select("position")
+        .eq("class_id", classId)
+        .eq("user_id", userId)
+        .eq("gym_id", gymId)
+        .eq("status", "waiting")
         .single();
 
-    if (profile) {
-        await supabase
-            .from("profiles")
-            .update({ credits: profile.credits + 1 })
-            .eq("id", userId);
+    return data?.position ?? null;
+}
+
+// ── Server action helper (use in route actions) ───────────────────
+export async function handleBookingAction(request: Request) {
+    const profile = await requireAuth(request);
+    const gymId = profile.gym_id;
+
+    if (!gymId) {
+        throw new Error("User profile has no gym_id assigned");
     }
+
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "book") {
+        const classId = formData.get("class_id") as string;
+        const result = await bookClass(classId, profile.id, gymId);
+        if (result.error === "class_full") {
+            // Auto-join waitlist if class is full
+            return joinWaitlist(classId, profile.id, gymId);
+        }
+        return result;
+    }
+
+    if (intent === "cancel") {
+        const bookingId = formData.get("booking_id") as string;
+        return cancelBooking(bookingId, profile.id, gymId);
+    }
+
+    throw redirect("/dashboard/schedule");
 }

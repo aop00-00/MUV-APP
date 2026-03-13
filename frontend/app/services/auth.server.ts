@@ -1,13 +1,19 @@
+// app/services/auth.server.ts
+// Authentication and session helpers.
+// Demo-safe: Supabase is only imported when env vars are present.
+// In demo mode (login.tsx role buttons), sessions use a "role" key
+// and MOCK_PROFILES are returned without any DB call.
+
 import { createCookieSessionStorage, redirect } from "react-router";
 import type { Profile } from "~/types/database";
 
-const sessionSecret = process.env.SESSION_SECRET || "default_secret";
+const sessionSecret = process.env.SESSION_SECRET || "grind-default-secret-change-in-prod";
 
 export const sessionStorage = createCookieSessionStorage({
     cookie: {
-        name: "__session",
+        name: "__grind_session",
         httpOnly: true,
-        maxAge: 60 * 60 * 24 * 7,
+        maxAge: 60 * 60 * 24 * 7, // 7 days
         path: "/",
         sameSite: "lax",
         secrets: [sessionSecret],
@@ -20,106 +26,115 @@ export async function getSession(request: Request) {
     return sessionStorage.getSession(cookie);
 }
 
-export async function commitSession(session: any) {
-    return sessionStorage.commitSession(session);
-}
+// ── Session CRUD ─────────────────────────────────────────────────
+const DEMO_ROLES = new Set(["admin", "member", "coach"]);
 
-export async function destroySession(session: any) {
-    return sessionStorage.destroySession(session);
-}
-
-// ─── Mock Profiles ───────────────────────────────────────────────
-const MOCK_PROFILES: Record<string, Profile> = {
-    admin: {
-        id: "admin-001",
-        email: "admin@grindproject.com",
-        full_name: "Carlos Admin",
-        role: "admin",
-        avatar_url: null,
-        credits: 999,
-        phone: "+52 55 1234 5678",
-        created_at: "2025-01-01T00:00:00Z",
-        updated_at: "2025-01-01T00:00:00Z",
-    },
-    member: {
-        id: "member-001",
-        email: "maria@gmail.com",
-        full_name: "María García",
-        role: "member",
-        avatar_url: null,
-        credits: 8,
-        phone: "+52 55 9876 5432",
-        created_at: "2025-02-01T00:00:00Z",
-        updated_at: "2025-02-01T00:00:00Z",
-    },
-    coach: {
-        id: "coach-001",
-        email: "barista@grindproject.com",
-        full_name: "Diego Barista",
-        role: "coach",
-        avatar_url: null,
-        credits: 0,
-        phone: "+52 55 5555 1234",
-        created_at: "2025-01-15T00:00:00Z",
-        updated_at: "2025-01-15T00:00:00Z",
-    },
-};
-
-// ─── Session Helpers ─────────────────────────────────────────────
-
-export async function createUserSession(
-    request: Request,
-    redirectTo: string,
-    role: string
-) {
+export async function createUserSession(request: Request, redirectTo: string, userId: string, role?: string) {
     const session = await getSession(request);
-    session.set("role", role);
+
+    // Clear any previous session data (demo or real) to avoid "shadowing"
+    session.unset("role");
+    session.unset("user_id");
+
+    // Demo mode: login.tsx sends role strings ("admin", "member", "coach").
+    if (DEMO_ROLES.has(userId)) {
+        session.set("role", userId);
+    } else {
+        session.set("user_id", userId);
+        if (role) {
+            session.set("role", role);
+        }
+    }
     return redirect(redirectTo, {
-        headers: {
-            "Set-Cookie": await commitSession(session),
-        },
+        headers: { "Set-Cookie": await sessionStorage.commitSession(session) },
     });
 }
 
+// ── Mock profiles for demo mode ───────────────────────────────────
+const MOCK_PROFILES: Record<string, Profile> = {
+    admin: {
+        id: "admin-001", email: "admin@grindproject.com", full_name: "Carlos Admin",
+        role: "admin", avatar_url: null, credits: 999, phone: "+52 55 1234 5678",
+        created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z",
+        gym_id: "gym-001",
+    } as unknown as Profile,
+    member: {
+        id: "member-001", email: "maria@gmail.com", full_name: "María García",
+        role: "member", avatar_url: null, credits: 8, phone: "+52 55 9876 5432",
+        created_at: "2025-02-01T00:00:00Z", updated_at: "2025-02-01T00:00:00Z",
+        gym_id: "gym-001",
+    } as unknown as Profile,
+    coach: {
+        id: "coach-001", email: "barista@grindproject.com", full_name: "Diego Barista",
+        role: "coach", avatar_url: null, credits: 0, phone: "+52 55 5555 1234",
+        created_at: "2025-01-15T00:00:00Z", updated_at: "2025-01-15T00:00:00Z",
+        gym_id: "gym-001",
+    } as unknown as Profile,
+};
+
+// ── Get authenticated profile ─────────────────────────────────────
+// Demo-safe: if session has "role" key (set by login.tsx demo buttons),
+// we return a mock profile immediately without touching Supabase.
 export async function requireAuth(request: Request): Promise<Profile> {
     const session = await getSession(request);
-    const role = session.get("role");
-    if (!role) {
+
+    // ── Pre-authenticated path (Session has role) ──────────────
+    const sessionRole = session.get("role") as string | undefined;
+    const userId = session.get("user_id") as string | undefined;
+
+    // If it's a demo role, return mock immediately
+    if (sessionRole && DEMO_ROLES.has(sessionRole) && !userId) {
+        return MOCK_PROFILES[sessionRole]!;
+    }
+
+    // ── Real auth path ──
+    if (!userId) throw redirect("/auth/login");
+
+    const supabaseUrl = process.env.SUPABASE_URL;
+    if (!supabaseUrl) {
+        console.warn("requireAuth: no SUPABASE_URL, returning mock admin");
+        return MOCK_PROFILES["admin"]!;
+    }
+
+    const { supabaseAdmin } = await import("./supabase.server");
+    const { data: profile, error } = await supabaseAdmin
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+
+    if (error || !profile) {
+        console.error("requireAuth Error:", error?.message, "Code:", error?.code, "UserId:", userId);
+        // If we have a role in session but DB fetch failed, we still redirect to be safe
         throw redirect("/auth/login");
     }
-    return MOCK_PROFILES[role] ?? MOCK_PROFILES.member;
+
+    return profile as Profile;
 }
 
 export async function requireAdmin(request: Request): Promise<Profile> {
     const profile = await requireAuth(request);
-    if (profile.role !== "admin") {
-        throw redirect("/auth/login");
-    }
+    if (profile.role !== "admin") throw redirect("/auth/login");
     return profile;
 }
 
 export async function requireBarista(request: Request): Promise<Profile> {
     const profile = await requireAuth(request);
-    if (profile.role !== "coach") {
-        throw redirect("/auth/login");
-    }
+    if (profile.role !== "coach") throw redirect("/auth/login");
     return profile;
 }
 
-export async function requireUser(request: Request) {
+export async function requireUser(request: Request): Promise<string> {
     const session = await getSession(request);
-    const role = session.get("role");
-    if (!role) {
-        throw redirect("/auth/login");
-    }
-    return role;
+    const userId = session.get("user_id") as string | undefined;
+    const role = session.get("role") as string | undefined;
+    if (!userId && !role) throw redirect("/auth/login");
+    return userId ?? role ?? "member";
 }
 
 export async function logout(request: Request) {
     const session = await getSession(request);
     return redirect("/", {
-        headers: {
-            "Set-Cookie": await destroySession(session),
-        },
+        headers: { "Set-Cookie": await sessionStorage.destroySession(session) },
     });
 }
