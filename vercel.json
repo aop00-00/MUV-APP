@@ -1,13 +1,6 @@
 {
-  "buildCommand": "cd frontend && npm run build",
-  "installCommand": "cd frontend && npm install",
-  "devCommand": "cd frontend && npm run dev",
-  "outputDirectory": "frontend/build/client",
-  "framework": "react-router",
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/frontend"
-    }
-  ]
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "outputDirectory": "build/client",
+  "framework": "react-router"
 }
