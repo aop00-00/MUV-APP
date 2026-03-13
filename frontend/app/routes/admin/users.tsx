@@ -413,7 +413,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                             <div className="flex items-center gap-1.5">
                                                 {user.lastVisitDaysAgo > 14 && (
                                                     <a
-                                                        href={`https://wa.me/${user.phone.replace(/\+/g, "")}?text=${encodeURIComponent(`Hola ${user.full_name.split(" ")[0]}, ¡te extrañamos en Grind Project! 💪`)}`}
+                                                        href={`https://wa.me/${user.phone.replace(/\+/g, "")}?text=${encodeURIComponent(`Hola ${user.full_name.split(" ")[0]}, ¡te extrañamos! 💪`)}`}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
                                                         className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white text-[10px] px-2.5 py-1.5 rounded-lg font-medium transition-colors"

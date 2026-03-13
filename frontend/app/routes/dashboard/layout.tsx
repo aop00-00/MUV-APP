@@ -1,4 +1,5 @@
 import { Link, Outlet, useLocation } from "react-router";
+import { useTenant } from "~/context/TenantContext";
 import ParticleBackground from "~/components/landing/ParticleBackground";
 import {
     LayoutDashboard,
@@ -12,6 +13,7 @@ import {
 
 export default function DashboardLayout() {
     const location = useLocation();
+    const { config } = useTenant();
 
     const navigation = [
         { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -30,7 +32,7 @@ export default function DashboardLayout() {
                 {/* Sidebar Navigation */}
                 <aside className="w-full md:w-64 bg-white/5 border-r border-white/10 hidden md:flex flex-col backdrop-blur-md">
                     <div className="p-6 border-b border-gray-200">
-                        <h1 className="text-2xl font-bold text-gray-900">Grind Project</h1>
+                        <h1 className="text-2xl font-bold text-gray-900">{config.name}</h1>
                     </div>
 
                     <nav className="flex-1 p-4 space-y-1">
@@ -67,7 +69,7 @@ export default function DashboardLayout() {
 
                 {/* Mobile Navigation */}
                 <div className="md:hidden bg-white border-b border-gray-200 p-4 flex justify-between items-center">
-                    <h1 className="text-xl font-bold text-gray-900">Grind Project</h1>
+                    <h1 className="text-xl font-bold text-gray-900">{config.name}</h1>
                     {/* Mobile menu button could go here */}
                 </div>
 

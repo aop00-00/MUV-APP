@@ -118,7 +118,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       const { data: firstGym } = await supabaseAdmin
         .from("gyms")
         .select("id")
-        .eq("plan_status", "active")
+        .eq("plan_status", "trial")
         .order("created_at", { ascending: true })
         .limit(1)
         .single();
