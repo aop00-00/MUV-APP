@@ -3,7 +3,13 @@
 // The root loader identifies the tenant and injects its config
 // via TenantProvider so ALL routes inherit brand colors + fiscal rules.
 
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
+
+// Workaround for Vercel SSR "ReferenceError: React is not defined"
+if (typeof globalThis !== "undefined" && !globalThis.React) {
+  Object.defineProperty(globalThis, "React", { value: React, writable: true, enumerable: false, configurable: true });
+}
+
 import {
   isRouteErrorResponse,
   Links,
