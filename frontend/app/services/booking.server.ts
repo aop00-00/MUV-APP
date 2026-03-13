@@ -2,7 +2,16 @@
 // Real Supabase booking operations using the book_class/cancel_booking/join_waitlist RPCs.
 
 import { supabaseAdmin } from "./supabase.server";
-import { redirect } from "react-router";
+// Standard redirect helper to avoid "Named export not found" in Vercel's react-router bundle
+const redirect = (url: string, init?: number | ResponseInit) => {
+    const responseInit = typeof init === "number" ? { status: init } : init;
+    return new Response(null, {
+        status: responseInit?.status ?? 302,
+        ...responseInit,
+        headers: { Location: url, ...responseInit?.headers }
+    });
+};
+
 import { requireAuth } from "./auth.server";
 
 // ── Types ─────────────────────────────────────────────────────────

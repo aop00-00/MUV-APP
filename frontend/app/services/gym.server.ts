@@ -1,7 +1,21 @@
 // app/services/gym.server.ts
 // Centralized gym validation middleware for secure multitenancy
 
-import { json, redirect } from "react-router";
+// Custom response helpers to avoid "Named export not found" in Vercel's react-router bundle
+const json = (data: any, init?: ResponseInit) => new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init?.headers }
+});
+
+const redirect = (url: string, init?: number | ResponseInit) => {
+    const responseInit = typeof init === "number" ? { status: init } : init;
+    return new Response(null, {
+        status: responseInit?.status ?? 302,
+        ...responseInit,
+        headers: { Location: url, ...responseInit?.headers }
+    });
+};
+
 import { requireAuth } from "./auth.server";
 import { supabaseAdmin } from "./supabase.server";
 import type { Profile } from "~/types/database";

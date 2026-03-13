@@ -4,7 +4,18 @@
 // In demo mode (login.tsx role buttons), sessions use a "role" key
 // and MOCK_PROFILES are returned without any DB call.
 
-import { createCookieSessionStorage, redirect } from "react-router";
+import { createCookieSessionStorage } from "react-router";
+
+// Standard redirect helper to avoid "Named export not found" in Vercel's react-router bundle
+const redirect = (url: string, init?: number | ResponseInit) => {
+    const responseInit = typeof init === "number" ? { status: init } : init;
+    return new Response(null, {
+        status: responseInit?.status ?? 302,
+        ...responseInit,
+        headers: { Location: url, ...responseInit?.headers }
+    });
+};
+
 import type { Profile } from "~/types/database";
 
 const sessionSecret = process.env.SESSION_SECRET || "grind-default-secret-change-in-prod";
