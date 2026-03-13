@@ -1,6 +1,6 @@
 // app/routes/barista/products.tsx
 // Barista – Active inventory with quick disable "Agotado por hoy" (MOCK DATA).
-import { requireBarista } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/products";
 import { useFetcher } from "react-router";
 import { useState } from "react";
@@ -27,12 +27,14 @@ const MOCK_INVENTORY: InventoryProduct[] = [
 ];
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireBarista(request);
+    const { requireGymCoach } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymCoach(request);
     return { products: MOCK_INVENTORY };
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireBarista(request);
+    const { requireGymCoach } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymCoach(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     const productId = formData.get("productId") as string;

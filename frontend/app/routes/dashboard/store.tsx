@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { requireAuth } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader
 import type { Route } from "./+types/store";
 import type { Product } from "~/types/database";
 
@@ -27,7 +27,8 @@ const MOCK_PRODUCTS: Product[] = [
 ];
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
     return { products: MOCK_PRODUCTS };
 }
 
@@ -78,8 +79,8 @@ export default function Store({ loaderData }: Route.ComponentProps) {
                             key={option.id}
                             onClick={() => setFilterCategory(option.id)}
                             className={`px-4 py-2 rounded-full text-sm font-medium transition-colors border ${filterCategory === option.id
-                                    ? "bg-blue-600 border-blue-600 text-white shadow-sm"
-                                    : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                                ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                                : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
                                 }`}
                         >
                             {option.label}

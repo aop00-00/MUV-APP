@@ -1,7 +1,7 @@
 // app/routes/barista/_index.tsx
 // Barista – Kanban order queue with SLA semaphore, batching, hold queue,
 // user photos/preferences, and customer-facing pickup display (MOCK DATA).
-import { requireBarista } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/_index";
 import { useFetcher } from "react-router";
 import { useState } from "react";
@@ -130,7 +130,8 @@ function detectBatches(orders: BaristaOrder[]): { item: string; count: number; o
 
 // ─── Loader & Action ─────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireBarista(request);
+    const { requireGymCoach } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymCoach(request);
     const pending = MOCK_ORDERS.filter((o) => o.status === "pending");
     const preparing = MOCK_ORDERS.filter((o) => o.status === "preparing");
     const hold = MOCK_ORDERS.filter((o) => o.status === "hold");
@@ -148,7 +149,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireBarista(request);
+    const { requireGymCoach } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymCoach(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     const orderId = formData.get("orderId") as string;

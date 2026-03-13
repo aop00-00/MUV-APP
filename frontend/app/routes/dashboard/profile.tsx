@@ -1,11 +1,12 @@
 // app/routes/dashboard/profile.tsx
 // Member profile – personal info, wallet, membership, history (MOCK DATA).
-import { requireAuth } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader
 import type { Route } from "./+types/profile";
 import { Wallet, Plus, CreditCard, Shield } from "lucide-react";
 
 export async function loader({ request }: Route.LoaderArgs) {
-    const profile = await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
 
     const membership = {
         id: "mem-001",

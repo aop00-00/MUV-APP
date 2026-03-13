@@ -1,6 +1,6 @@
 // app/routes/dashboard/schedule.tsx
 // Monthly calendar view for class schedule (MOCK DATA).
-import { requireAuth } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/schedule";
 import type { ClassSchedule } from "~/types/database";
 import { useFetcher } from "react-router";
@@ -144,12 +144,14 @@ function isSameDay(d1: Date, d2: Date) {
 
 // ─── Loader / Action ──────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
     return { classes: MOCK_CLASSES };
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
     const formData = await request.formData();
     const classId = formData.get("classId") as string;
     const intent = formData.get("intent") as string;

@@ -1,4 +1,4 @@
-import { requireAuth } from "~/services/auth.server";
+// Auth service moved to dynamic import inside loader
 import type { Route } from "./+types/packages";
 
 // ─── Mock Data ───────────────────────────────────────────────────
@@ -81,7 +81,8 @@ const MOCK_EVENTS = [
 ];
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
     return {
         packages: MOCK_PACKAGES,
         upgrades: MOCK_UPGRADES,

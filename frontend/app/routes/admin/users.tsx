@@ -1,52 +1,151 @@
 // app/routes/admin/users.tsx
 // Admin – CRM User Management with segmentation, attendance semaphore, and tags (MOCK DATA).
-import { requireAdmin } from "~/services/auth.server";
+// Auth and Server services moved to dynamic imports inside loader/action
 import type { Route } from "./+types/users";
 import { useFetcher } from "react-router";
-import { useState } from "react";
-import { Search, PhoneForwarded, Tag, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Search, PhoneForwarded, Tag, X, UserPlus } from "lucide-react";
 
 // ─── Mock Data ───────────────────────────────────────────────────
-interface CRMUser {
-    id: string;
-    full_name: string;
-    email: string;
-    credits: number;
-    phone: string;
-    joinDate: string;
-    lastVisitDaysAgo: number;
-    segment: "new" | "active" | "at_risk" | "debtor" | "vip";
-    membership: { plan_name: string; end_date: string; status: string } | null;
-    tags: string[];
-    totalSpent: number;
-}
-
-const MOCK_USERS: CRMUser[] = [
-    { id: "u-001", full_name: "María García", email: "maria@gmail.com", phone: "+5215551234567", credits: 8, joinDate: "2024-06-15", lastVisitDaysAgo: 1, segment: "vip", membership: { plan_name: "Plan Premium", end_date: "2025-03-01", status: "active" }, tags: ["Prefiere café sin azúcar"], totalSpent: 12500 },
-    { id: "u-002", full_name: "Pedro López", email: "pedro@gmail.com", phone: "+5215559876543", credits: 3, joinDate: "2025-01-10", lastVisitDaysAgo: 5, segment: "new", membership: { plan_name: "Plan Básico", end_date: "2025-02-20", status: "active" }, tags: [], totalSpent: 799 },
-    { id: "u-003", full_name: "Ana Martínez", email: "ana.m@gmail.com", phone: "+5215554443322", credits: 0, joinDate: "2024-03-20", lastVisitDaysAgo: 18, segment: "at_risk", membership: { plan_name: "Plan Premium", end_date: "2025-01-15", status: "expired" }, tags: ["Solicita congelar"], totalSpent: 8600 },
-    { id: "u-004", full_name: "Roberto Sánchez", email: "roberto.s@gmail.com", phone: "+5215557778899", credits: 15, joinDate: "2023-11-01", lastVisitDaysAgo: 0, segment: "vip", membership: { plan_name: "Plan Ilimitado", end_date: "2025-04-01", status: "active" }, tags: ["Lesión rodilla", "Entrenador personal"], totalSpent: 24300 },
-    { id: "u-005", full_name: "Laura Torres", email: "laura.t@gmail.com", phone: "+5215551112233", credits: 1, joinDate: "2025-02-01", lastVisitDaysAgo: 3, segment: "new", membership: null, tags: [], totalSpent: 65 },
-    { id: "u-006", full_name: "Carlos Ramírez", email: "carlos.r@gmail.com", phone: "+5215556665544", credits: 6, joinDate: "2024-09-01", lastVisitDaysAgo: 8, segment: "active", membership: { plan_name: "Plan Básico", end_date: "2025-02-28", status: "active" }, tags: ["Suele olvidar toalla"], totalSpent: 4800 },
-    { id: "u-007", full_name: "Fernanda Ríos", email: "fer.rios@gmail.com", phone: "+5215553334455", credits: 0, joinDate: "2024-07-15", lastVisitDaysAgo: 21, segment: "at_risk", membership: { plan_name: "Plan Premium", end_date: "2025-01-31", status: "expired" }, tags: [], totalSpent: 6400 },
-    { id: "u-008", full_name: "Luis Mendoza", email: "luis.m@gmail.com", phone: "+5215558889900", credits: 2, joinDate: "2024-11-20", lastVisitDaysAgo: 14, segment: "debtor", membership: { plan_name: "Plan Básico", end_date: "2025-02-05", status: "expired" }, tags: ["Pago rechazado x2"], totalSpent: 1598 },
-];
-
-const SEGMENTS = [
-    { key: "all", label: "Todos", count: MOCK_USERS.length },
-    { key: "new", label: "Nuevos", count: MOCK_USERS.filter((u) => u.segment === "new").length },
-    { key: "at_risk", label: "En Riesgo", count: MOCK_USERS.filter((u) => u.segment === "at_risk").length },
-    { key: "debtor", label: "Deudores", count: MOCK_USERS.filter((u) => u.segment === "debtor").length },
-    { key: "vip", label: "VIP", count: MOCK_USERS.filter((u) => u.segment === "vip").length },
-] as const;
+// Server services moved to dynamic imports
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAdmin(request);
-    return { users: MOCK_USERS };
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { PLAN_CATALOG } = await import("~/services/subscription.server");
+
+    const { profile, gymId } = await requireGymAdmin(request);
+
+    // Fetch real users (profiles) for this gym
+    const { data: users, error } = await supabaseAdmin
+        .from("profiles")
+        .select(`
+            id,
+            full_name,
+            email,
+            credits,
+            phone,
+            role,
+            created_at,
+            gym_id,
+            memberships (
+                plan_name,
+                end_date,
+                status
+            )
+        `)
+        .eq("gym_id", gymId)
+        .order("created_at", { ascending: false });
+
+    if (error) {
+        console.error("Error fetching users:", error);
+        return { users: [] };
+    }
+
+    // Map DB data to CRMUser interface
+    const mappedUsers = (users || []).map(u => {
+        const membership = u.memberships && Array.isArray(u.memberships) ? u.memberships[0] : null;
+        const lastVisitDaysAgo = 0; // Mocked for now until attendance is real
+        
+        let segment: any = "new";
+        if (u.credits > 10) segment = "vip";
+        else if (membership?.status === "active") segment = "active";
+        
+        return {
+            id: u.id,
+            full_name: u.full_name || "Sin nombre",
+            email: u.email,
+            phone: u.phone || "",
+            credits: u.credits || 0,
+            joinDate: u.created_at,
+            lastVisitDaysAgo,
+            segment,
+            membership: membership ? {
+                plan_name: membership.plan_name,
+                end_date: membership.end_date,
+                status: membership.status
+            } : null,
+            tags: [],
+            totalSpent: 0
+        };
+    });
+
+    return { 
+        users: mappedUsers,
+        plans: PLAN_CATALOG
+    };
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireAdmin(request);
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { PLAN_CATALOG, createMembership } = await import("~/services/subscription.server");
+
+    const { profile, gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent");
+
+    if (intent === "create_user") {
+        const email = formData.get("email") as string;
+        const full_name = formData.get("full_name") as string;
+        const password = formData.get("password") as string || "Grind2026!";
+        const planId = formData.get("planId") as string;
+
+        const { data, error } = await supabaseAdmin.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: {
+                full_name,
+                gym_id: gymId,
+                role: "member"
+            }
+        });
+
+        if (error) {
+            console.error("Error creating user:", error);
+            return { error: error.message };
+        }
+
+        // Integrated Plan Assignment
+        if (planId && planId !== "none") {
+            const plan = PLAN_CATALOG.find(p => p.id === planId);
+            if (plan) {
+                try {
+                    await createMembership({
+                        userId: data.user.id,
+                        gymId: gymId,
+                        planName: plan.name,
+                        price: plan.price,
+                        credits: plan.credits,
+                        months: 1
+                    });
+                } catch (subError: any) {
+                    return { 
+                        success: true, 
+                        message: `Usuario creado, pero hubo un error al vincular el plan: ${subError.message}` 
+                    };
+                }
+            }
+        }
+
+        return { success: true, message: "Usuario creado y vinculado exitosamente." };
+    }
+
+    if (intent === "update_credits") {
+        const userId = formData.get("userId") as string;
+        const credits = parseInt(formData.get("credits") as string, 10);
+
+        const { error } = await supabaseAdmin
+            .from("profiles")
+            .update({ credits })
+            .eq("id", userId)
+            .eq("gym_id", gymId);
+
+        if (error) return { error: error.message };
+        return { success: true };
+    }
+
     return { success: true };
 }
 
@@ -76,8 +175,17 @@ function AttendanceSemaphore({ daysAgo }: { daysAgo: number }) {
 }
 
 export default function AdminUsers({ loaderData }: Route.ComponentProps) {
-    const { users } = loaderData;
+    const { users, plans } = loaderData;
     const fetcher = useFetcher();
+    const [showAddModal, setShowAddModal] = useState(false);
+
+    // Close modal on success
+    useEffect(() => {
+        if (fetcher.data?.success && fetcher.state === "idle") {
+            const timer = setTimeout(() => setShowAddModal(false), 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [fetcher.data, fetcher.state]);
     const [activeSegment, setActiveSegment] = useState<string>("all");
     const [searchTerm, setSearchTerm] = useState("");
 
@@ -105,46 +213,123 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
 
     return (
         <div className="space-y-6">
-            <div>
-                <h1 className="text-2xl font-bold text-gray-900">Gestión de usuarios</h1>
-                <p className="text-gray-500 mt-1">{users.length} miembros registrados — CRM 360°.</p>
+            {/* Header + Add Member */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 className="text-2xl font-bold text-white">Gestión de usuarios</h1>
+                    <p className="text-white/50 mt-1">{users.length} miembros registrados — CRM 360°.</p>
+                </div>
+                <button 
+                    onClick={() => setShowAddModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition-all shadow-lg shadow-blue-600/20"
+                >
+                    <UserPlus className="w-4 h-4" />
+                    Agregar Miembro
+                </button>
             </div>
+
+            {/* Modal de Agregar Miembro */}
+            {showAddModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl relative">
+                        <button 
+                            onClick={() => setShowAddModal(false)}
+                            className="absolute right-4 top-4 text-white/40 hover:text-white"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-xl font-bold text-white mb-4">Nuevo Miembro</h2>
+                        <fetcher.Form method="post" className="space-y-4">
+                            <input type="hidden" name="intent" value="create_user" />
+                            <div>
+                                <label className="block text-xs font-bold text-white/40 uppercase mb-1">Nombre Completo</label>
+                                <input name="full_name" required className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white" placeholder="Ej. Juan Pérez" />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-white/40 uppercase mb-1">Email</label>
+                                <input name="email" type="email" required className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white" placeholder="juan@ejemplo.com" />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-white/40 uppercase mb-1">Contraseña (Opcional)</label>
+                                <input name="password" type="password" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white" placeholder="Mínimo 6 caracteres" />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-white/40 uppercase mb-1">Vincular Plan (Créditos)</label>
+                                <select name="planId" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white appearance-none">
+                                    <option value="none" className="bg-slate-900 text-white">Sin plan (Solo registro)</option>
+                                    {plans?.map((plan: any) => (
+                                        <option key={plan.id} value={plan.id} className="bg-slate-900 text-white">
+                                            {plan.name} — ${plan.price} ({plan.credits} creds)
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {fetcher.data?.error && (
+                                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                                    <p className="text-xs text-red-500 text-center font-bold">{fetcher.data.error}</p>
+                                </div>
+                            )}
+
+                            {fetcher.data?.success && (
+                                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-xl">
+                                    <p className="text-xs text-green-500 text-center font-bold">¡Usuario creado con éxito!</p>
+                                </div>
+                            )}
+
+                            <button 
+                                type="submit" 
+                                disabled={fetcher.state !== "idle"}
+                                className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all disabled:opacity-50"
+                            >
+                                {fetcher.state !== "idle" ? "Creando..." : "Crear Perfil"}
+                            </button>
+                        </fetcher.Form>
+                    </div>
+                </div>
+            )}
 
             {/* Search + Segment Tabs */}
             <div className="space-y-3">
                 <div className="relative max-w-md">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
                     <input
                         type="text"
                         placeholder="Buscar por nombre o email…"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm"
+                        className="w-full pl-10 pr-4 py-2.5 bg-white/5 border border-white/[0.08] rounded-lg text-sm"
                     />
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                    {SEGMENTS.map((seg) => (
+                    <button
+                        onClick={() => setActiveSegment("all")}
+                        className={`text-sm px-4 py-1.5 rounded-full font-medium transition-all ${activeSegment === "all" ? "bg-white text-slate-950" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
+                    >
+                        Todos <span className="ml-1.5 text-xs opacity-70">{users.length}</span>
+                    </button>
+                    {["vip", "new", "at_risk", "debtor"].map((seg) => (
                         <button
-                            key={seg.key}
-                            onClick={() => setActiveSegment(seg.key)}
-                            className={`text-sm px-4 py-1.5 rounded-full font-medium transition-all ${activeSegment === seg.key
-                                    ? "bg-gray-900 text-white"
-                                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                                }`}
+                            key={seg}
+                            onClick={() => setActiveSegment(seg)}
+                            className={`text-sm px-4 py-1.5 rounded-full font-medium transition-all ${activeSegment === seg ? "bg-white text-slate-950" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
                         >
-                            {seg.label}
-                            <span className="ml-1.5 text-xs opacity-70">{seg.count}</span>
+                            {segmentLabels[seg]}
+                            <span className="ml-1.5 text-xs opacity-70">
+                                {users.filter(u => u.segment === seg).length}
+                            </span>
                         </button>
                     ))}
                 </div>
             </div>
 
             {/* Users Table */}
-            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            <div className="bg-white/5 border border-white/[0.08] rounded-xl overflow-hidden shadow-sm">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
-                            <tr className="border-b border-gray-200 text-gray-500 text-left bg-gray-50">
+                            <tr className="border-b border-white/[0.08] text-white/50 text-left bg-white/5">
                                 <th className="px-4 py-3 font-medium">Usuario</th>
                                 <th className="px-4 py-3 font-medium">Segmento</th>
                                 <th className="px-4 py-3 font-medium">Asistencia</th>
@@ -154,16 +339,16 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                 <th className="px-4 py-3 font-medium">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-gray-100">
+                        <tbody className="divide-y divide-white/5">
                             {filteredUsers.map((user) => {
                                 const isExpired = user.membership && new Date(user.membership.end_date) < new Date();
 
                                 return (
-                                    <tr key={user.id} className="hover:bg-gray-50">
+                                    <tr key={user.id} className="hover:bg-white/5">
                                         {/* User info */}
                                         <td className="px-4 py-3">
-                                            <p className="font-semibold text-gray-900">{user.full_name}</p>
-                                            <p className="text-xs text-gray-400">{user.email}</p>
+                                            <p className="font-semibold text-white">{user.full_name}</p>
+                                            <p className="text-xs text-white/40">{user.email}</p>
                                         </td>
 
                                         {/* Segment badge */}
@@ -182,28 +367,29 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                         <td className="px-4 py-3">
                                             {user.membership ? (
                                                 <div>
-                                                    <p className={`text-xs font-medium ${isExpired ? "text-red-500" : "text-gray-700"}`}>
+                                                    <p className={`text-xs font-medium ${isExpired ? "text-red-500" : "text-white/70"}`}>
                                                         {user.membership.plan_name}
                                                     </p>
-                                                    <p className={`text-xs ${isExpired ? "text-red-400" : "text-gray-400"}`}>
+                                                    <p className={`text-xs ${isExpired ? "text-red-400" : "text-white/40"}`}>
                                                         {isExpired ? "Vencida" : `Vence ${new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}`}
                                                     </p>
                                                 </div>
                                             ) : (
-                                                <span className="text-xs text-gray-400">Sin membresía</span>
+                                                <span className="text-xs text-white/40">Sin membresía</span>
                                             )}
                                         </td>
 
                                         {/* Credits */}
                                         <td className="px-4 py-3">
                                             <fetcher.Form method="post" className="flex items-center gap-1.5">
+                                                <input type="hidden" name="intent" value="update_credits" />
                                                 <input type="hidden" name="userId" value={user.id} />
                                                 <input
                                                     type="number"
                                                     name="credits"
                                                     defaultValue={user.credits}
                                                     min={0}
-                                                    className="w-16 bg-gray-50 border border-gray-200 rounded px-2 py-1 text-center text-xs"
+                                                    className="w-16 bg-white/5 border border-white/[0.08] rounded px-2 py-1 text-center text-xs"
                                                 />
                                                 <button type="submit" className="text-xs text-blue-600 hover:text-blue-800 font-medium">✓</button>
                                             </fetcher.Form>
@@ -218,7 +404,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                         {tag}
                                                     </span>
                                                 ))}
-                                                {user.tags.length === 0 && <span className="text-xs text-gray-300">—</span>}
+                                                {user.tags.length === 0 && <span className="text-xs text-white/30">—</span>}
                                             </div>
                                         </td>
 
@@ -245,7 +431,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                     </table>
                 </div>
                 {filteredUsers.length === 0 && (
-                    <div className="p-8 text-center text-gray-400 text-sm">
+                    <div className="p-8 text-center text-white/40 text-sm">
                         No se encontraron usuarios.
                     </div>
                 )}

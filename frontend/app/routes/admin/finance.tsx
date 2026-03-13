@@ -1,6 +1,6 @@
 // app/routes/admin/finance.tsx
 // Admin – Financial reports with stacked bar chart, MRR, cash close (MOCK DATA).
-import { requireAdmin } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/finance";
 import { useFetcher } from "react-router";
 import { useState } from "react";
@@ -33,7 +33,8 @@ const MRR_CHANGE = 4.2;
 const TOTAL_CASH_TODAY = MOCK_ORDERS.filter((o) => o.payment_method === "cash" && o.created_at.startsWith("2025-02-17")).reduce((s, o) => s + o.total, 0);
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAdmin(request);
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
     const totalRevenue = MOCK_ORDERS.reduce((s, o) => s + o.total, 0);
     const cashRevenue = MOCK_ORDERS.filter((o) => o.payment_method === "cash").reduce((s, o) => s + o.total, 0);
     const mpRevenue = MOCK_ORDERS.filter((o) => o.payment_method === "mercado_pago").reduce((s, o) => s + o.total, 0);
@@ -52,7 +53,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireAdmin(request);
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     if (intent === "cash_close") {
@@ -109,13 +111,13 @@ function StackedBarChart({ data }: { data: typeof WEEKLY_DATA }) {
                 })}
             </svg>
             <div className="flex items-center gap-6 mt-2 justify-center">
-                <div className="flex items-center gap-1.5 text-xs text-gray-600">
+                <div className="flex items-center gap-1.5 text-xs text-white/60">
                     <div className="w-3 h-3 rounded" style={{ backgroundColor: colors.memberships }} /> Membresías
                 </div>
-                <div className="flex items-center gap-1.5 text-xs text-gray-600">
+                <div className="flex items-center gap-1.5 text-xs text-white/60">
                     <div className="w-3 h-3 rounded" style={{ backgroundColor: colors.dropins }} /> Drop-ins
                 </div>
-                <div className="flex items-center gap-1.5 text-xs text-gray-600">
+                <div className="flex items-center gap-1.5 text-xs text-white/60">
                     <div className="w-3 h-3 rounded" style={{ backgroundColor: colors.cafeteria }} /> Cafetería
                 </div>
             </div>
@@ -140,14 +142,14 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900">Finanzas</h1>
-                <p className="text-gray-500 mt-1">Proyección, desglose y control de caja.</p>
+                <h1 className="text-2xl font-bold text-white">Finanzas</h1>
+                <p className="text-white/50 mt-1">Proyección, desglose y control de caja.</p>
             </div>
 
             {/* ── KPI Cards ─────────────────────────────── */}
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase tracking-wider mb-2">
+                <div className="bg-white/5 border border-white/[0.08] rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 text-white/40 text-xs uppercase tracking-wider mb-2">
                         <DollarSign className="w-4 h-4" /> Ingreso total
                     </div>
                     <p className="text-2xl font-black text-green-600">${totalRevenue.toLocaleString()}</p>
@@ -159,42 +161,42 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                     <p className="text-2xl font-black">${mrr.toLocaleString()}</p>
                     <p className="text-xs text-purple-200 mt-1">+{mrrChange}% vs mes anterior</p>
                 </div>
-                <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase tracking-wider mb-2">
+                <div className="bg-white/5 border border-white/[0.08] rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 text-white/40 text-xs uppercase tracking-wider mb-2">
                         <Wallet className="w-4 h-4" /> Mercado Pago
                     </div>
                     <p className="text-2xl font-black text-blue-600">${mpRevenue.toLocaleString()}</p>
                 </div>
-                <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase tracking-wider mb-2">
+                <div className="bg-white/5 border border-white/[0.08] rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 text-white/40 text-xs uppercase tracking-wider mb-2">
                         <Banknote className="w-4 h-4" /> Efectivo
                     </div>
                     <p className="text-2xl font-black text-amber-600">${cashRevenue.toLocaleString()}</p>
                 </div>
-                <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase tracking-wider mb-2">
+                <div className="bg-white/5 border border-white/[0.08] rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 text-white/40 text-xs uppercase tracking-wider mb-2">
                         <ShoppingBag className="w-4 h-4" /> Órdenes
                     </div>
-                    <p className="text-2xl font-black text-gray-900">{orderCount}</p>
+                    <p className="text-2xl font-black text-white">{orderCount}</p>
                 </div>
             </div>
 
             {/* ── Charts ────────────────────────────────── */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-                    <h2 className="text-lg font-bold text-gray-900 mb-4">Desglose semanal por línea de negocio</h2>
+                <div className="lg:col-span-2 bg-white/5 border border-white/[0.08] rounded-xl p-6 shadow-sm">
+                    <h2 className="text-lg font-bold text-white mb-4">Desglose semanal por línea de negocio</h2>
                     <StackedBarChart data={weeklyData} />
                 </div>
 
                 {/* Cash Close */}
-                <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+                <div className="bg-white/5 border border-white/[0.08] rounded-xl p-6 shadow-sm">
                     <div className="flex items-center gap-2 mb-4">
-                        <Lock className="w-5 h-5 text-gray-400" />
-                        <h2 className="text-lg font-bold text-gray-900">Corte de caja</h2>
+                        <Lock className="w-5 h-5 text-white/40" />
+                        <h2 className="text-lg font-bold text-white">Corte de caja</h2>
                     </div>
-                    <p className="text-sm text-gray-500 mb-4">Efectivo registrado hoy en sistema:</p>
+                    <p className="text-sm text-white/50 mb-4">Efectivo registrado hoy en sistema:</p>
                     <p className="text-4xl font-black text-amber-600 mb-4">${cashToday.toLocaleString()}</p>
-                    <p className="text-xs text-gray-400 mb-6">Concilia el efectivo físico al cerrar turno.</p>
+                    <p className="text-xs text-white/40 mb-6">Concilia el efectivo físico al cerrar turno.</p>
                     {!showCashClose ? (
                         <button
                             onClick={() => setShowCashClose(true)}
@@ -206,21 +208,21 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                         <fetcher.Form method="post" className="space-y-3">
                             <input type="hidden" name="intent" value="cash_close" />
                             <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Efectivo contado (físico)</label>
+                                <label className="text-xs text-white/50 mb-1 block">Efectivo contado (físico)</label>
                                 <input
                                     name="counted_cash"
                                     type="number"
                                     step="0.01"
                                     required
-                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-sm"
+                                    className="w-full bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm"
                                     placeholder="$0.00"
                                 />
                             </div>
                             <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Notas (opcional)</label>
+                                <label className="text-xs text-white/50 mb-1 block">Notas (opcional)</label>
                                 <input
                                     name="notes"
-                                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-sm"
+                                    className="w-full bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm"
                                     placeholder="Ej: Billete falso de $200"
                                 />
                             </div>
@@ -236,12 +238,12 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
             </div>
 
             {/* ── Orders Table ──────────────────────────── */}
-            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-                <h2 className="text-lg font-semibold text-gray-900 p-6 pb-0">Últimas ventas</h2>
+            <div className="bg-white/5 border border-white/[0.08] rounded-xl overflow-hidden shadow-sm">
+                <h2 className="text-lg font-semibold text-white p-6 pb-0">Últimas ventas</h2>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm mt-4">
                         <thead>
-                            <tr className="border-b border-gray-200 text-gray-500 text-left bg-gray-50">
+                            <tr className="border-b border-white/[0.08] text-white/50 text-left bg-white/5">
                                 <th className="px-6 py-3 font-medium">ID</th>
                                 <th className="px-6 py-3 font-medium">Fecha</th>
                                 <th className="px-6 py-3 font-medium">Categoría</th>
@@ -249,15 +251,15 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                                 <th className="px-6 py-3 font-medium text-right">Monto</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-gray-100">
+                        <tbody className="divide-y divide-white/5">
                             {orders.map((order) => (
-                                <tr key={order.id} className="hover:bg-gray-50">
-                                    <td className="px-6 py-3 font-mono text-xs text-gray-400">{order.id.slice(4, 12)}</td>
-                                    <td className="px-6 py-3 text-gray-500">
+                                <tr key={order.id} className="hover:bg-white/5">
+                                    <td className="px-6 py-3 font-mono text-xs text-white/40">{order.id.slice(4, 12)}</td>
+                                    <td className="px-6 py-3 text-white/50">
                                         {new Date(order.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
                                     </td>
                                     <td className="px-6 py-3">
-                                        <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
+                                        <span className="text-xs bg-white/5/10 text-white/60 px-2 py-1 rounded-full">
                                             {categoryLabels[order.category] ?? order.category}
                                         </span>
                                     </td>
@@ -266,7 +268,7 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                                             {order.payment_method === "cash" ? "Efectivo" : "Mercado Pago"}
                                         </span>
                                     </td>
-                                    <td className="px-6 py-3 text-right font-medium text-gray-900">${order.total.toFixed(2)}</td>
+                                    <td className="px-6 py-3 text-right font-medium text-white">${order.total.toFixed(2)}</td>
                                 </tr>
                             ))}
                         </tbody>

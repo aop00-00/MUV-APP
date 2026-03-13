@@ -5,7 +5,7 @@ import {
     Calendar, CreditCard, TrendingUp, ArrowRight, Flame, Coffee,
     Dumbbell, Timer, Smile, Frown, Meh, Zap, Activity, Plus, History, Trash2, Check, X, Scale, Ruler
 } from "lucide-react";
-import { requireAuth } from "~/services/auth.server";
+// Auth and Supabase services moved to dynamic imports inside loader/action
 
 // ─── Mock Data ───────────────────────────────────────────────────
 const MOCK_NEXT_CLASS = {
@@ -60,38 +60,67 @@ const MOCK_QUICK_BUY = { name: "Proteína Whey", price: 65, id: "bev-001" };
 
 // ─── Loader ──────────────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
-    const profile = await requireAuth(request);
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { profile, gymId } = await requireGymAuth(request);
 
-    // Determine user state based on time relative to next class
+    // Fetch User Stats (Snapshot)
+    const { data: userStats } = await supabaseAdmin
+        .from("user_stats")
+        .select("*")
+        .eq("user_id", profile.id)
+        .eq("gym_id", gymId)
+        .single();
+
+    // Fetch Gym Stats for live occupancy
+    const { data: gymStats } = await supabaseAdmin
+        .from("gym_stats")
+        .select("current_occupancy, max_capacity")
+        .eq("gym_id", gymId)
+        .single();
+
+    // Determine user state relative to next class
     const now = Date.now();
-    const classStart = new Date(MOCK_NEXT_CLASS.startTime).getTime();
-    const diff = classStart - now;
+    const classStart = userStats?.next_booking_at ? new Date(userStats.next_booking_at).getTime() : 0;
+    const diff = classStart ? classStart - now : -1;
     const hourMs = 60 * 60 * 1000;
 
-    let userState: "before_class" | "during_class" | "after_class";
-    if (diff > 0 && diff <= 4 * hourMs) {
-        userState = "before_class";
-    } else if (diff <= 0 && diff > -1 * hourMs) {
-        userState = "during_class";
-    } else {
-        userState = "after_class";
+    let userState: "before_class" | "during_class" | "after_class" = "after_class";
+    if (classStart > 0) {
+        if (diff > 0 && diff <= 4 * hourMs) {
+            userState = "before_class";
+        } else if (diff <= 0 && diff > -1 * hourMs) {
+            userState = "during_class";
+        }
     }
+
+    // Map occupancy to string
+    const occPct = (gymStats?.current_occupancy || 0) / (gymStats?.max_capacity || 100);
+    const gymOccupancy: "low" | "medium" | "high" = occPct > 0.8 ? "high" : occPct > 0.4 ? "medium" : "low";
 
     return {
         profile,
         userState,
-        nextClass: MOCK_NEXT_CLASS,
-        streak: MOCK_STREAK,
-        classesMonth: MOCK_CLASSES_MONTH,
-        gymOccupancy: MOCK_GYM_OCCUPANCY,
-        radarStats: MOCK_RADAR_STATS,
-        initialPrs: INITIAL_MOCK_PRS,
-        initialBodyStats: INITIAL_BODY_STATS,
+        nextClass: {
+            id: "next",
+            name: userStats?.next_class_name || "Sin reserva",
+            startTime: userStats?.next_booking_at || new Date().toISOString(),
+            instructor: "TBD", // Instructor joined fields not in user_stats yet
+            location: "Gimnasio",
+        },
+        streak: 0, // Streak logic TBD, using 0 for now
+        classesMonth: userStats?.classes_this_month || 0,
+        gymOccupancy,
+        radarStats: MOCK_RADAR_STATS, // Keep mock for now
+        initialPrs: INITIAL_MOCK_PRS, // Keep mock for now
+        initialBodyStats: INITIAL_BODY_STATS, // Keep mock for now
         quickBuy: MOCK_QUICK_BUY,
     };
 }
 
 export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAuth(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     if (intent === "quick_buy") return { success: true, message: "¡Pedido realizado!" };

@@ -1,6 +1,6 @@
 // app/routes/admin/pos.tsx
 // Admin – POS with persistent cart, customer accounts, low stock (MOCK DATA).
-import { requireAdmin } from "~/services/auth.server";
+// Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/pos";
 import { useFetcher } from "react-router";
 import { useState } from "react";
@@ -41,12 +41,14 @@ const MOCK_CUSTOMERS = [
 const LOW_STOCK_THRESHOLD = 5;
 
 export async function loader({ request }: Route.LoaderArgs) {
-    await requireAdmin(request);
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
     return { products: MOCK_POS_PRODUCTS, customers: MOCK_CUSTOMERS };
 }
 
 export async function action({ request }: Route.ActionArgs) {
-    await requireAdmin(request);
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     if (intent === "checkout") {
@@ -99,8 +101,8 @@ export default function POS({ loaderData }: Route.ComponentProps) {
             {/* ── Product Grid (left) ──────────────────── */}
             <div className="flex-1 space-y-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Punto de Venta</h1>
-                    <p className="text-gray-500 mt-1">Toca un producto para agregar al carrito.</p>
+                    <h1 className="text-2xl font-bold text-white">Punto de Venta</h1>
+                    <p className="text-white/50 mt-1">Toca un producto para agregar al carrito.</p>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -114,10 +116,10 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                 onClick={() => !isOutOfStock && addToCart(product)}
                                 disabled={isOutOfStock}
                                 className={`text-left rounded-xl p-4 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm ${isOutOfStock
-                                        ? "bg-gray-100 border-2 border-gray-300 opacity-50 cursor-not-allowed"
-                                        : isLowStock
-                                            ? "bg-white border-2 border-red-300 hover:border-red-400"
-                                            : "bg-white border border-gray-200 hover:border-purple-400 hover:shadow-md"
+                                    ? "bg-white/5/10 border-2 border-white/10 opacity-50 cursor-not-allowed"
+                                    : isLowStock
+                                        ? "bg-white/5 border-2 border-red-300 hover:border-red-400"
+                                        : "bg-white/5 border border-white/[0.08] hover:border-purple-400 hover:shadow-md"
                                     }`}
                             >
                                 {isLowStock && !isOutOfStock && (
@@ -127,15 +129,15 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                     </div>
                                 )}
                                 {isOutOfStock && (
-                                    <div className="text-[10px] font-bold text-gray-400 mb-1.5">AGOTADO</div>
+                                    <div className="text-[10px] font-bold text-white/40 mb-1.5">AGOTADO</div>
                                 )}
-                                <p className="font-semibold text-gray-900 text-sm">{product.name}</p>
+                                <p className="font-semibold text-white text-sm">{product.name}</p>
                                 <p className="text-purple-600 font-bold mt-1">${product.price.toFixed(2)}</p>
                                 <div className="flex items-center justify-between mt-1.5">
-                                    <p className={`text-xs ${isLowStock ? "text-red-500 font-medium" : "text-gray-400"}`}>
+                                    <p className={`text-xs ${isLowStock ? "text-red-500 font-medium" : "text-white/40"}`}>
                                         Stock: {product.stock}
                                     </p>
-                                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{product.category}</span>
+                                    <span className="text-[10px] text-white/40 bg-white/5/10 px-1.5 py-0.5 rounded">{product.category}</span>
                                 </div>
                             </button>
                         );
@@ -144,13 +146,13 @@ export default function POS({ loaderData }: Route.ComponentProps) {
             </div>
 
             {/* ── Cart Panel (right) ───────────────────── */}
-            <div className="w-80 bg-white border border-gray-200 rounded-2xl shadow-lg flex flex-col overflow-hidden flex-shrink-0">
+            <div className="w-80 bg-white/5 border border-white/[0.08] rounded-2xl shadow-lg flex flex-col overflow-hidden flex-shrink-0">
                 {/* Cart header */}
-                <div className="p-4 border-b border-gray-100 bg-gray-50">
+                <div className="p-4 border-b border-white/5 bg-white/5">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <ShoppingCart className="w-5 h-5 text-purple-600" />
-                            <h2 className="font-bold text-gray-900">Carrito</h2>
+                            <h2 className="font-bold text-white">Carrito</h2>
                         </div>
                         <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-medium">
                             {cart.reduce((s, c) => s + c.qty, 0)} items
@@ -161,23 +163,23 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                 {/* Cart items */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
                     {cart.length === 0 ? (
-                        <div className="text-center py-8 text-gray-300">
+                        <div className="text-center py-8 text-white/30">
                             <ShoppingCart className="w-10 h-10 mx-auto mb-2 opacity-30" />
                             <p className="text-sm">Carrito vacío</p>
                         </div>
                     ) : (
                         cart.map((item) => (
-                            <div key={item.product.id} className="flex items-center gap-2 bg-gray-50 rounded-lg p-2.5">
+                            <div key={item.product.id} className="flex items-center gap-2 bg-white/5 rounded-lg p-2.5">
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-gray-900 truncate">{item.product.name}</p>
+                                    <p className="text-sm font-medium text-white truncate">{item.product.name}</p>
                                     <p className="text-xs text-purple-600 font-bold">${(item.product.price * item.qty).toFixed(2)}</p>
                                 </div>
                                 <div className="flex items-center gap-1">
-                                    <button onClick={() => updateQty(item.product.id, -1)} className="w-6 h-6 bg-gray-200 hover:bg-gray-300 rounded text-gray-600 flex items-center justify-center transition-colors">
+                                    <button onClick={() => updateQty(item.product.id, -1)} className="w-6 h-6 bg-white/5/20 hover:bg-gray-300 rounded text-white/60 flex items-center justify-center transition-colors">
                                         <Minus className="w-3 h-3" />
                                     </button>
                                     <span className="text-xs font-bold w-5 text-center">{item.qty}</span>
-                                    <button onClick={() => updateQty(item.product.id, 1)} className="w-6 h-6 bg-gray-200 hover:bg-gray-300 rounded text-gray-600 flex items-center justify-center transition-colors">
+                                    <button onClick={() => updateQty(item.product.id, 1)} className="w-6 h-6 bg-white/5/20 hover:bg-gray-300 rounded text-white/60 flex items-center justify-center transition-colors">
                                         <Plus className="w-3 h-3" />
                                     </button>
                                 </div>
@@ -190,18 +192,18 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                 </div>
 
                 {/* Cart totals + actions */}
-                <div className="border-t border-gray-100 p-4 space-y-3 bg-white">
+                <div className="border-t border-white/5 p-4 space-y-3 bg-white/5">
                     {/* Totals */}
                     <div className="space-y-1 text-sm">
-                        <div className="flex justify-between text-gray-500">
+                        <div className="flex justify-between text-white/50">
                             <span>Subtotal</span>
                             <span>${subtotal.toFixed(2)}</span>
                         </div>
-                        <div className="flex justify-between text-gray-500">
+                        <div className="flex justify-between text-white/50">
                             <span>IVA (16%)</span>
                             <span>${tax.toFixed(2)}</span>
                         </div>
-                        <div className="flex justify-between font-black text-lg text-gray-900 pt-1 border-t border-gray-100">
+                        <div className="flex justify-between font-black text-lg text-white pt-1 border-t border-white/5">
                             <span>Total</span>
                             <span>${total.toFixed(2)}</span>
                         </div>
@@ -225,19 +227,19 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                         <div className="relative">
                             <button
                                 onClick={() => setShowCustomerSearch(!showCustomerSearch)}
-                                className="w-full flex items-center gap-2 text-xs text-gray-500 hover:text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 transition-colors"
+                                className="w-full flex items-center gap-2 text-xs text-white/50 hover:text-white/70 bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2 transition-colors"
                             >
                                 <Search className="w-3.5 h-3.5" />
                                 Asignar a cuenta de cliente…
                             </button>
                             {showCustomerSearch && (
-                                <div className="absolute bottom-full left-0 right-0 mb-1 bg-white border border-gray-200 rounded-xl shadow-xl z-10 overflow-hidden">
+                                <div className="absolute bottom-full left-0 right-0 mb-1 bg-white/5 border border-white/[0.08] rounded-xl shadow-xl z-10 overflow-hidden">
                                     <input
                                         type="text"
                                         placeholder="Buscar cliente…"
                                         value={customerSearch}
                                         onChange={(e) => setCustomerSearch(e.target.value)}
-                                        className="w-full px-3 py-2.5 text-sm border-b border-gray-100"
+                                        className="w-full px-3 py-2.5 text-sm border-b border-white/5"
                                         autoFocus
                                     />
                                     <div className="max-h-40 overflow-y-auto">
@@ -245,10 +247,10 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                             <button
                                                 key={c.id}
                                                 onClick={() => { setSelectedCustomer(c); setShowCustomerSearch(false); setCustomerSearch(""); }}
-                                                className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm flex items-center justify-between"
+                                                className="w-full text-left px-3 py-2 hover:bg-white/5 text-sm flex items-center justify-between"
                                             >
-                                                <span className="font-medium text-gray-900">{c.name}</span>
-                                                <span className="text-xs text-gray-400">Saldo: ${c.balance}</span>
+                                                <span className="font-medium text-white">{c.name}</span>
+                                                <span className="text-xs text-white/40">Saldo: ${c.balance}</span>
                                             </button>
                                         ))}
                                     </div>
