@@ -1,4 +1,6 @@
 // app/components/landing/ParticleBackground.tsx
+import React from "react";
+
 // Animated aurora/orb background — slow-moving blurred gradient blobs.
 // Uses CSS @keyframes via injected <style> for GPU-smooth animation.
 // position:fixed at z-index:-1 so it ALWAYS renders below all content.

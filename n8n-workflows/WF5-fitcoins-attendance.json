@@ -1,0 +1,170 @@
+{
+  "name": "WF5 — FitCoins: Premio Asistencia a Clase",
+  "meta": { "description": "Se dispara cuando una reserva cambia a status='completed'. Otorga 10 FitCoins al socio por asistir. Inserta el registro en fitcoins de Supabase. Maqueta lista — solo agrega credenciales." },
+  "nodes": [
+    {
+      "id": "sticky-fc",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200],
+      "parameters": {
+        "content": "## WF5 — FitCoins: Premio Asistencia\n\n**Credenciales requeridas:**\n1. `Supabase Grind` — URL + Service Role Key\n\n**Cómo configurar el trigger:**\nEste workflow tiene dos opciones de trigger:\n\n**Opción A (Recomendada):** Webhook desde el frontend\n- El route `barista/_index.tsx` llama al webhook cuando marca una clase como completada\n- Activa el nodo `Webhook: Clase completada`\n\n**Opción B:** Supabase Webhook (Database webhook)\n- En Supabase → Database → Webhooks → Nueva\n- Tabla: `bookings`, Evento: UPDATE\n- URL: https://aop00.app.n8n.cloud/webhook/grind-class-completed\n- Filtro: `new.status = 'completed'`\n\n**Lógica:**\n- +10 FitCoins por asistir a cualquier clase\n- Solo si el gym tiene `features.fitcoins = true`",
+        "height": 340,
+        "width": 520
+      }
+    },
+    {
+      "id": "fc1",
+      "name": "💪 Webhook: Clase Completada",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-class-completed",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "grind-class-completed"
+    },
+    {
+      "id": "fc2",
+      "name": "🏗️ Extraer booking data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 300],
+      "parameters": {
+        "jsCode": "// Compatible con Supabase DB Webhook (table record) y llamada directa del frontend\nconst body = $input.first().json;\n\n// Supabase DB Webhook envia: { record: {...}, old_record: {...}, type: 'UPDATE' }\nconst booking = body.record || body;\n\nconst userId   = booking.user_id;\nconst gymId    = booking.gym_id;\nconst classId  = booking.class_id;\nconst bookingId = booking.id;\n\nif (!userId || !gymId) throw new Error('Missing user_id or gym_id in payload');\n\nreturn [{ json: { userId, gymId, classId, bookingId, status: booking.status } }];"
+      }
+    },
+    {
+      "id": "fc3",
+      "name": "IF: status == completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.status }}", "rightValue": "completed", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "fc4",
+      "name": "🏋️ GET gym features",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1220, 200],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "gyms",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $json.gymId }}",
+        "returnAll": false,
+        "limit": 1,
+        "options": { "select": "id,features" }
+      }
+    },
+    {
+      "id": "fc5",
+      "name": "IF: fitcoins habilitado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.features?.fitcoins }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "fc6",
+      "name": "🪙 INSERT FitCoins (+10 asistencia)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1660, 120],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "fitcoins",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "gym_id",      "value": "={{ $('fc2').item.json.gymId }}" },
+            { "fieldId": "user_id",     "value": "={{ $('fc2').item.json.userId }}" },
+            { "fieldId": "amount",      "value": "10" },
+            { "fieldId": "source",      "value": "attendance" },
+            { "fieldId": "description", "value": "=+10 FitCoins por asistir a clase 💪" },
+            { "fieldId": "booking_id",  "value": "={{ $('fc2').item.json.bookingId }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fc7",
+      "name": "📊 GET balance actual FitCoins",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1880, 120],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "fitcoins",
+        "filterType": "string",
+        "filterString": "user_id=eq.{{ $('fc2').item.json.userId }}&gym_id=eq.{{ $('fc2').item.json.gymId }}",
+        "returnAll": true,
+        "options": { "select": "amount" }
+      }
+    },
+    {
+      "id": "fc8",
+      "name": "🔢 Calcular balance total",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2100, 120],
+      "parameters": {
+        "jsCode": "const coins = $input.all();\nconst total = coins.reduce((sum, item) => sum + (item.json.amount || 0), 0);\nconst userId = $('fc2').item.json.userId;\nconst gymId  = $('fc2').item.json.gymId;\nreturn [{ json: { total, userId, gymId } }];"
+      }
+    },
+    {
+      "id": "fc9-ok",
+      "name": "✅ Respond: coins otorgados",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2320, 200],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"coinsAwarded\": 10, \"newBalance\": {{ $json.total }} }",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "fc9-skip",
+      "name": "⏭️ Skip (no coins configured)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 400],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"coinsAwarded\": 0, \"reason\": \"fitcoins feature disabled\" }",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "💪 Webhook: Clase Completada":      { "main": [[{ "node": "🏗️ Extraer booking data",      "type": "main", "index": 0 }]] },
+    "🏗️ Extraer booking data":          { "main": [[{ "node": "IF: status == completed?",        "type": "main", "index": 0 }]] },
+    "IF: status == completed?":          { "main": [[{ "node": "🏋️ GET gym features",            "type": "main", "index": 0 }]] },
+    "🏋️ GET gym features":              { "main": [[{ "node": "IF: fitcoins habilitado?",         "type": "main", "index": 0 }]] },
+    "IF: fitcoins habilitado?":          { "main": [[{ "node": "🪙 INSERT FitCoins (+10 asistencia)", "type": "main", "index": 0 }], [{ "node": "⏭️ Skip (no coins configured)", "type": "main", "index": 0 }]] },
+    "🪙 INSERT FitCoins (+10 asistencia)": { "main": [[{ "node": "📊 GET balance actual FitCoins", "type": "main", "index": 0 }]] },
+    "📊 GET balance actual FitCoins":    { "main": [[{ "node": "🔢 Calcular balance total",       "type": "main", "index": 0 }]] },
+    "🔢 Calcular balance total":         { "main": [[{ "node": "✅ Respond: coins otorgados",     "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "fitcoins" }]
+}

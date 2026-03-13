@@ -1,0 +1,143 @@
+{
+  "name": "WF10 — CRON: Reporte Semanal Revenue (Lunes 8AM)",
+  "meta": { "description": "Cada lunes a las 8AM genera el reporte semanal del gym: revenue, socios nuevos, clases populares, leads en pipeline. Lo envía por WhatsApp y email al gym owner." },
+  "nodes": [
+    {
+      "id": "sticky-wf10",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -240],
+      "parameters": {
+        "content": "## WF10 — Reporte Semanal Revenue\n\n**Frecuencia:** Lunes 8:00 AM\n\n**Incluye:**\n- 💰 Revenue semana vs. semana anterior\n- 👥 Socios nuevos\n- 📅 Clases más reservadas\n- 🔄 Leads en pipeline (CRM)\n- ⚠️ Membresías por vencer esta semana\n- 🪙 FitCoins emitidos\n\n**Se envía a:**\n- WhatsApp del gym owner\n- Email del gym owner\n\n**Variable adicional en n8n:**\n- `ADMIN_PHONE` — teléfono del owner (sin +52)\n- `ADMIN_EMAIL` — email del owner",
+        "height": 260,
+        "width": 440
+      }
+    },
+    {
+      "id": "w10-cron",
+      "name": "⏰ CRON: Lunes 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [300, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 8 * * 1" }] }
+      }
+    },
+    {
+      "id": "w10-gyms",
+      "name": "📋 GET todos los gyms",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [520, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "gyms",
+        "filterType": "string",
+        "filterString": "plan_status=neq.cancelled",
+        "returnAll": true,
+        "options": { "select": "id,name,owner_id,features,plan_status" }
+      }
+    },
+    {
+      "id": "w10-loop",
+      "name": "🔁 Loop por Gym",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [740, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "id": "w10-data",
+      "name": "📊 GET datos semanales (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/rpc/get_weekly_report",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"p_gym_id\": \"{{ $json.id }}\" }"
+      }
+    },
+    {
+      "id": "w10-report",
+      "name": "📝 Construir reporte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 300],
+      "parameters": {
+        "jsCode": "const gym = $('w10-loop').item.json;\nconst d = $input.first().json;\n\nconst revenueChange = d.prev_week_revenue > 0\n  ? Math.round(((d.this_week_revenue - d.prev_week_revenue) / d.prev_week_revenue) * 100)\n  : 100;\nconst revenueEmoji = revenueChange >= 0 ? '📈' : '📉';\n\nconst waMsg = [\n  `📊 *Reporte Semanal — ${gym.name}*`,\n  `Semana del ${new Date(Date.now() - 7*24*60*60*1000).toLocaleDateString('es-MX')}`,\n  ``,\n  `💰 Revenue: $${d.this_week_revenue?.toLocaleString() || 0} MXN`,\n  `${revenueEmoji} vs semana anterior: ${revenueChange >= 0 ? '+' : ''}${revenueChange}%`,\n  ``,\n  `👥 Nuevos socios: ${d.new_members || 0}`,\n  `🔄 Renovaciones: ${d.renewals || 0}`,\n  `😞 Bajas: ${d.cancellations || 0}`,\n  ``,\n  `🎯 Pipeline CRM:`,\n  `  Nuevos leads: ${d.new_leads || 0}`,\n  `  Convertidos: ${d.converted_leads || 0}`,\n  ``,\n  `⚠️ Membresías por vencer: ${d.expiring_soon || 0}`,\n  `🪙 FitCoins emitidos: ${d.fitcoins_issued || 0}`,\n  ``,\n  `Ver detalle: ${ $env['APP_URL'] }/admin`\n].join('\\n');\n\nconst emailHtml = `<h2>Reporte Semanal — ${gym.name}</h2>\n<table border=\"1\" cellpadding=\"8\" style=\"border-collapse:collapse;\">\n<tr><th>Métrica</th><th>Esta semana</th></tr>\n<tr><td>💰 Revenue</td><td>$${d.this_week_revenue?.toLocaleString() || 0} MXN (${revenueChange >= 0 ? '+' : ''}${revenueChange}% vs anterior)</td></tr>\n<tr><td>👥 Nuevos socios</td><td>${d.new_members || 0}</td></tr>\n<tr><td>🔄 Renovaciones</td><td>${d.renewals || 0}</td></tr>\n<tr><td>🎯 Leads convertidos</td><td>${d.converted_leads || 0}</td></tr>\n<tr><td>⚠️ Por vencer</td><td>${d.expiring_soon || 0}</td></tr>\n<tr><td>🪙 FitCoins</td><td>${d.fitcoins_issued || 0}</td></tr>\n</table>\n<p><a href=\"${ $env['APP_URL'] }/admin\">Ver dashboard completo →</a></p>`;\n\nreturn [{ json: { gymId: gym.id, gymName: gym.name, waMsg, emailHtml, data: d } }];"
+      }
+    },
+    {
+      "id": "w10-owner",
+      "name": "👤 GET perfil del owner",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1380, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "profiles",
+        "filterType": "string",
+        "filterString": "gym_id=eq.{{ $('w10-loop').item.json.id }}&role=eq.admin",
+        "returnAll": false,
+        "limit": 1,
+        "options": { "select": "full_name,email,phone" }
+      }
+    },
+    {
+      "id": "w10-wa",
+      "name": "📱 WhatsApp: Reporte al owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1600, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $('w10-owner').item.json.phone?.replace(/[^0-9]/g,'') }}\", \"type\": \"text\", \"text\": { \"body\": \"{{ $('w10-report').item.json.waMsg }}\" } }"
+      }
+    },
+    {
+      "id": "w10-email",
+      "name": "📧 Email: Reporte al owner",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1600, 420],
+      "credentials": { "smtp": { "name": "SMTP Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "sendTo": "={{ $('w10-owner').item.json.email }}",
+        "subject": "=📊 Reporte Semanal — {{ $('w10-report').item.json.gymName }}",
+        "emailType": "html",
+        "message": "={{ $('w10-report').item.json.emailHtml }}"
+      }
+    }
+  ],
+  "connections": {
+    "⏰ CRON: Lunes 8AM":            { "main": [[{ "node": "📋 GET todos los gyms",            "type": "main", "index": 0 }]] },
+    "📋 GET todos los gyms":         { "main": [[{ "node": "🔁 Loop por Gym",                  "type": "main", "index": 0 }]] },
+    "🔁 Loop por Gym":               { "main": [[{ "node": "📊 GET datos semanales (RPC)",      "type": "main", "index": 0 }]] },
+    "📊 GET datos semanales (RPC)":  { "main": [[{ "node": "📝 Construir reporte",              "type": "main", "index": 0 }]] },
+    "📝 Construir reporte":          { "main": [[{ "node": "👤 GET perfil del owner",           "type": "main", "index": 0 }]] },
+    "👤 GET perfil del owner":       { "main": [[{ "node": "📱 WhatsApp: Reporte al owner",    "type": "main", "index": 0 }], [{ "node": "📧 Email: Reporte al owner", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "reportes" }, { "name": "revenue" }]
+}

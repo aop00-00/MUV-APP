@@ -1,0 +1,147 @@
+{
+  "name": "WF2 — CRON: Membresías por Vencer",
+  "meta": { "description": "Se ejecuta cada día a las 9AM. Busca membresías que vencen en 5 días o menos. Envía recordatorio de renovación vía WhatsApp a cada socio. Maqueta — solo agrega credenciales." },
+  "nodes": [
+    {
+      "id": "sticky-cron",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200],
+      "parameters": {
+        "content": "## WF2 — CRON Membresías por Vencer\n\n**Credenciales requeridas:**\n1. `Supabase Grind` — URL + Service Role Key\n2. `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` — Env vars\n\n**Frecuencia:** Cada día a las 9:00 AM (hora MX)\n\n**Notas:**\n- Busca membresías `status='active'` con `end_date <= hoy + 5 días`\n- Para cada gym que tenga membresías por vencer\n- Envía WhatsApp al socio con link de renovación",
+        "height": 250,
+        "width": 450
+      }
+    },
+    {
+      "id": "cron1",
+      "name": "⏰ CRON: Diario 9AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [300, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * *" }] }
+      }
+    },
+    {
+      "id": "cron2",
+      "name": "📊 GET Membresías por Vencer",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [520, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "memberships",
+        "filterType": "string",
+        "filterString": "=status=eq.active&end_date=lte.{{ new Date(Date.now() + 5*24*60*60*1000).toISOString().split('T')[0] }}",
+        "returnAll": true,
+        "options": { "select": "id,user_id,gym_id,plan_name,end_date,user:profiles(full_name,phone,email)" }
+      }
+    },
+    {
+      "id": "cron3",
+      "name": "IF: Hay membresías?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [740, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $input.all().length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "cron4",
+      "name": "🔁 Loop por cada Socio",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [960, 300],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+    {
+      "id": "cron5",
+      "name": "📅 Calcular días restantes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 300],
+      "parameters": {
+        "jsCode": "const membership = $input.first().json;\nconst endDate = new Date(membership.end_date);\nconst today = new Date();\nconst daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));\nconst userName = membership.user?.full_name?.split(' ')[0] || 'Socio';\nconst phone = membership.user?.phone?.replace(/[^0-9]/g, '') || null;\nconst planName = membership.plan_name || 'tu membresía';\n\nreturn [{ json: { ...membership, daysLeft, userName, phone, planName } }];"
+      }
+    },
+    {
+      "id": "cron6",
+      "name": "IF: Tiene teléfono?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.phone }}", "rightValue": "", "operator": { "type": "string", "operation": "isNotEmpty" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "cron7",
+      "name": "📱 WhatsApp: Recordatorio Renovación",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 220],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "messaging_product", "value": "whatsapp" },
+            { "name": "to", "value": "=52{{ $json.phone }}" },
+            { "name": "type", "value": "text" },
+            { "name": "text", "value": "={\"body\": \"⚠️ Hola {{ $json.userName }}, tu membresía *{{ $json.planName }}* vence en *{{ $json.daysLeft }} días*. ¡Renuévala ahora para no perder tus créditos!\\n\\nRenueva aquí: {{ $env['APP_URL'] }}/dashboard/packages\" }" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cron8",
+      "name": "📧 Email: Recordatorio (sin teléfono)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1620, 400],
+      "credentials": { "smtp": { "name": "SMTP Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "sendTo": "={{ $json.user?.email }}",
+        "subject": "=⚠️ Tu membresía vence en {{ $json.daysLeft }} días — Grind Project",
+        "emailType": "text",
+        "message": "=Hola {{ $json.userName }},\n\nTu membresía {{ $json.planName }} vence en {{ $json.daysLeft }} días.\n\nRenuévala aquí: {{ $env['APP_URL'] }}/dashboard/packages\n\n¡No pierdas tus créditos!\n\nEquipo Grind Project"
+      }
+    },
+    {
+      "id": "cron9",
+      "name": "⏭️ Siguiente socio",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1840, 300],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "⏰ CRON: Diario 9AM":                       { "main": [[{ "node": "📊 GET Membresías por Vencer",          "type": "main", "index": 0 }]] },
+    "📊 GET Membresías por Vencer":              { "main": [[{ "node": "IF: Hay membresías?",                  "type": "main", "index": 0 }]] },
+    "IF: Hay membresías?":                       { "main": [[{ "node": "🔁 Loop por cada Socio",               "type": "main", "index": 0 }]] },
+    "🔁 Loop por cada Socio":                    { "main": [[{ "node": "📅 Calcular días restantes",           "type": "main", "index": 0 }]] },
+    "📅 Calcular días restantes":                { "main": [[{ "node": "IF: Tiene teléfono?",                  "type": "main", "index": 0 }]] },
+    "IF: Tiene teléfono?":                       { "main": [[{ "node": "📱 WhatsApp: Recordatorio Renovación",  "type": "main", "index": 0 }], [{ "node": "📧 Email: Recordatorio (sin teléfono)", "type": "main", "index": 0 }]] },
+    "📱 WhatsApp: Recordatorio Renovación":      { "main": [[{ "node": "⏭️ Siguiente socio",                   "type": "main", "index": 0 }]] },
+    "📧 Email: Recordatorio (sin teléfono)":     { "main": [[{ "node": "⏭️ Siguiente socio",                   "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "grind-project" }, { "name": "notificaciones" }]
+}

@@ -1,0 +1,134 @@
+{
+  "name": "WF7 — CRON: Lead Engagement Score (Nocturno)",
+  "meta": { "description": "Corre cada noche a las 2AM. Calcula un engagement_score 0-100 para cada lead. Los leads \"calientes\" aparecen primero en el CRM. Los \"fríos\" disparan una alerta de seguimiento." },
+  "nodes": [
+    {
+      "id": "sticky-wf7",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -240],
+      "parameters": {
+        "content": "## WF7 — Lead Engagement Score\n\n**Frecuencia:** Diario 2:00 AM\n\n**Cómo funciona el score (0-100):**\n- +30 si tiene teléfono\n- +20 si tiene email válido\n- +20 si avanzó de stage hoy\n- +30 si tiene trial agendado\n- -20 si lleva 5-9 días sin avanzar\n- -40 si lleva 10+ días sin avanzar\n- -10 por cada stage saltado = perdido\n\n**Resultado:**\n- `leads.engagement_score` se actualiza\n- Score < 20 = envía alerta al admin\n- CRM muestra leads ordenados por score\n\n**Requiere:**\n- Columna `engagement_score INT` en tabla `leads`\n  (incluida en `002_dashboard_stats.sql`)",
+        "height": 300,
+        "width": 460
+      }
+    },
+    {
+      "id": "w7-trigger",
+      "name": "⏰ CRON: 2AM diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [300, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 2 * * *" }] }
+      }
+    },
+    {
+      "id": "w7-leads",
+      "name": "📊 GET leads activos",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [520, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "leads",
+        "filterType": "string",
+        "filterString": "stage=not.eq.lost&stage=not.eq.converted",
+        "returnAll": true,
+        "options": { "select": "id,gym_id,phone,email,stage,days_in_stage,created_at,updated_at" }
+      }
+    },
+    {
+      "id": "w7-loop",
+      "name": "🔁 Loop por lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [740, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "id": "w7-score",
+      "name": "🧮 Calcular Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\nlet score = 50; // base\n\n// Contact quality\nif (lead.phone) score += 30;\nif (lead.email && lead.email.includes('@')) score += 20;\n\n// Stage progression\nconst stageWeights = { new: 0, contacted: 1, trial: 2 };\nconst stageValue = stageWeights[lead.stage] || 0;\nif (stageValue >= 2) score += 30;  // reached trial\nelse if (stageValue >= 1) score += 10; // at least contacted\n\n// Days in stage penalty\nconst days = lead.days_in_stage || 0;\nif (days >= 10) score -= 40;\nelse if (days >= 5) score -= 20;\n\n// Recency bonus (updated recently = interacted)\nconst daysSinceUpdate = Math.floor(\n  (Date.now() - new Date(lead.updated_at).getTime()) / (1000*60*60*24)\n);\nif (daysSinceUpdate <= 1) score += 20;\nelse if (daysSinceUpdate <= 3) score += 10;\n\nscore = Math.max(0, Math.min(100, score));\n\nconst label = score >= 70 ? '🔥 caliente' : score >= 40 ? '🌡️ tibio' : '❄️ frío';\n\nreturn [{ json: { id: lead.id, gym_id: lead.gym_id, engagement_score: score, label, phone: lead.phone, days } }];"
+      }
+    },
+    {
+      "id": "w7-update",
+      "name": "💾 UPDATE leads.engagement_score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 300],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/leads?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"engagement_score\": {{ $json.engagement_score }} }"
+      }
+    },
+    {
+      "id": "w7-cold",
+      "name": "IF: Score < 20 (lead frío)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1380, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $('w7-score').item.json.engagement_score }}", "rightValue": 20, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "w7-alert",
+      "name": "📱 WhatsApp: Alerta lead frío al admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1600, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $env['ADMIN_PHONE'] }}\", \"type\": \"text\", \"text\": { \"body\": \"❄️ Lead frío detectado.\\nLleva {{ $('w7-score').item.json.days }} días sin avanzar. Score: {{ $('w7-score').item.json.engagement_score }}/100\\n\\nRevisa en: {{ $env['APP_URL'] }}/admin/crm\" } }"
+      }
+    },
+    {
+      "id": "w7-skip",
+      "name": "⏭️ Lead OK, siguiente",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1600, 420],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "⏰ CRON: 2AM diario":                   { "main": [[{ "node": "📊 GET leads activos",                "type": "main", "index": 0 }]] },
+    "📊 GET leads activos":                  { "main": [[{ "node": "🔁 Loop por lead",                    "type": "main", "index": 0 }]] },
+    "🔁 Loop por lead":                      { "main": [[{ "node": "🧮 Calcular Score",                   "type": "main", "index": 0 }]] },
+    "🧮 Calcular Score":                     { "main": [[{ "node": "💾 UPDATE leads.engagement_score",    "type": "main", "index": 0 }]] },
+    "💾 UPDATE leads.engagement_score":      { "main": [[{ "node": "IF: Score < 20 (lead frío)?",        "type": "main", "index": 0 }]] },
+    "IF: Score < 20 (lead frío)?":           { "main": [[{ "node": "📱 WhatsApp: Alerta lead frío al admin", "type": "main", "index": 0 }], [{ "node": "⏭️ Lead OK, siguiente", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "crm" }, { "name": "leads" }]
+}

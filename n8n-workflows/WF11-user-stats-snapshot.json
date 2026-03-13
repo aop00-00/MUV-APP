@@ -1,0 +1,84 @@
+{
+  "name": "WF11 — Event: User Stats Snapshot (por evento)",
+  "meta": { "description": "Se dispara por webhook desde el frontend después de: pago, booking, clase completada. Actualiza user_stats con: créditos, FitCoins, membresía activa, próxima clase, historial. Dashboard del socio lee 1 fila en lugar de 5+ queries." },
+  "nodes": [
+    {
+      "id": "sticky-wf11",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -260],
+      "parameters": {
+        "content": "## WF11 — User Stats Snapshot\n\n**Trigger:** Webhook desde el frontend\n- URL: https://aop00.app.n8n.cloud/webhook/grind-user-stats\n- Se llama después de: payment, booking, class_completed\n\n**Payload esperado:**\n```json\n{ \"userId\": \"uuid\", \"gymId\": \"uuid\", \"trigger\": \"payment|booking|class\" }```\n\n**Qué calcula:**\n- `credits` — créditos de clase disponibles\n- `fitcoins_balance` — suma total FitCoins\n- `active_membership` — plan activo + fecha vencimiento\n- `next_booking_at` + `next_class_name` — próxima clase\n- `classes_this_month` — asistencias en el mes\n- `last_access` — último check-in QR\n- `risk_level` — si no viene en 14+ días\n\n**Resultado:**\nEl dashboard del socio pasa de ~6 queries → 1 fila en user_stats.",
+        "height": 330,
+        "width": 500
+      }
+    },
+    {
+      "id": "w11-hook",
+      "name": "🎯 Webhook: Actualizar stats usuario",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-user-stats",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "grind-user-stats"
+    },
+    {
+      "id": "w11-compute",
+      "name": "⚡ Calcular todos los stats del usuario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 300],
+      "parameters": {
+        "jsCode": "const { userId, gymId } = $input.first().json;\n\nconst SUPABASE_URL = $env['SUPABASE_URL'];\nconst SERVICE_KEY  = $env['SUPABASE_SERVICE_ROLE_KEY'];\nconst headers = {\n  'Authorization': `Bearer ${SERVICE_KEY}`,\n  'apikey': SERVICE_KEY\n};\n\nasync function q(path) {\n  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers });\n  return res.json();\n}\n\nconst now = new Date();\nconst monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();\nconst churnCutoff = new Date(Date.now() - 14*24*60*60*1000).toISOString();\n\nconst [membership, fitcoins, nextBooking, monthBookings, lastAccess] = await Promise.all([\n  q(`memberships?user_id=eq.${userId}&gym_id=eq.${gymId}&status=eq.active&select=id,plan_name,credits,end_date&limit=1`),\n  q(`fitcoins?user_id=eq.${userId}&gym_id=eq.${gymId}&select=amount`),\n  q(`bookings?user_id=eq.${userId}&gym_id=eq.${gymId}&status=eq.booked&select=class_id,class:class_slots(name,date,start_time)&order=class_slots.date.asc&limit=1`),\n  q(`bookings?user_id=eq.${userId}&gym_id=eq.${gymId}&status=eq.completed&created_at=gte.${monthStart}&select=id`),\n  q(`access_logs?user_id=eq.${userId}&gym_id=eq.${gymId}&status=eq.allowed&order=scanned_at.desc&limit=1&select=scanned_at`)\n]);\n\nconst activeMembership = membership[0] || null;\nconst credits = activeMembership?.credits || 0;\nconst fitcoinsBalance = (fitcoins || []).reduce((s, f) => s + (f.amount || 0), 0);\nconst classesThisMonth = (monthBookings || []).length;\nconst nextClass = nextBooking[0] || null;\nconst lastAccessAt = lastAccess[0]?.scanned_at || null;\n\nconst daysSinceLastClass = lastAccessAt\n  ? Math.floor((Date.now() - new Date(lastAccessAt).getTime()) / (1000*60*60*24))\n  : 999;\nconst riskLevel = daysSinceLastClass >= 21 ? 'critical' : daysSinceLastClass >= 14 ? 'high' : daysSinceLastClass >= 7 ? 'medium' : 'low';\n\nreturn [{ json: {\n  user_id: userId,\n  gym_id: gymId,\n  credits,\n  fitcoins_balance: fitcoinsBalance,\n  active_membership_id: activeMembership?.id || null,\n  membership_expires_at: activeMembership?.end_date || null,\n  membership_plan_name: activeMembership?.plan_name || null,\n  next_booking_at: nextClass?.class?.date ? `${nextClass.class.date}T${nextClass.class.start_time}` : null,\n  next_class_name: nextClass?.class?.name || null,\n  classes_this_month: classesThisMonth,\n  last_access: lastAccessAt,\n  days_inactive: daysSinceLastClass === 999 ? null : daysSinceLastClass,\n  risk_level: riskLevel,\n  computed_at: new Date().toISOString()\n} }];"
+      }
+    },
+    {
+      "id": "w11-upsert",
+      "name": "💾 UPSERT user_stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/user_stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Prefer", "value": "resolution=merge-duplicates,return=minimal" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify([$json]) }}"
+      }
+    },
+    {
+      "id": "w11-respond",
+      "name": "✅ Respond: stats actualizados",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1220, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"credits\": {{ $('w11-compute').item.json.credits }}, \"fitcoins\": {{ $('w11-compute').item.json.fitcoins_balance }} }",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "🎯 Webhook: Actualizar stats usuario":      { "main": [[{ "node": "⚡ Calcular todos los stats del usuario", "type": "main", "index": 0 }]] },
+    "⚡ Calcular todos los stats del usuario":   { "main": [[{ "node": "💾 UPSERT user_stats",                    "type": "main", "index": 0 }]] },
+    "💾 UPSERT user_stats":                      { "main": [[{ "node": "✅ Respond: stats actualizados",          "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "dashboard" }, { "name": "usuario" }]
+}

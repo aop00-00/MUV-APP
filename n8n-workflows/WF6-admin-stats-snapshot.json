@@ -1,0 +1,102 @@
+{
+  "name": "WF6 — CRON: Admin Stats Snapshot (15min)",
+  "meta": { "description": "Cada 15 min calcula todos los KPIs del admin dashboard y los escribe en gym_stats. El admin dashboard solo lee una fila. Requiere: tabla gym_stats + user_stats (ver 002_dashboard_stats.sql)." },
+  "nodes": [
+    {
+      "id": "sticky-wf6",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -260],
+      "parameters": {
+        "content": "## WF6 — Admin Stats Snapshot\n\n**Frecuencia:** Cada 15 minutos\n\n**Qué hace:**\n1. Carga todos los gyms activos\n2. Para cada gym, ejecuta 6 queries en Supabase\n3. Calcula MRR, revenue hoy, miembros, ocupación, CRM, churn\n4. Hace UPSERT en `gym_stats` por gym_id\n\n**Resultado:**\nEl admin dashboard pasa de hacer 8 queries por carga → 1 query a gym_stats. Carga instantánea.\n\n**Credenciales requeridas:**\n- `Supabase Grind` — configurar en nodes marcados\n\n**Tablas requeridas:**\nEjecutar primero `002_dashboard_stats.sql` en Supabase.",
+        "height": 280,
+        "width": 480
+      }
+    },
+    {
+      "id": "w6-cron",
+      "name": "⏰ CRON: Cada 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [300, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      }
+    },
+    {
+      "id": "w6-gyms",
+      "name": "📋 GET todos los gyms activos",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [520, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "gyms",
+        "filterType": "string",
+        "filterString": "plan_status=neq.cancelled",
+        "returnAll": true,
+        "options": { "select": "id,name,plan_status,features" }
+      }
+    },
+    {
+      "id": "w6-loop",
+      "name": "🔁 Loop por cada Gym",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [740, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "id": "w6-parallel",
+      "name": "⚡ Queries en paralelo (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "jsCode": "// Este nodo orquesta múltiples queries a Supabase vía fetch\n// para calcular todos los KPIs del gym en una sola pasada.\nconst gym = $input.first().json;\nconst gymId = gym.id;\n\nconst SUPABASE_URL = $env['SUPABASE_URL'];\nconst SERVICE_KEY  = $env['SUPABASE_SERVICE_ROLE_KEY'];\nconst headers = {\n  'Authorization': `Bearer ${SERVICE_KEY}`,\n  'apikey': SERVICE_KEY,\n  'Content-Type': 'application/json',\n  'Prefer': 'return=representation'\n};\n\nconst today = new Date().toISOString().split('T')[0];\nconst monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();\nconst churnCutoff = new Date(Date.now() - 14*24*60*60*1000).toISOString();\n\nasync function q(path) {\n  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers });\n  return res.json();\n}\n\nconst [memberships, todayOrders, allLeads, todayBookings, rooms, recentAccess] = await Promise.all([\n  q(`memberships?gym_id=eq.${gymId}&select=status,price_per_cycle`),\n  q(`orders?gym_id=eq.${gymId}&status=eq.paid&created_at=gte.${today}&select=amount`),\n  q(`leads?gym_id=eq.${gymId}&select=stage,created_at`),\n  q(`bookings?gym_id=eq.${gymId}&status=eq.booked&select=id,class_id`),\n  q(`class_slots?gym_id=eq.${gymId}&select=capacity`),\n  q(`access_logs?gym_id=eq.${gymId}&status=eq.allowed&scanned_at=gte.${churnCutoff}&select=user_id`)\n]);\n\nconst active = memberships.filter(m => m.status === 'active');\nconst frozen = memberships.filter(m => m.status === 'frozen');\nconst expired = memberships.filter(m => m.status === 'expired');\nconst mrr = active.reduce((s, m) => s + (m.price_per_cycle || 0), 0);\nconst todayRevenue = (todayOrders || []).reduce((s, o) => s + (o.amount || 0), 0);\n\nconst totalLeads = allLeads.length;\nconst converted  = allLeads.filter(l => l.stage === 'converted').length;\nconst newLeads   = allLeads.filter(l => l.stage === 'new').length;\nconst crmRate    = totalLeads > 0 ? Math.round((converted / totalLeads) * 100) : 0;\n\nconst maxCapacity = (rooms || []).reduce((s, r) => s + (r.capacity || 0), 0);\nconst currentOcc  = (todayBookings || []).length;\n\n// Churn: members NOT seen in access_logs in last 14 days\nconst recentUserIds = new Set((recentAccess || []).map(a => a.user_id));\nconst churnRisk = active.filter(m => m.user_id && !recentUserIds.has(m.user_id)).length;\n\nreturn [{ json: {\n  gym_id: gymId,\n  gym_name: gym.name,\n  mrr,\n  today_revenue: todayRevenue,\n  active_members: active.length,\n  frozen_members: frozen.length,\n  expired_members: expired.length,\n  current_occupancy: currentOcc,\n  max_capacity: maxCapacity,\n  crm_total_leads: totalLeads,\n  crm_new_leads: newLeads,\n  crm_conversion_rate: crmRate,\n  churn_risk_count: churnRisk,\n  computed_at: new Date().toISOString()\n} }];"
+      }
+    },
+    {
+      "id": "w6-upsert",
+      "name": "💾 UPSERT gym_stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/gym_stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Prefer", "value": "resolution=merge-duplicates,return=minimal" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify([$json]) }}"
+      }
+    },
+    {
+      "id": "w6-next",
+      "name": "⏭️ Siguiente gym",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1400, 300],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "⏰ CRON: Cada 15 min":              { "main": [[{ "node": "📋 GET todos los gyms activos", "type": "main", "index": 0 }]] },
+    "📋 GET todos los gyms activos":     { "main": [[{ "node": "🔁 Loop por cada Gym",          "type": "main", "index": 0 }]] },
+    "🔁 Loop por cada Gym":              { "main": [[{ "node": "⚡ Queries en paralelo (Code)", "type": "main", "index": 0 }]] },
+    "⚡ Queries en paralelo (Code)":    { "main": [[{ "node": "💾 UPSERT gym_stats",            "type": "main", "index": 0 }]] },
+    "💾 UPSERT gym_stats":               { "main": [[{ "node": "⏭️ Siguiente gym",              "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "grind-project" }, { "name": "dashboard" }, { "name": "stats" }]
+}

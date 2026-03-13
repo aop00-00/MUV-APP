@@ -1,0 +1,161 @@
+{
+  "name": "WF8 — Event: Lead Convertido → Acción Inmediata",
+  "meta": { "description": "Se dispara vía Supabase DB webhook cuando leads.stage cambia a 'converted'. Crea perfil de socio, asigna membresía provisional, envía WhatsApp de bienvenida al nuevo socio, notifica al admin." },
+  "nodes": [
+    {
+      "id": "sticky-wf8",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -240],
+      "parameters": {
+        "content": "## WF8 — Lead → Convertido\n\n**Trigger:** Supabase DB Webhook\n- Tabla: `leads`\n- Evento: UPDATE\n- Filtro: `new.stage = 'converted'`\n- URL: https://aop00.app.n8n.cloud/webhook/grind-lead-converted\n\n**Qué hace cuando un lead es convertido:**\n1. Verifica que no tenga ya un perfil (duplicados)\n2. Crea un `invite` de auth en Supabase para que pueda hacer login\n3. INSERT en `profiles` con gym_id correcto\n4. WhatsApp de bienvenida al nuevo socio\n5. WhatsApp al admin: confirmación de conversión\n\n**Requiere:**\n- `Supabase Grind` credencial\n- `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID`",
+        "height": 290,
+        "width": 480
+      }
+    },
+    {
+      "id": "w8-hook",
+      "name": "🎯 Webhook: Lead Convertido",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-lead-converted",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "grind-lead-converted"
+    },
+    {
+      "id": "w8-parse",
+      "name": "🔍 Extraer datos del lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 300],
+      "parameters": {
+        "jsCode": "// Supabase DB Webhook payload\nconst body = $input.first().json;\nconst record = body.record || body; // new record after UPDATE\nconst oldRecord = body.old_record || {};\n\n// Only process if stage actually changed TO converted\nif (record.stage !== 'converted' || oldRecord.stage === 'converted') {\n  return [{ json: { skip: true, reason: 'Not a conversion event' } }];\n}\n\nreturn [{ json: {\n  skip: false,\n  leadId: record.id,\n  gymId: record.gym_id,\n  fullName: record.full_name,\n  email: record.email,\n  phone: record.phone?.replace(/[^0-9]/g, '') || null,\n  source: record.source,\n  notes: record.notes\n} }];"
+      }
+    },
+    {
+      "id": "w8-skip-check",
+      "name": "IF: Es conversión real?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.skip }}", "rightValue": false, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "w8-check-profile",
+      "name": "🔍 ¿Ya existe en profiles?",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1220, 200],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "profiles",
+        "filterType": "string",
+        "filterString": "email=eq.{{ $json.email }}",
+        "returnAll": false,
+        "limit": 1
+      }
+    },
+    {
+      "id": "w8-exists",
+      "name": "IF: Profile ya existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 200],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $input.all().length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "w8-invite",
+      "name": "📧 CREATE Auth User (invite)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1660, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['SUPABASE_URL'] }}/auth/v1/admin/users",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"email\": \"{{ $('w8-parse').item.json.email }}\", \"password\": null, \"email_confirm\": true, \"user_metadata\": { \"full_name\": \"{{ $('w8-parse').item.json.fullName }}\", \"gym_id\": \"{{ $('w8-parse').item.json.gymId }}\", \"role\": \"member\" } }"
+      }
+    },
+    {
+      "id": "w8-wa-socio",
+      "name": "📱 WhatsApp: Bienvenida al nuevo socio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1900, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $('w8-parse').item.json.phone }}\", \"type\": \"text\", \"text\": { \"body\": \"🎉 ¡Bienvenido/a a Grind, {{ $('w8-parse').item.json.fullName.split(' ')[0] }}! Tu acceso está listo.\\n\\n🔑 Activa tu cuenta aquí:\\n{{ $env['APP_URL'] }}/auth/login\\n\\n¿Necesitas ayuda? Responde este mensaje.\" } }"
+      }
+    },
+    {
+      "id": "w8-wa-admin",
+      "name": "📱 WhatsApp: Notificar admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1900, 340],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $env['ADMIN_PHONE'] }}\", \"type\": \"text\", \"text\": { \"body\": \"✅ ¡Nuevo socio convertido!\\n\\n👤 {{ $('w8-parse').item.json.fullName }}\\n📧 {{ $('w8-parse').item.json.email }}\\n📱 {{ $('w8-parse').item.json.phone }}\\n\\nRevisa el CRM: {{ $env['APP_URL'] }}/admin/crm\" } }"
+      }
+    },
+    {
+      "id": "w8-respond",
+      "name": "✅ Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2120, 200],
+      "parameters": { "respondWith": "text", "responseBody": "OK", "options": { "responseCode": 200 } }
+    }
+  ],
+  "connections": {
+    "🎯 Webhook: Lead Convertido":       { "main": [[{ "node": "🔍 Extraer datos del lead",       "type": "main", "index": 0 }]] },
+    "🔍 Extraer datos del lead":         { "main": [[{ "node": "IF: Es conversión real?",          "type": "main", "index": 0 }]] },
+    "IF: Es conversión real?":           { "main": [[{ "node": "🔍 ¿Ya existe en profiles?",       "type": "main", "index": 0 }]] },
+    "🔍 ¿Ya existe en profiles?":        { "main": [[{ "node": "IF: Profile ya existe?",           "type": "main", "index": 0 }]] },
+    "IF: Profile ya existe?":            { "main": [[{ "node": "📱 WhatsApp: Notificar admin",     "type": "main", "index": 0 }], [{ "node": "📧 CREATE Auth User (invite)", "type": "main", "index": 0 }]] },
+    "📧 CREATE Auth User (invite)":      { "main": [[{ "node": "📱 WhatsApp: Bienvenida al nuevo socio", "type": "main", "index": 0 }]] },
+    "📱 WhatsApp: Bienvenida al nuevo socio": { "main": [[{ "node": "📱 WhatsApp: Notificar admin", "type": "main", "index": 0 }]] },
+    "📱 WhatsApp: Notificar admin":      { "main": [[{ "node": "✅ Respond 200",                  "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "crm" }, { "name": "onboarding" }]
+}

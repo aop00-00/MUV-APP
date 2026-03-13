@@ -1,7 +1,7 @@
 // app/components/landing/Pricing.tsx
 // 4-column pricing — Mensual / Anual toggle, Enterprise contact column.
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { Link } from "react-router";
 import { Check, Building2, Sparkles, Zap, Rocket } from "lucide-react";
 import { ScrollReveal } from "~/components/ui/scroll-reveal";

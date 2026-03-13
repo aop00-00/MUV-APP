@@ -1,0 +1,105 @@
+{
+  "name": "WF12 — Onboarding: New Studio Activation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-onboarding",
+        "options": {}
+      },
+      "id": "7648f076-47ee-499d-a6b8-be009ff3f369",
+      "name": "Webhook: App Registration",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "grind-onboarding-trigger"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "onboarding_status",
+              "value": "completed"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a4694e95-7caa-4c23-abbc-2a5d62b91e23",
+      "name": "Prepare Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"status\": \"success\", \"message\": \"Studio synced successfully\"}",
+        "options": {}
+      },
+      "id": "aecdd5f7-c3cc-43de-8696-dc569c9fdfbe",
+      "name": "Response to App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "table": "gyms",
+        "filters": [
+          {
+            "column": "id",
+            "operator": "eq",
+            "value": "={{ $json.gym_id }}"
+          }
+        ],
+        "options": {}
+      },
+      "id": "ae214fda-70e0-4ba0-bcce-20a5a6a803ac",
+      "name": "Supabase: Verify Studio",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: App Registration": {
+      "main": [
+        [
+          {
+            "node": "Prepare Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Data": {
+      "main": [
+        [
+          {
+            "node": "Supabase: Verify Studio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase: Verify Studio": {
+      "main": [
+        [
+          {
+            "node": "Response to App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "WF12-Onboarding-Trigger"
+}

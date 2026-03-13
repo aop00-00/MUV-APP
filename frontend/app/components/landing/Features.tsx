@@ -2,7 +2,7 @@
 // Bento grid layout with animated mini-demos for each feature.
 // All animations via CSS transitions + React useState/useEffect (no framer-motion).
 
-import { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Lock, Smartphone, Globe, CalendarCheck, QrCode, Receipt, TrendingUp } from "lucide-react";
 import { ScrollReveal } from "~/components/ui/scroll-reveal";
 

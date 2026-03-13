@@ -1,0 +1,140 @@
+{
+  "name": "WF4 — Onboarding Nuevo Gym (SaaS)",
+  "meta": { "description": "Se dispara cuando un gym owner completa el checkout de su plan SaaS. Crea el registro en la tabla gyms. Crea el perfil del owner. Envía email + WhatsApp de bienvenida. Maqueta lista — solo agrega credenciales." },
+  "nodes": [
+    {
+      "id": "sticky-onb",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200],
+      "parameters": {
+        "content": "## WF4 — Onboarding Nuevo Gym\n\n**Credenciales requeridas:**\n1. `Supabase Grind` — URL + Service Role Key\n2. `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` — Env vars\n3. `SMTP Grind` — Credencial SMTP\n4. `SUPABASE_SERVICE_ROLE_KEY` — Env var\n\n**Quién llama este webhook:**\n- El WF1 (SaaS path), después de activar el plan\n- O directamente desde el route `/api/onboarding` del frontend\n\n**URL del Webhook:**\nhttps://aop00.app.n8n.cloud/webhook/grind-onboarding\n\n**Payload esperado:**\n```json\n{ \"ownerName\": \"str\", \"ownerEmail\": \"str\", \"ownerPhone\": \"str\", \"gymName\": \"str\", \"planId\": \"str\", \"userId\": \"uuid\" }```",
+        "height": 320,
+        "width": 500
+      }
+    },
+    {
+      "id": "onb1",
+      "name": "🆕 Webhook: Nuevo Gym",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-onboarding",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "grind-onboarding"
+    },
+    {
+      "id": "onb2",
+      "name": "🏋️ CREATE gym en Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [780, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "gyms",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "owner_id",    "value": "={{ $json.userId }}" },
+            { "fieldId": "name",        "value": "={{ $json.gymName }}" },
+            { "fieldId": "slug",        "value": "={{ $json.gymName.toLowerCase().replace(/[^a-z0-9]/g, '-') }}" },
+            { "fieldId": "plan_id",     "value": "={{ $json.planId || 'starter' }}" },
+            { "fieldId": "plan_status", "value": "trial" },
+            { "fieldId": "plan_expires_at", "value": "={{ new Date(Date.now() + 14*24*60*60*1000).toISOString() }}" },
+            { "fieldId": "currency",    "value": "MXN" },
+            { "fieldId": "timezone",    "value": "America/Mexico_City" },
+            { "fieldId": "country_code","value": "MX" },
+            { "fieldId": "features",    "value": "={\"fitcoins\":true,\"waitlist\":true,\"fiscal\":false,\"qrAccess\":true}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "onb3",
+      "name": "👤 UPDATE profile: asignar gym_id",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1000, 300],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "update",
+        "tableId": "profiles",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $('onb1').item.json.userId }}",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "gym_id", "value": "={{ $json.id }}" },
+            { "fieldId": "role",   "value": "admin" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "onb4",
+      "name": "📧 Email: Bienvenida + Credenciales",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1220, 200],
+      "credentials": { "smtp": { "name": "SMTP Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "sendTo": "={{ $('onb1').item.json.ownerEmail }}",
+        "subject": "🎉 ¡Bienvenido a Grind Project, {{ $('onb1').item.json.ownerName.split(' ')[0] }}!",
+        "emailType": "html",
+        "message": "=<h1>¡Tu gym ya está activo!</h1><p>Hola <strong>{{ $('onb1').item.json.ownerName.split(' ')[0] }}</strong>,</p><p>Tu gimnasio <strong>{{ $('onb1').item.json.gymName }}</strong> ha sido registrado en Grind Project.</p><h2>Próximos pasos:</h2><ol><li>Accede a tu panel: <a href='{{ $env['APP_URL'] }}/admin'>{{ $env['APP_URL'] }}/admin</a></li><li>Personaliza tu marca (logo, colores)</li><li>Crea tus primeras clases</li><li>Invita a tus socios</li><li>Conecta tu cuenta de Mercado Pago en Configuración → Pagos</li></ol><p>Plan: <strong>{{ $('onb1').item.json.planId }}</strong></p><hr/><p>Equipo Grind Project</p>"
+      }
+    },
+    {
+      "id": "onb5",
+      "name": "📱 WhatsApp: Bienvenida",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1220, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "messaging_product", "value": "whatsapp" },
+            { "name": "to", "value": "=52{{ $('onb1').item.json.ownerPhone?.replace(/[^0-9]/g, '') }}" },
+            { "name": "type", "value": "text" },
+            { "name": "text", "value": "={\"body\": \"🎉 ¡Hola {{ $('onb1').item.json.ownerName.split(' ')[0] }}! Tu gym *{{ $('onb1').item.json.gymName }}* ya está activo en Grind Project.\\n\\n👉 Entra a tu panel: {{ $env['APP_URL'] }}/admin\\n\\n¿Tienes dudas? Responde este mensaje.\" }" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "onb6",
+      "name": "✅ Respond: gym creado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"gymId\": \"{{ $('onb2').item.json.id }}\" }",
+        "options": { "responseCode": 201 }
+      }
+    }
+  ],
+  "connections": {
+    "🆕 Webhook: Nuevo Gym":               { "main": [[{ "node": "🏋️ CREATE gym en Supabase",       "type": "main", "index": 0 }]] },
+    "🏋️ CREATE gym en Supabase":           { "main": [[{ "node": "👤 UPDATE profile: asignar gym_id", "type": "main", "index": 0 }]] },
+    "👤 UPDATE profile: asignar gym_id":   { "main": [[{ "node": "📧 Email: Bienvenida + Credenciales", "type": "main", "index": 0 }], [{ "node": "📱 WhatsApp: Bienvenida", "type": "main", "index": 0 }]] },
+    "📧 Email: Bienvenida + Credenciales": { "main": [[{ "node": "✅ Respond: gym creado",           "type": "main", "index": 0 }]] },
+    "📱 WhatsApp: Bienvenida":             { "main": [[{ "node": "✅ Respond: gym creado",           "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "onboarding" }]
+}

@@ -1,0 +1,347 @@
+{
+  "name": "WF1 — Mercado Pago Webhook Central",
+  "meta": { "templateId": "grind-wf1", "description": "Recibe IPN de Mercado Pago. Verifica firma HMAC. Enruta a Flujo SaaS (activa gym) o Flujo Tenant (procesa venta B2C: orders, créditos, CFDI, FitCoins, WhatsApp). Maqueta lista — solo agrega credenciales." },
+  "nodes": [
+    {
+      "id": "sticky-legend",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200],
+      "parameters": {
+        "content": "## WF1 — Mercado Pago Webhook Central\n\n**Credenciales requeridas:**\n1. `Supabase Grind` — URL + Service Role Key\n2. `MERCADO_PAGO_WEBHOOK_SECRET` — Variables de entorno n8n\n3. `TAX_PROVIDER_API_KEY` — Variables de entorno n8n\n4. `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` — Variables de entorno n8n\n\n**Cómo activar:**\n1. Agrega las credenciales en n8n → Credentials\n2. Configura las variables de entorno en n8n Settings\n3. Copia la URL del Webhook Trigger\n4. Pégala como `N8N_WEBHOOK_MP_URL` en tu `.env` del proyecto\n5. Activa el workflow\n\n**URL del Webhook:**\nhttps://aop00.app.n8n.cloud/webhook/grind-mp-ipn",
+        "height": 280,
+        "width": 500
+      }
+    },
+    {
+      "id": "n1",
+      "name": "🔵 Webhook: MP IPN",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-mp-ipn",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "webhookId": "grind-mp-ipn"
+    },
+    {
+      "id": "n2",
+      "name": "🔐 Verificar Firma HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 300],
+      "parameters": {
+        "jsCode": "const xSignature = $input.first().headers['x-signature'] || '';\nconst xRequestId = $input.first().headers['x-request-id'] || '';\nconst rawBody = $input.first().body;\nconst secret = $env['MERCADO_PAGO_WEBHOOK_SECRET'];\n\n// DEV: skip if no secret configured\nif (!secret) {\n  return [{ json: { valid: true, body: JSON.parse(rawBody || '{}'), xRequestId } }];\n}\n\nconst ts = (xSignature.match(/ts=(\\d+)/) || [])[1];\nconst v1 = (xSignature.match(/v1=([^,]+)/) || [])[1];\n\nif (!ts || !v1) {\n  return [{ json: { valid: false, reason: 'Missing ts or v1' } }];\n}\n\nlet parsedBody;\ntry { parsedBody = JSON.parse(rawBody || '{}'); } catch { parsedBody = {}; }\n\nconst dataId = parsedBody?.data?.id ?? '';\nconst manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;\n\nconst crypto = require('crypto');\nconst computed = crypto.createHmac('sha256', secret).update(manifest).digest('base64');\nconst valid = computed === v1;\n\nreturn [{ json: { valid, body: parsedBody, xRequestId, manifest } }];"
+      }
+    },
+    {
+      "id": "n3",
+      "name": "IF: Firma válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "n4-reject",
+      "name": "❌ Responder 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 480],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Unauthorized",
+        "options": { "responseCode": 401 }
+      }
+    },
+    {
+      "id": "n5",
+      "name": "IF: type == payment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1220, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.body.type }}", "rightValue": "payment", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "n6-ignore",
+      "name": "✅ OK (ignorar)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1220, 480],
+      "parameters": { "respondWith": "text", "responseBody": "OK", "options": { "responseCode": 200 } }
+    },
+    {
+      "id": "n7",
+      "name": "🌐 Fetch Payment de MP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.mercadopago.com/v1/payments/{{ $json.body.data.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['MERCADO_PAGO_ACCESS_TOKEN_SAAS'] }}" }]
+        }
+      }
+    },
+    {
+      "id": "n8",
+      "name": "IF: status == approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.status }}", "rightValue": "approved", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "n9",
+      "name": "🔍 Parsear external_reference",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1880, 300],
+      "parameters": {
+        "jsCode": "const ref = $json.external_reference || '';\nconst paymentId = String($json.id);\nconst amount = $json.transaction_amount;\nconst payerEmail = $json.payer?.email || null;\n\nconst flowMatch  = ref.match(/flow:(saas|tenant)/);\nconst userMatch  = ref.match(/user:([^:]+)/);\nconst gymMatch   = ref.match(/gym:([^:]+)/);\n\nif (!flowMatch || !userMatch) {\n  throw new Error('No se puede parsear external_reference: ' + ref);\n}\n\nreturn [{ json: {\n  flowType: flowMatch[1],\n  userId:   userMatch[1],\n  gymId:    gymMatch?.[1] || null,\n  paymentId,\n  amount,\n  payerEmail\n} }];"
+      }
+    },
+    {
+      "id": "n10",
+      "name": "🔀 Switch: SaaS vs Tenant",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2100, 300],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.flowType }}", "rightValue": "saas", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "outputKey": "SaaS" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.flowType }}", "rightValue": "tenant", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "outputKey": "Tenant" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n11-saas",
+      "name": "🏢 [SaaS] Activar Plan en gyms",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2320, 160],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "update",
+        "tableId": "gyms",
+        "filterType": "string",
+        "filterString": "owner_id=eq.{{ $json.userId }}",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "plan_status", "fieldValue": "active" },
+            { "fieldId": "saas_mp_payment_id", "fieldValue": "={{ $json.paymentId }}" },
+            { "fieldId": "updated_at", "fieldValue": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n12-tenant",
+      "name": "📦 [Tenant] UPDATE orders → paid",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2320, 440],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "update",
+        "tableId": "orders",
+        "filterType": "string",
+        "filterString": "user_id=eq.{{ $json.userId }}&gym_id=eq.{{ $json.gymId }}&status=eq.pending",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "status", "fieldValue": "paid" },
+            { "fieldId": "mp_payment_id", "fieldValue": "={{ $json.paymentId }}" },
+            { "fieldId": "updated_at", "fieldValue": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n13-gymdata",
+      "name": "🏋️ GET gym config (features, fiscal)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2540, 440],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "gyms",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $('n9').item.json.gymId }}",
+        "limit": 1,
+        "returnAll": false
+      }
+    },
+    {
+      "id": "n14-fiscal",
+      "name": "IF: fiscal habilitado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2760, 440],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.features?.fiscal }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "n15-cfdi",
+      "name": "🧾 Emitir CFDI / Factura",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2980, 340],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['CFDI_WEBHOOK_URL'] || 'https://TU-PROVEEDOR-PAC.mx/cfdi/emit' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['TAX_PROVIDER_API_KEY'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "reference_id", "value": "={{ $('n12-tenant').item.json.id }}" },
+            { "name": "customer_email", "value": "={{ $('n9').item.json.payerEmail }}" },
+            { "name": "total", "value": "={{ $('n9').item.json.amount }}" },
+            { "name": "tax_region", "value": "={{ $('n13-gymdata').item.json.tax_region }}" },
+            { "name": "rfc", "value": "={{ $('n13-gymdata').item.json.rfc }}" },
+            { "name": "description", "value": "Servicios de fitness Grind Project" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n16-invoice",
+      "name": "💾 INSERT invoice en Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3200, 340],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "invoices",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "order_id", "value": "={{ $('n12-tenant').item.json.id }}" },
+            { "fieldId": "gym_id", "value": "={{ $('n9').item.json.gymId }}" },
+            { "fieldId": "user_id", "value": "={{ $('n9').item.json.userId }}" },
+            { "fieldId": "status", "value": "=={{ $json.success ? 'issued' : 'error' }}" },
+            { "fieldId": "cfdi_uuid", "value": "={{ $json.uuid || null }}" },
+            { "fieldId": "pdf_url", "value": "={{ $json.pdf_url || null }}" },
+            { "fieldId": "xml_url", "value": "={{ $json.xml_url || null }}" },
+            { "fieldId": "total", "value": "={{ $('n9').item.json.amount }}" },
+            { "fieldId": "issued_at", "value": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n17-fitcoins",
+      "name": "🪙 INSERT FitCoins (+1 por $10)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3200, 540],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "fitcoins",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "gym_id", "value": "={{ $('n9').item.json.gymId }}" },
+            { "fieldId": "user_id", "value": "={{ $('n9').item.json.userId }}" },
+            { "fieldId": "amount", "value": "={{ Math.floor($('n9').item.json.amount / 10) }}" },
+            { "fieldId": "source", "value": "purchase" },
+            { "fieldId": "description", "value": "=Compra +{{ Math.floor($('n9').item.json.amount / 10) }} FitCoins" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n18-whatsapp",
+      "name": "📱 WhatsApp: Pago confirmado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3420, 440],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "messaging_product", "value": "whatsapp" },
+            { "name": "to", "value": "=52{{ $env['TEST_WHATSAPP_PHONE'] }}" },
+            { "name": "type", "value": "text" },
+            { "name": "text", "value": "={ \"body\": \"✅ ¡Pago confirmado! ${{ $('n9').item.json.amount }} MXN recibido. Ya puedes reservar tus clases en Grind Project 💪\" }" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n19-ok",
+      "name": "✅ Respond 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3640, 440],
+      "parameters": { "respondWith": "text", "responseBody": "OK", "options": { "responseCode": 200 } }
+    }
+  ],
+  "connections": {
+    "🔵 Webhook: MP IPN":               { "main": [[{ "node": "🔐 Verificar Firma HMAC",        "type": "main", "index": 0 }]] },
+    "🔐 Verificar Firma HMAC":           { "main": [[{ "node": "IF: Firma válida?",               "type": "main", "index": 0 }]] },
+    "IF: Firma válida?":                 { "main": [[{ "node": "IF: type == payment?", "type": "main", "index": 0 }], [{ "node": "❌ Responder 401", "type": "main", "index": 0 }]] },
+    "IF: type == payment?":              { "main": [[{ "node": "🌐 Fetch Payment de MP",          "type": "main", "index": 0 }], [{ "node": "✅ OK (ignorar)", "type": "main", "index": 0 }]] },
+    "🌐 Fetch Payment de MP":            { "main": [[{ "node": "IF: status == approved?",          "type": "main", "index": 0 }]] },
+    "IF: status == approved?":           { "main": [[{ "node": "🔍 Parsear external_reference",    "type": "main", "index": 0 }]] },
+    "🔍 Parsear external_reference":     { "main": [[{ "node": "🔀 Switch: SaaS vs Tenant",        "type": "main", "index": 0 }]] },
+    "🔀 Switch: SaaS vs Tenant":         { "main": [[{ "node": "🏢 [SaaS] Activar Plan en gyms",   "type": "main", "index": 0 }], [{ "node": "📦 [Tenant] UPDATE orders → paid", "type": "main", "index": 0 }]] },
+    "🏢 [SaaS] Activar Plan en gyms":    { "main": [[{ "node": "✅ Respond 200 OK",               "type": "main", "index": 0 }]] },
+    "📦 [Tenant] UPDATE orders → paid":  { "main": [[{ "node": "🏋️ GET gym config (features, fiscal)", "type": "main", "index": 0 }]] },
+    "🏋️ GET gym config (features, fiscal)": { "main": [[{ "node": "IF: fiscal habilitado?",       "type": "main", "index": 0 }]] },
+    "IF: fiscal habilitado?":            { "main": [[{ "node": "🧾 Emitir CFDI / Factura",          "type": "main", "index": 0 }], [{ "node": "🪙 INSERT FitCoins (+1 por $10)", "type": "main", "index": 0 }]] },
+    "🧾 Emitir CFDI / Factura":          { "main": [[{ "node": "💾 INSERT invoice en Supabase",    "type": "main", "index": 0 }]] },
+    "💾 INSERT invoice en Supabase":     { "main": [[{ "node": "🪙 INSERT FitCoins (+1 por $10)",  "type": "main", "index": 0 }]] },
+    "🪙 INSERT FitCoins (+1 por $10)":   { "main": [[{ "node": "📱 WhatsApp: Pago confirmado",     "type": "main", "index": 0 }]] },
+    "📱 WhatsApp: Pago confirmado":      { "main": [[{ "node": "✅ Respond 200 OK",               "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "grind-project" }, { "name": "pagos" }]
+}

@@ -1,7 +1,7 @@
 // app/components/landing/FAQ.tsx
 // Footer-style two-column layout: left = contact header + FAQ accordion, right = contact form.
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { Mail, Instagram, Twitter } from "lucide-react";
 import { ScrollReveal } from "~/components/ui/scroll-reveal";
 

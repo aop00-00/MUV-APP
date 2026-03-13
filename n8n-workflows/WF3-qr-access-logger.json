@@ -1,0 +1,133 @@
+{
+  "name": "WF3 — QR Access Logger",
+  "meta": { "description": "Recibe eventos de acceso QR desde el frontend. Valida HMAC del token QR. Registra el acceso en access_logs de Supabase. Responde con allow/deny. Maqueta lista — solo agrega credenciales." },
+  "nodes": [
+    {
+      "id": "sticky-qr",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200],
+      "parameters": {
+        "content": "## WF3 — QR Access Logger\n\n**Credenciales requeridas:**\n1. `Supabase Grind` — URL + Service Role Key\n2. `QR_SECRET` — Variable de entorno n8n\n\n**Cómo usar:**\n1. El frontend llama a este webhook cuando el barista/coach escanea un QR\n2. Se valida la firma HMAC del token QR\n3. Se registra el acceso en `access_logs`\n4. Se responde con `{ allowed: true/false }`\n\n**URL del Webhook:**\nhttps://aop00.app.n8n.cloud/webhook/grind-qr-access\n\n**Payload esperado:**\n```json\n{ \"token\": \"<QR_TOKEN>\", \"userId\": \"uuid\", \"gymId\": \"uuid\" }```",
+        "height": 300,
+        "width": 500
+      }
+    },
+    {
+      "id": "qr1",
+      "name": "📷 Webhook: Scan QR",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [560, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grind-qr-access",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "grind-qr-access"
+    },
+    {
+      "id": "qr2",
+      "name": "🔐 Validar Token QR (HMAC)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 300],
+      "parameters": {
+        "jsCode": "const { token, userId, gymId } = $input.first().json;\nconst secret = $env['QR_SECRET'];\n\nif (!token || !userId || !gymId) {\n  return [{ json: { valid: false, reason: 'Missing fields', userId, gymId } }];\n}\n\ntry {\n  // Token format: base64(payload).HMAC\n  const parts = token.split('.');\n  if (parts.length !== 2) return [{ json: { valid: false, reason: 'Bad token format' } }];\n\n  const [encodedPayload, receivedSig] = parts;\n  const crypto = require('crypto');\n  const expectedSig = crypto.createHmac('sha256', secret).update(encodedPayload).digest('base64url');\n\n  if (receivedSig !== expectedSig) {\n    return [{ json: { valid: false, reason: 'Invalid signature', userId, gymId } }];\n  }\n\n  const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));\n\n  // Check expiry (token valid for 30 seconds)\n  const now = Date.now() / 1000;\n  if (payload.exp && payload.exp < now) {\n    return [{ json: { valid: false, reason: 'Token expired', userId, gymId } }];\n  }\n\n  // User in token must match request\n  if (payload.uid !== userId || payload.gid !== gymId) {\n    return [{ json: { valid: false, reason: 'User/gym mismatch', userId, gymId } }];\n  }\n\n  return [{ json: { valid: true, userId, gymId, payload } }];\n} catch(e) {\n  return [{ json: { valid: false, reason: e.message, userId, gymId } }];\n}"
+      }
+    },
+    {
+      "id": "qr3",
+      "name": "IF: Token válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "qr4-allow",
+      "name": "✅ INSERT access_log (allowed)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1220, 200],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "access_logs",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "user_id", "value": "={{ $json.userId }}" },
+            { "fieldId": "gym_id",  "value": "={{ $json.gymId }}" },
+            { "fieldId": "status",  "value": "allowed" },
+            { "fieldId": "method",  "value": "qr" },
+            { "fieldId": "scanned_at", "value": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qr5-deny",
+      "name": "❌ INSERT access_log (denied)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1220, 420],
+      "credentials": { "supabaseApi": { "name": "Supabase Grind ← AGREGAR CREDENCIAL" } },
+      "parameters": {
+        "operation": "create",
+        "tableId": "access_logs",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "user_id", "value": "={{ $json.userId }}" },
+            { "fieldId": "gym_id",  "value": "={{ $json.gymId }}" },
+            { "fieldId": "status",  "value": "denied" },
+            { "fieldId": "method",  "value": "qr" },
+            { "fieldId": "reason",  "value": "={{ $json.reason }}" },
+            { "fieldId": "scanned_at", "value": "={{ new Date().toISOString() }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qr6-ok",
+      "name": "✅ Respond: allowed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 200],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"allowed\": true, \"message\": \"Acceso permitido\" }",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "qr7-deny",
+      "name": "❌ Respond: denied",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 420],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"allowed\": false, \"reason\": \"{{ $('qr2').item.json.reason }}\" }",
+        "options": { "responseCode": 403 }
+      }
+    }
+  ],
+  "connections": {
+    "📷 Webhook: Scan QR":             { "main": [[{ "node": "🔐 Validar Token QR (HMAC)", "type": "main", "index": 0 }]] },
+    "🔐 Validar Token QR (HMAC)":      { "main": [[{ "node": "IF: Token válido?",          "type": "main", "index": 0 }]] },
+    "IF: Token válido?":               { "main": [[{ "node": "✅ INSERT access_log (allowed)", "type": "main", "index": 0 }], [{ "node": "❌ INSERT access_log (denied)", "type": "main", "index": 0 }]] },
+    "✅ INSERT access_log (allowed)":  { "main": [[{ "node": "✅ Respond: allowed",        "type": "main", "index": 0 }]] },
+    "❌ INSERT access_log (denied)":   { "main": [[{ "node": "❌ Respond: denied",         "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "acceso" }]
+}

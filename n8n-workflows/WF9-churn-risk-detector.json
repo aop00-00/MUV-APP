@@ -1,0 +1,160 @@
+{
+  "name": "WF9 — CRON: Churn Risk Detector",
+  "meta": { "description": "Corre diario 6AM. Detecta socios con membresía activa pero sin asistir en 14+ días. Escribe risk_level en user_stats. Manda alerta personalizada al socio (motivación) y resumen al admin." },
+  "nodes": [
+    {
+      "id": "sticky-wf9",
+      "name": "📋 INSTRUCCIONES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -240],
+      "parameters": {
+        "content": "## WF9 — Churn Risk Detector\n\n**Frecuencia:** Diario 6:00 AM\n\n**Criterios de riesgo:**\n- 🟡 MEDIO: Sin reserva en 7-13 días (membresía activa)\n- 🔴 ALTO: Sin reserva en 14+ días (membresía activa)\n- ⚫ CRÍTICO: 21+ días + membresía próxima a vencer\n\n**Qué hace:**\n1. Busca usuarios en riesgo vía SQL\n2. UPDATE risk_level en user_stats\n3. UPDATE gym_stats.churn_risk_count\n4. Envía WhatsApp motivacional al socio\n5. Envía resumen diario de riesgo al admin\n\n**Variables n8n requeridas:**\n- `ADMIN_PHONE` — teléfono del gym owner (sin +52)",
+        "height": 280,
+        "width": 460
+      }
+    },
+    {
+      "id": "w9-cron",
+      "name": "⏰ CRON: 6AM diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [300, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 6 * * *" }] }
+      }
+    },
+    {
+      "id": "w9-query",
+      "name": "🔍 GET socios en riesgo (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/rpc/get_churn_risk_users",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"days_threshold\": 7 }"
+      }
+    },
+    {
+      "id": "w9-any",
+      "name": "IF: Hay socios en riesgo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [740, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $input.all().length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "w9-loop",
+      "name": "🔁 Loop por socio en riesgo",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [960, 200],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "id": "w9-level",
+      "name": "🎯 Calcular nivel de riesgo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 200],
+      "parameters": {
+        "jsCode": "const user = $input.first().json;\nconst days = user.days_inactive || 0;\nconst expiresIn = user.days_until_expiry || 999;\n\nlet riskLevel, emoji, message;\n\nif (days >= 21 && expiresIn <= 7) {\n  riskLevel = 'critical';\n  emoji = '🆘';\n  message = `Hola ${user.first_name}, tu membresía vence en ${expiresIn} días y llevas ${days} días sin venir. ¡No pierdas tu progreso! Reserva ahora: ${$env['APP_URL']}/dashboard/schedule`;\n} else if (days >= 14) {\n  riskLevel = 'high';\n  emoji = '⚠️';\n  message = `Hola ${user.first_name}, ¡te echamos de menos! Llevas ${days} días sin entrenar. ¿Todo bien? Reserva tu clase aquí: ${$env['APP_URL']}/dashboard/schedule`;\n} else {\n  riskLevel = 'medium';\n  emoji = '💪';\n  message = `Hola ${user.first_name}, ¿cómo vas con tu entrenamiento? Llevas ${days} días sin asistir. ¡Acomódate una clase esta semana! ${$env['APP_URL']}/dashboard/schedule`;\n}\n\nreturn [{ json: { ...user, riskLevel, emoji, message, days } }];"
+      }
+    },
+    {
+      "id": "w9-update-stats",
+      "name": "💾 UPDATE user_stats.risk_level",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 200],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env['SUPABASE_URL'] }}/rest/v1/user_stats?user_id=eq.{{ $json.user_id }}&gym_id=eq.{{ $json.gym_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "apikey", "value": "={{ $env['SUPABASE_SERVICE_ROLE_KEY'] }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"risk_level\": \"{{ $json.riskLevel }}\", \"days_inactive\": {{ $json.days }} }"
+      }
+    },
+    {
+      "id": "w9-wa-socio",
+      "name": "📱 WhatsApp: Motivar al socio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $json.phone }}\", \"type\": \"text\", \"text\": { \"body\": \"{{ $json.emoji }} {{ $json.message }}\" } }"
+      }
+    },
+    {
+      "id": "w9-summary",
+      "name": "📊 Preparar resumen para admin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 460],
+      "parameters": {
+        "jsCode": "const users = $input.all();\nconst critical = users.filter(u => u.json.days_inactive >= 21).length;\nconst high = users.filter(u => u.json.days_inactive >= 14 && u.json.days_inactive < 21).length;\nconst medium = users.filter(u => u.json.days_inactive >= 7 && u.json.days_inactive < 14).length;\nconst total = users.length;\n\nconst message = `📊 Reporte de Riesgo Diario\\n\\n` +\n  `🆘 Críticos: ${critical}\\n` +\n  `⚠️ Alto riesgo: ${high}\\n` +\n  `💙 Medio riesgo: ${medium}\\n` +\n  `Total en seguimiento: ${total}\\n\\n` +\n  `Ver dashboard: ${$env['APP_URL']}/admin`;\n\nreturn [{ json: { summary: message, total, critical } }];"
+      }
+    },
+    {
+      "id": "w9-admin-wa",
+      "name": "📱 WhatsApp: Resumen al admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 460],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env['WHATSAPP_PHONE_ID'] }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env['WHATSAPP_TOKEN'] }}" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"messaging_product\": \"whatsapp\", \"to\": \"52{{ $env['ADMIN_PHONE'] }}\", \"type\": \"text\", \"text\": { \"body\": \"{{ $json.summary }}\" } }"
+      }
+    }
+  ],
+  "connections": {
+    "⏰ CRON: 6AM diario":           { "main": [[{ "node": "🔍 GET socios en riesgo (RPC)",     "type": "main", "index": 0 }]] },
+    "🔍 GET socios en riesgo (RPC)": { "main": [[{ "node": "IF: Hay socios en riesgo?",         "type": "main", "index": 0 }]] },
+    "IF: Hay socios en riesgo?":     { "main": [[{ "node": "🔁 Loop por socio en riesgo",       "type": "main", "index": 0 }], [{ "node": "📊 Preparar resumen para admin", "type": "main", "index": 0 }]] },
+    "🔁 Loop por socio en riesgo":   { "main": [[{ "node": "🎯 Calcular nivel de riesgo",       "type": "main", "index": 0 }]] },
+    "🎯 Calcular nivel de riesgo":   { "main": [[{ "node": "💾 UPDATE user_stats.risk_level",  "type": "main", "index": 0 }]] },
+    "💾 UPDATE user_stats.risk_level": { "main": [[{ "node": "📱 WhatsApp: Motivar al socio",  "type": "main", "index": 0 }]] },
+    "📊 Preparar resumen para admin": { "main": [[{ "node": "📱 WhatsApp: Resumen al admin",   "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "grind-project" }, { "name": "retención" }, { "name": "churn" }]
+}

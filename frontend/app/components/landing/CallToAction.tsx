@@ -1,7 +1,7 @@
 // app/components/landing/CallToAction.tsx
 // Scroll-driven 3D "container scroll" CTA — no framer-motion required.
 
-import { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { Link } from "react-router";
 
 // ─── ContainerScroll primitive ────────────────────────────────────────────────
