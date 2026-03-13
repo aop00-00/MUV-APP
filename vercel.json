@@ -1,6 +1,0 @@
-{
-  "buildCommand": "npm run build",
-  "installCommand": "npm install",
-  "outputDirectory": "build/client",
-  "framework": "react-router"
-}
