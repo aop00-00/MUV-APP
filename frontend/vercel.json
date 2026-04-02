@@ -1,3 +1,9 @@
 {
-    "framework": "react-router"
+    "framework": "react-router",
+    "crons": [
+        {
+            "path": "/cron/inactivity-check",
+            "schedule": "0 9 * * *"
+        }
+    ]
 }

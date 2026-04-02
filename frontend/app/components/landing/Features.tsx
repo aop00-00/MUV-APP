@@ -345,7 +345,8 @@ export default function Features() {
                 </ScrollReveal>
 
                 {/* Bento Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-6 gap-4 auto-rows-[200px]">
+                {/* Bento Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-4 md:auto-rows-[200px]">
 
                     {/* 1. Reservas online — Tall 2×2 */}
                     <ScrollReveal delay={0.1} className="md:col-span-2 md:row-span-2">
@@ -354,7 +355,7 @@ export default function Features() {
                                 <ReservasAnimation />
                             </div>
                             <div className="mt-4">
-                                <h3 className="text-xl text-white font-bold flex items-center gap-2">
+                                <h3 className="text-xl text-white font-semibold flex items-center gap-2">
                                     <CalendarCheck className="w-5 h-5 text-white/60" />
                                     Reservas online
                                 </h3>
@@ -372,7 +373,7 @@ export default function Features() {
                                 <FacturacionAnimation />
                             </div>
                             <div className="mt-2">
-                                <h3 className="text-xl text-white font-bold flex items-center gap-2">
+                                <h3 className="text-xl text-white font-semibold flex items-center gap-2">
                                     <Receipt className="w-5 h-5 text-white/60" />
                                     Facturación fiscal
                                 </h3>
@@ -388,7 +389,7 @@ export default function Features() {
                                 <QRAnimation />
                             </div>
                             <div className="mt-4">
-                                <h3 className="text-xl text-white font-bold flex items-center gap-2">
+                                <h3 className="text-xl text-white font-semibold flex items-center gap-2">
                                     <QrCode className="w-5 h-5 text-white/60" />
                                     Control de acceso QR
                                 </h3>
@@ -406,7 +407,7 @@ export default function Features() {
                                 <CRMAnimation />
                             </div>
                             <div className="mt-2">
-                                <h3 className="text-xl text-white font-bold flex items-center gap-2">
+                                <h3 className="text-xl text-white font-semibold flex items-center gap-2">
                                     <TrendingUp className="w-5 h-5 text-white/60" />
                                     CRM de leads
                                 </h3>
@@ -422,7 +423,7 @@ export default function Features() {
                                 <FitCoinsAnimation />
                             </div>
                             <div className="mt-4">
-                                <h3 className="text-xl text-white font-bold">⚡ FitCoins & gamificación</h3>
+                                <h3 className="text-xl text-white font-semibold">⚡ FitCoins & gamificación</h3>
                                 <p className="text-white/55 text-sm mt-1">Programa de lealtad que premia la asistencia y referidos. Tus clientas vuelven por los puntos.</p>
                             </div>
                         </div>
@@ -435,7 +436,7 @@ export default function Features() {
                                 <MultiSedeAnimation />
                             </div>
                             <div className="mt-4">
-                                <h3 className="text-xl text-white font-bold flex items-center gap-2">
+                                <h3 className="text-xl text-white font-semibold flex items-center gap-2">
                                     <Smartphone className="w-5 h-5 text-white/60" />
                                     Multi-sede
                                 </h3>

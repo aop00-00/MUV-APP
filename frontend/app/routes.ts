@@ -18,7 +18,19 @@ export default [
     // ─── Onboarding (SaaS customer journey) ─────────────────────
     ...prefix("onboarding", [
         layout("routes/onboarding/layout.tsx", [
-            index("routes/onboarding/_index.tsx"),
+            index("routes/onboarding/_index.tsx"), // Checkout existente (5 pasos)
+            // NEW: Post-checkout setup wizard (6-7 pasos adaptativos)
+            ...prefix("setup", [
+                layout("routes/onboarding/setup/layout.tsx", [
+                    index("routes/onboarding/setup/_index.tsx"),           // Paso 1: Welcome
+                    route("studio-type", "routes/onboarding/setup/studio-type.tsx"),  // Paso 2
+                    route("identity", "routes/onboarding/setup/identity.tsx"),        // Paso 3
+                    route("room", "routes/onboarding/setup/room.tsx"),               // Paso 4 (adaptativo)
+                    route("classes", "routes/onboarding/setup/classes.tsx"),         // Paso 5
+                    route("plans", "routes/onboarding/setup/plans.tsx"),             // Paso 6
+                    route("ready", "routes/onboarding/setup/ready.tsx"),             // Paso 7
+                ]),
+            ]),
         ]),
     ]),
 
@@ -38,6 +50,8 @@ export default [
 
     // ─── Admin Panel (Protected by role='admin') ─────────────────
     ...prefix("admin", [
+        // Upgrade page outside layout to avoid requireGymAdmin redirect loop
+        route("upgrade", "routes/admin/upgrade.tsx"),
         layout("routes/admin/layout.tsx", [
             index("routes/admin/_index.tsx"),
             // ── Clientes ──────────────────────────────────────────
@@ -77,5 +91,15 @@ export default [
     ]),
 
     // ─── API / Webhooks (No UI) ──────────────────────────────────
+    route("api/debug-db", "routes/api/debug-db.ts"),
+    route("api/test-auth", "routes/api/test-auth.ts"),
+    route("api/resources", "routes/api/resources.ts"),
+
+    // ─── Cron Jobs (Vercel Cron — protected by CRON_SECRET) ──────
+    route("cron/inactivity-check", "routes/cron/inactivity-check.ts"),
+
+    // ─── Gym Portal (Slug-based branded login/register) ─────────
+    // MUST be last — dynamic segment only matches when no static route does
+    route(":slug", "routes/gym-portal.tsx"),
 ] satisfies RouteConfig;
 

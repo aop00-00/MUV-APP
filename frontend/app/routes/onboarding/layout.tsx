@@ -3,6 +3,7 @@
 
 import { Outlet, Link } from "react-router";
 import ParticleBackground from "~/components/landing/ParticleBackground";
+import { Logo } from "~/components/landing/Hero";
 
 export default function OnboardingLayout() {
     return (
@@ -12,8 +13,7 @@ export default function OnboardingLayout() {
                 {/* Top bar */}
                 <header className="flex items-center justify-between px-6 py-4 border-b border-white/5">
                     <Link to="/" className="flex items-center gap-2">
-                        <span className="text-2xl">💪</span>
-                        <span className="font-black text-xl tracking-tight">Project Studio</span>
+                        <Logo />
                     </Link>
                     <Link to="/auth/login" className="text-sm text-gray-400 hover:text-white transition-colors">
                         Ya tengo cuenta →

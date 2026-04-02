@@ -59,6 +59,7 @@ export async function getGymMpToken(gymId: string): Promise<string> {
     if (error) {
         throw new Error(`Failed to fetch MP token for gym ${gymId}: ${error.message}`);
     }
+
     if (!data?.mp_access_token) {
         throw new Error(
             `Gym ${gymId} has no Mercado Pago access token configured. ` +
@@ -80,13 +81,15 @@ export async function getGymMpToken(gymId: string): Promise<string> {
  *                          • Flow 1 (SaaS): pass getSaasToken()
  *                          • Flow 2 (Tenant B2C): pass await getGymMpToken(gymId)
  * @param gymId          - Optional gym ID to embed in external_reference (B2C only)
+ * @param currency       - Currency code from gym settings (defaults to MXN)
  * @returns              - init_point URL (redirect the user here)
  */
 export async function createPreference(
     item: Product,
     userId: string,
     mpAccessToken: string,
-    gymId?: string
+    gymId?: string,
+    currency: string = "MXN"
 ): Promise<string> {
     // Build external_reference — parsed by the webhook to route the event correctly.
     // Format: "flow:{saas|tenant}:order:pending:user:{userId}[:gym:{gymId}]"
@@ -104,7 +107,7 @@ export async function createPreference(
                 picture_url: item.image_url ?? undefined,
                 category_id: item.category,
                 quantity: 1,
-                currency_id: "MXN",
+                currency_id: currency,
                 unit_price: item.price,
             },
         ],
@@ -118,7 +121,6 @@ export async function createPreference(
         },
         auto_return: "approved" as const,
         external_reference: externalRef,
-        // Supabase Edge Function URL — receives IPN notifications from Mercado Pago
         notification_url: process.env.N8N_WEBHOOK_MP_URL ?? `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
         statement_descriptor: "GRINDPROJECT",
     };
@@ -137,9 +139,8 @@ export async function createPreference(
 
     if (!response.ok) {
         const errorBody = await response.text();
-        console.error("Mercado Pago API error:", response.status, errorBody);
         throw new Error(
-            `Error al crear preferencia de pago (HTTP ${response.status}): ${response.statusText}`
+            `Error al crear preferencia de pago (HTTP ${response.status}): ${response.statusText}. Body: ${errorBody}`
         );
     }
 

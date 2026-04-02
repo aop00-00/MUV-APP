@@ -1,42 +1,128 @@
 // admin/ubicaciones.tsx — Mi Estudio > Ubicaciones (physical venues/branches)
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { MapPin, Plus, Pencil, Trash2, ExternalLink } from "lucide-react";
-
-interface Location {
-    id: string;
-    name: string;
-    address: string;
-    city: string;
-    country: string;
-    phone: string;
-    mapsUrl: string;
-    active: boolean;
-}
-
-const MOCK: Location[] = [];
+import { useFetcher } from "react-router";
+import type { Route } from "./+types/ubicaciones";
 
 const FLAG: Record<string, string> = { MX: "🇲🇽", AR: "🇦🇷", CL: "🇨🇱", CO: "🇨🇴", PE: "🇵🇪" };
 
 const EMPTY_FORM = { name: "", address: "", city: "", country: "MX", phone: "", mapsUrl: "" };
 
-export default function Ubicaciones() {
-    const [locations, setLocations] = useState<Location[]>(MOCK);
+// ─── Loader & Action ─────────────────────────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requirePlanAccess } = await import("~/services/plan-access.server");
+    const { getGymLocations } = await import("~/services/location.server");
+    const { gymId } = await requirePlanAccess(request, "/admin/ubicaciones");
+    const locations = await getGymLocations(gymId);
+    return { locations };
+}
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { createLocation, updateLocation, toggleLocation, deleteLocation } = await import("~/services/location.server");
+    const { gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "create") {
+        await createLocation({
+            gymId,
+            name: formData.get("name") as string,
+            address: formData.get("address") as string,
+            city: formData.get("city") as string,
+            country: formData.get("country") as string,
+            phone: formData.get("phone") as string || null,
+            mapsUrl: formData.get("mapsUrl") as string || null,
+        });
+        return { success: true, intent };
+    }
+
+    if (intent === "update") {
+        const locationId = formData.get("locationId") as string;
+        await updateLocation(locationId, gymId, {
+            name: formData.get("name") as string,
+            address: formData.get("address") as string,
+            city: formData.get("city") as string,
+            country: formData.get("country") as string,
+            phone: formData.get("phone") as string || null,
+            maps_url: formData.get("mapsUrl") as string || null,
+        });
+        return { success: true, intent };
+    }
+
+    if (intent === "toggle") {
+        const locationId = formData.get("locationId") as string;
+        const isActive = formData.get("isActive") === "true";
+        await toggleLocation(locationId, gymId, isActive);
+        return { success: true, intent };
+    }
+
+    if (intent === "delete") {
+        const locationId = formData.get("locationId") as string;
+        await deleteLocation(locationId, gymId);
+        return { success: true, intent };
+    }
+
+    return { success: true, intent };
+}
+
+// ─── Main Component ──────────────────────────────────────────────
+export default function Ubicaciones({ loaderData }: Route.ComponentProps) {
+    const { locations } = loaderData;
+    const fetcher = useFetcher();
+
     const [showModal, setShowModal] = useState(false);
     const [editId, setEditId] = useState<string | null>(null);
     const [form, setForm] = useState(EMPTY_FORM);
 
-    function openNew() { setForm(EMPTY_FORM); setEditId(null); setShowModal(true); }
-    function openEdit(l: Location) { setForm({ name: l.name, address: l.address, city: l.city, country: l.country, phone: l.phone, mapsUrl: l.mapsUrl }); setEditId(l.id); setShowModal(true); }
-    function save() {
-        if (editId) {
-            setLocations(ls => ls.map(l => l.id === editId ? { ...l, ...form } : l));
-        } else {
-            setLocations(ls => [...ls, { id: `l${Date.now()}`, ...form, active: true }]);
+    // Close modal after successful submission
+    useEffect(() => {
+        if (fetcher.data?.success && fetcher.state === "idle") {
+            setShowModal(false);
         }
-        setShowModal(false);
+    }, [fetcher.data, fetcher.state]);
+
+    function openNew() { setForm(EMPTY_FORM); setEditId(null); setShowModal(true); }
+    function openEdit(l: any) {
+        setForm({
+            name: l.name,
+            address: l.address,
+            city: l.city,
+            country: l.country,
+            phone: l.phone || "",
+            mapsUrl: l.maps_url || "",
+        });
+        setEditId(l.id);
+        setShowModal(true);
     }
-    const toggle = (id: string) => setLocations(ls => ls.map(l => l.id === id ? { ...l, active: !l.active } : l));
-    const remove = (id: string) => setLocations(ls => ls.filter(l => l.id !== id));
+
+    function save() {
+        const fd = new FormData();
+        fd.set("intent", editId ? "update" : "create");
+        if (editId) fd.set("locationId", editId);
+        fd.set("name", form.name);
+        fd.set("address", form.address);
+        fd.set("city", form.city);
+        fd.set("country", form.country);
+        fd.set("phone", form.phone);
+        fd.set("mapsUrl", form.mapsUrl);
+        fetcher.submit(fd, { method: "post" });
+    }
+
+    function toggle(id: string, currentActive: boolean) {
+        const fd = new FormData();
+        fd.set("intent", "toggle");
+        fd.set("locationId", id);
+        fd.set("isActive", String(!currentActive));
+        fetcher.submit(fd, { method: "post" });
+    }
+
+    function remove(id: string) {
+        const fd = new FormData();
+        fd.set("intent", "delete");
+        fd.set("locationId", id);
+        fetcher.submit(fd, { method: "post" });
+    }
 
     return (
         <div className="space-y-6">
@@ -60,7 +146,7 @@ export default function Ubicaciones() {
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {locations.map(l => (
-                        <div key={l.id} className={`bg-white/5 rounded-2xl border p-5 space-y-4 transition-opacity ${l.active ? "border-white/[0.08]" : "border-white/5 opacity-60"}`}>
+                        <div key={l.id} className={`bg-white/5 rounded-2xl border p-5 space-y-4 transition-opacity ${l.is_active ? "border-white/[0.08]" : "border-white/5 opacity-60"}`}>
                             <div className="flex items-start justify-between">
                                 <div className="flex items-center gap-3">
                                     <div className="w-10 h-10 bg-amber-50 border border-amber-100 rounded-xl flex items-center justify-center text-xl shrink-0">
@@ -72,7 +158,7 @@ export default function Ubicaciones() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-1">
-                                    <button onClick={() => openEdit(l)} className="p-1.5 hover:bg-white/5/10 rounded-lg"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
+                                    <button onClick={() => openEdit(l)} className="p-1.5 hover:bg-white/10 rounded-lg"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
                                     <button onClick={() => remove(l.id)} className="p-1.5 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5 text-red-400" /></button>
                                 </div>
                             </div>
@@ -83,11 +169,11 @@ export default function Ubicaciones() {
                             </div>
 
                             <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                                <button onClick={() => toggle(l.id)} className={`text-xs px-2.5 py-1 rounded-full font-semibold ${l.active ? "bg-green-100 text-green-700" : "bg-white/5/10 text-white/50"}`}>
-                                    {l.active ? "Activa" : "Inactiva"}
+                                <button onClick={() => toggle(l.id, l.is_active)} className={`text-xs px-2.5 py-1 rounded-full font-semibold ${l.is_active ? "bg-green-100 text-green-700" : "bg-white/10 text-white/50"}`}>
+                                    {l.is_active ? "Activa" : "Inactiva"}
                                 </button>
-                                {l.mapsUrl && (
-                                    <a href={l.mapsUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-amber-600 hover:underline font-medium">
+                                {l.maps_url && (
+                                    <a href={l.maps_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-amber-600 hover:underline font-medium">
                                         <ExternalLink className="w-3 h-3" /> Ver en mapa
                                     </a>
                                 )}
@@ -135,7 +221,7 @@ export default function Ubicaciones() {
                         </div>
                         <div className="p-6 border-t border-white/5 flex gap-3">
                             <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 border border-white/[0.08] rounded-xl text-sm font-medium text-white/60 hover:bg-white/5">Cancelar</button>
-                            <button onClick={save} disabled={!form.name || !form.address} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/5/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">Guardar</button>
+                            <button onClick={save} disabled={!form.name || !form.address} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">Guardar</button>
                         </div>
                     </div>
                 </div>

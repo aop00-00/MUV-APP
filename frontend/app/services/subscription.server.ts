@@ -118,18 +118,24 @@ export async function createMembership({
     planName,
     price,
     credits,
-    months = 1,
+    validityDays,
+    months,
 }: {
     userId: string;
     gymId: string;
     planName: string;
     price: number;
     credits: number;
+    validityDays?: number;
     months?: number;
 }): Promise<Subscription> {
     const startDate = new Date();
     const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + months);
+    if (validityDays) {
+        endDate.setDate(endDate.getDate() + validityDays);
+    } else {
+        endDate.setMonth(endDate.getMonth() + (months ?? 1));
+    }
 
     const { data, error } = await supabaseAdmin
         .from("memberships")

@@ -1,35 +1,23 @@
 import { useState } from "react";
-// Auth moved to dynamic import inside loader
 import type { Route } from "./+types/store";
 import type { Product } from "~/types/database";
 
-const MOCK_PRODUCTS: Product[] = [
-    {
-        id: "bev-001", name: "Proteína Whey", description: "Shake de proteína post-workout.", price: 65,
-        image_url: null, category: "beverage", stock: 24, is_active: true, created_at: "2025-01-01T00:00:00Z",
-    },
-    {
-        id: "bev-002", name: "Smoothie Verde", description: "Espinaca, plátano y proteína vegetal.", price: 55,
-        image_url: null, category: "beverage", stock: 15, is_active: true, created_at: "2025-01-01T00:00:00Z",
-    },
-    {
-        id: "bev-003", name: "Americano", description: "Café negro recién preparado.", price: 35,
-        image_url: null, category: "beverage", stock: 50, is_active: true, created_at: "2025-01-01T00:00:00Z",
-    },
-    {
-        id: "sup-001", name: "Creatina 300g", description: "Monohidrato de creatina pura.", price: 280,
-        image_url: null, category: "supplement", stock: 8, is_active: true, created_at: "2025-01-01T00:00:00Z",
-    },
-    {
-        id: "mer-001", name: "Playera Grind", description: "Playera oficial Grind Project.", price: 350,
-        image_url: null, category: "merch", stock: 12, is_active: true, created_at: "2025-01-01T00:00:00Z",
-    },
-];
-
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAuth } = await import("~/services/gym.server");
-    const { profile, gymId } = await requireGymAuth(request);
-    return { products: MOCK_PRODUCTS };
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAuth(request);
+
+    // Fetch active products for this gym (excluding plan category)
+    const { data: products } = await supabaseAdmin
+        .from("products")
+        .select("*")
+        .eq("gym_id", gymId)
+        .eq("is_active", true)
+        .in("category", ["beverage", "supplement", "merch", "package"])
+        .order("category", { ascending: true })
+        .order("created_at", { ascending: true });
+
+    return { products: products ?? [] };
 }
 
 export default function Store({ loaderData }: Route.ComponentProps) {
@@ -40,13 +28,15 @@ export default function Store({ loaderData }: Route.ComponentProps) {
         beverage: "🥤 Bebidas",
         supplement: "💊 Suplementos",
         merch: "👕 Merchandise",
+        package: "📦 Paquetes",
     };
 
     const filterOptions = [
         { id: "all", label: "Todo" },
         { id: "beverage", label: "Bebidas" },
         { id: "supplement", label: "Suplementos" },
-        { id: "merch", label: "Merchandise" }
+        { id: "merch", label: "Merchandise" },
+        { id: "package", label: "Paquetes" }
     ];
 
     const displayedProducts = filterCategory === "all"
@@ -64,23 +54,23 @@ export default function Store({ loaderData }: Route.ComponentProps) {
     );
 
     return (
-        <div className="space-y-8">
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="space-y-10 pb-10">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Tienda</h1>
-                    <p className="text-gray-500 mt-1">
-                        Compra bebidas, suplementos y merchandise oficial.
+                    <h1 className="text-4xl font-black text-white tracking-tight">Tienda</h1>
+                    <p className="text-white/60 mt-2 max-w-md text-lg">
+                        Productos oficiales de <span className="text-blue-600 font-bold">tu centro</span> para potenciar tu entrenamiento.
                     </p>
                 </div>
                 {/* Filter Bar */}
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 p-1.5 bg-white/10 rounded-2xl w-fit">
                     {filterOptions.map(option => (
                         <button
                             key={option.id}
                             onClick={() => setFilterCategory(option.id)}
-                            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors border ${filterCategory === option.id
-                                ? "bg-blue-600 border-blue-600 text-white shadow-sm"
-                                : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${filterCategory === option.id
+                                ? "bg-white/5 text-blue-600 shadow-sm"
+                                : "text-white/50 hover:text-white/70"
                                 }`}
                         >
                             {option.label}
@@ -89,47 +79,75 @@ export default function Store({ loaderData }: Route.ComponentProps) {
                 </div>
             </div>
 
-            {Object.entries(grouped).map(([category, items]) => (
-                <section key={category}>
-                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                        {categories[category] ?? category}
-                    </h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {items.map((product) => (
-                            <div
-                                key={product.id}
-                                className="bg-white border border-gray-200 rounded-xl overflow-hidden group hover:border-blue-400 transition-colors shadow-sm"
-                            >
-                                <div className="p-5">
-                                    <h3 className="font-semibold text-gray-900">{product.name}</h3>
-                                    {product.description && (
-                                        <p className="text-sm text-gray-500 mt-1 line-clamp-2">
-                                            {product.description}
-                                        </p>
+            {Object.keys(grouped).length > 0 ? (
+                (Object.entries(grouped) as [string, Product[]][]).map(([category, items]) => (
+                    <section key={category} className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                        <div className="flex items-center gap-4">
+                            <h2 className="text-xl font-bold text-white flex-shrink-0 flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-blue-600" />
+                                {categories[category] ?? category}
+                            </h2>
+                            <div className="h-[1px] w-full bg-gradient-to-r from-gray-100 to-transparent" />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                            {items.map((product) => (
+                                <div
+                                    key={product.id}
+                                    className="bg-white/5 border border-white/10 rounded-[32px] overflow-hidden group hover:border-blue-200 transition-all hover:shadow-2xl hover:shadow-blue-500/10 flex flex-col relative"
+                                >
+                                    {product.stock <= 5 && product.stock > 0 && (
+                                        <div className="absolute top-4 right-4 z-10 bg-amber-100 text-amber-600 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">
+                                            Últimas unidades
+                                        </div>
                                     )}
-                                    <div className="flex items-center justify-between mt-4">
-                                        <span className="text-blue-600 font-bold text-lg">
-                                            ${product.price.toFixed(2)}
-                                        </span>
-                                        <div className="flex items-center gap-3">
-                                            <span className="text-xs text-gray-400 font-medium bg-gray-100 px-2 py-1 rounded">
-                                                Stock: {product.stock}
-                                            </span>
+                                    
+                                    <div className="p-8 flex flex-col flex-1">
+                                        <div className="flex-1">
+                                            <div className="flex items-start justify-between mb-3">
+                                                <h3 className="font-extrabold text-white text-xl tracking-tight group-hover:text-blue-600 transition-colors">{product.name}</h3>
+                                            </div>
+                                            {product.description ? (
+                                                <p className="text-sm text-white/50 mt-2 line-clamp-3 leading-relaxed">
+                                                    {product.description}
+                                                </p>
+                                            ) : (
+                                                <p className="text-sm text-white/40 italic mt-2">Sin descripción disponible.</p>
+                                            )}
+                                        </div>
+                                        
+                                        <div className="mt-8 flex items-end justify-between">
+                                            <div className="flex flex-col">
+                                                <span className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em] mb-1">Inversión</span>
+                                                <span className="text-3xl font-black text-white">
+                                                    ${Number(product.price).toFixed(2)}
+                                                </span>
+                                            </div>
                                             <button
-                                                className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white rounded-lg transition-colors"
-                                                title="Añadir al carrito"
+                                                className="px-8 py-3.5 bg-gray-900 text-white font-black text-xs rounded-2xl hover:bg-blue-600 transition-all shadow-xl hover:shadow-blue-200 disabled:bg-white/10 disabled:text-white/40 disabled:shadow-none uppercase tracking-[0.15em]"
+                                                disabled={product.stock === 0}
                                             >
-                                                Comprar
+                                                {product.stock === 0 ? "Agotado" : "Adquirir"}
                                             </button>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                        ))}
+                            ))}
+                        </div>
+                    </section>
+                ))
+            ) : (
+                <div className="bg-white/5 rounded-[40px] p-24 text-center border border-white/10 shadow-sm">
+                    <div className="bg-white/5 w-24 h-24 rounded-[32px] flex items-center justify-center mx-auto mb-8 animate-bounce transition-all duration-1000">
+                        <span className="text-4xl text-white/40">📦</span>
                     </div>
-                </section>
-            ))}
+                    <h3 className="text-white text-2xl font-black tracking-tight">Catálogo pendiente</h3>
+                    <p className="text-white/50 text-sm mt-4 max-w-xs mx-auto leading-relaxed">
+                        {filterCategory === "all"
+                            ? "Aún no hay artículos disponibles en este centro. Vuelve pronto para ver las novedades."
+                            : `No hay artículos disponibles en la categoría ${filterOptions.find(o => o.id === filterCategory)?.label}.`}
+                    </p>
+                </div>
+            )}
         </div>
     );
-
 }

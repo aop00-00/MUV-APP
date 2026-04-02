@@ -5,7 +5,12 @@ import React from "react";
 // Uses CSS @keyframes via injected <style> for GPU-smooth animation.
 // position:fixed at z-index:-1 so it ALWAYS renders below all content.
 
-export default function ParticleBackground() {
+interface ParticleBackgroundProps {
+    isAbsolute?: boolean;
+    transparent?: boolean;
+}
+
+export default function ParticleBackground({ isAbsolute = false, transparent = false }: ParticleBackgroundProps) {
     return (
         <>
             <style>{`
@@ -40,11 +45,11 @@ export default function ParticleBackground() {
             <div
                 aria-hidden="true"
                 style={{
-                    position: "fixed",
+                    position: isAbsolute ? "absolute" : "fixed",
                     inset: 0,
                     zIndex: 0,
                     overflow: "hidden",
-                    background: "#050505",
+                    background: transparent ? "transparent" : "#050505",
                     pointerEvents: "none",
                 }}
             >
@@ -57,8 +62,8 @@ export default function ParticleBackground() {
                     height: "60vw",
                     borderRadius: "50%",
                     background: "radial-gradient(circle, rgba(200,110,20,0.45) 0%, rgba(150,70,10,0.2) 45%, transparent 70%)",
-                    filter: "blur(70px)",
-                    animation: "orbit1 22s ease-in-out infinite",
+                    filter: "blur(35px)",
+                    animation: "orbit1 12s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
@@ -71,8 +76,8 @@ export default function ParticleBackground() {
                     height: "65vw",
                     borderRadius: "50%",
                     background: "radial-gradient(circle, rgba(15,130,130,0.4) 0%, rgba(10,90,95,0.18) 45%, transparent 70%)",
-                    filter: "blur(80px)",
-                    animation: "orbit2 28s ease-in-out infinite",
+                    filter: "blur(40px)",
+                    animation: "orbit2 15s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
@@ -85,8 +90,8 @@ export default function ParticleBackground() {
                     height: "55vw",
                     borderRadius: "50%",
                     background: "radial-gradient(circle, rgba(25,110,75,0.38) 0%, rgba(15,75,50,0.16) 45%, transparent 70%)",
-                    filter: "blur(90px)",
-                    animation: "orbit3 25s ease-in-out infinite",
+                    filter: "blur(45px)",
+                    animation: "orbit3 13s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
@@ -99,8 +104,8 @@ export default function ParticleBackground() {
                     height: "50vw",
                     borderRadius: "50%",
                     background: "radial-gradient(circle, rgba(160,80,20,0.38) 0%, rgba(110,50,10,0.15) 45%, transparent 70%)",
-                    filter: "blur(85px)",
-                    animation: "orbit4 32s ease-in-out infinite",
+                    filter: "blur(42px)",
+                    animation: "orbit4 18s ease-in-out infinite",
                     willChange: "transform",
                 }} />
             </div>

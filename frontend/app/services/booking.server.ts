@@ -36,6 +36,64 @@ export interface UserBooking {
     class: ClassSlot;
 }
 
+// ── Create a new class ───────────────────────────────────────────
+export async function createClass(params: {
+    gymId: string;
+    title: string;
+    coach_id: string;
+    start_time: string; // ISO timestamp
+    end_time: string;   // ISO timestamp
+    capacity: number;
+    location: string;
+    room_id?: string;
+}): Promise<ClassSlot> {
+    const { gymId, title, coach_id, start_time, end_time, capacity, location, room_id } = params;
+
+    const { data, error } = await supabaseAdmin
+        .from("classes")
+        .insert({
+            gym_id: gymId,
+            title,
+            coach_id,
+            start_time,
+            end_time,
+            capacity,
+            current_enrolled: 0,
+            location,
+            room_id: room_id || null,
+        })
+        .select("*, coach:coaches(name)")
+        .single();
+
+    if (error) throw new Error(`Error creating class: ${error.message}`);
+    return data as ClassSlot;
+}
+
+// ── Delete a class ───────────────────────────────────────────────
+export async function deleteClass(classId: string, gymId: string): Promise<void> {
+    const { error } = await supabaseAdmin
+        .from("classes")
+        .delete()
+        .eq("id", classId)
+        .eq("gym_id", gymId);
+
+    if (error) throw new Error(`Error deleting class: ${error.message}`);
+}
+
+// ── Get all classes for a gym (weekly view) ─────────────────────
+export async function getClassesForGym(gymId: string): Promise<ClassSlot[]> {
+    if (!gymId) throw new Error("gymId is required for getClassesForGym");
+
+    const { data, error } = await supabaseAdmin
+        .from("classes")
+        .select("*, coach:coaches(name)")
+        .eq("gym_id", gymId)
+        .order("start_time", { ascending: true });
+
+    if (error) throw new Error(`Error fetching classes: ${error.message}`);
+    return (data ?? []) as ClassSlot[];
+}
+
 // ── Get classes for a specific date ──────────────────────────────
 export async function getClassesByDate(date: string, gymId: string): Promise<ClassSlot[]> {
     if (!gymId) {
@@ -47,7 +105,7 @@ export async function getClassesByDate(date: string, gymId: string): Promise<Cla
 
     const { data, error } = await supabaseAdmin
         .from("classes")
-        .select("*, coach:profiles!classes_coach_id_fkey(full_name)")
+        .select("*, coach:coaches(name)")
         .eq("gym_id", gymId)
         .gte("start_time", start)
         .lte("start_time", end)
@@ -161,6 +219,90 @@ export async function getWaitlistPosition(
     return data?.position ?? null;
 }
 
+// ── Sync classes from schedules ─────────────────────────────────
+export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: number = 4) {
+    if (!gymId) throw new Error("gymId is required for sync");
+
+    // 1. Get all active schedules for this gym
+    const { data: schedules, error: sError } = await supabaseAdmin
+        .from("schedules")
+        .select("*")
+        .eq("gym_id", gymId)
+        .eq("is_active", true);
+
+    if (sError) throw new Error(`Error fetching schedules for sync: ${sError.message}`);
+    if (!schedules || schedules.length === 0) return { success: true, count: 0 };
+
+    // 2. Clear future classes linked to schedules to avoid duplicates
+    // We only clear from 'now' onwards
+    const now = new Date().toISOString();
+    const { error: dError } = await supabaseAdmin
+        .from("classes")
+        .delete()
+        .eq("gym_id", gymId)
+        .not("schedule_id", "is", null)
+        .gte("start_time", now);
+
+    if (dError) throw new Error(`Error clearing old synced classes: ${dError.message}`);
+
+    // 3. Generate new class instances
+    const dayMap: Record<string, number> = { "Dom": 0, "Lun": 1, "Mar": 2, "Mié": 3, "Jue": 4, "Vie": 5, "Sáb": 6 };
+    const newClasses: any[] = [];
+
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setDate(startDate.getDate() + (weeksAhead * 7));
+
+    for (const schedule of schedules) {
+        const targetDays = (schedule.days as string[]) || [];
+        const dayIndices = targetDays.map(d => dayMap[d]).filter(d => d !== undefined);
+
+        // Iterate through each day in the range
+        let curr = new Date(startDate);
+        while (curr <= endDate) {
+            if (dayIndices.includes(curr.getDay())) {
+                // Combine date with schedule time
+                const [hours, minutes] = schedule.time.split(":").map(Number);
+                const start = new Date(curr);
+                start.setHours(hours, minutes, 0, 0);
+
+                // Skip if start time is in the past
+                if (start < new Date()) {
+                    curr.setDate(curr.getDate() + 1);
+                    continue;
+                }
+
+                const end = new Date(start);
+                end.setMinutes(end.getMinutes() + (schedule.duration || 60));
+
+                newClasses.push({
+                    gym_id: gymId,
+                    schedule_id: schedule.id,
+                    title: schedule.class_name,
+                    coach_id: schedule.coach_id, // Use ID if available
+                    capacity: schedule.capacity,
+                    location: schedule.room_name,
+                    room_id: schedule.room_id || null,
+                    start_time: start.toISOString(),
+                    end_time: end.toISOString(),
+                    current_enrolled: 0
+                });
+            }
+            curr.setDate(curr.getDate() + 1);
+        }
+    }
+
+    if (newClasses.length > 0) {
+        const { error: iError } = await supabaseAdmin
+            .from("classes")
+            .insert(newClasses);
+
+        if (iError) throw new Error(`Error inserting synced classes: ${iError.message}`);
+    }
+
+    return { success: true, count: newClasses.length };
+}
+
 // ── Server action helper (use in route actions) ───────────────────
 export async function handleBookingAction(request: Request) {
     const profile = await requireAuth(request);
@@ -174,7 +316,7 @@ export async function handleBookingAction(request: Request) {
     const intent = formData.get("intent") as string;
 
     if (intent === "book") {
-        const classId = formData.get("class_id") as string;
+        const classId = formData.get("classId") as string;
         const result = await bookClass(classId, profile.id, gymId);
         if (result.error === "class_full") {
             // Auto-join waitlist if class is full
@@ -184,7 +326,7 @@ export async function handleBookingAction(request: Request) {
     }
 
     if (intent === "cancel") {
-        const bookingId = formData.get("booking_id") as string;
+        const bookingId = formData.get("bookingId") as string;
         return cancelBooking(bookingId, profile.id, gymId);
     }
 

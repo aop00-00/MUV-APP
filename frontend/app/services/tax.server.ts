@@ -1,40 +1,31 @@
-// app/services/tax.service.ts
-// Fiscal receipt emission for MX (CFDI 4.0), AR (AFIP), CL (SII).
-// Currently uses mock/webhook approach – swap provider URLs for production.
+// app/services/tax.server.ts
+// Fiscal receipt emission — CFDI 4.0 (Mexico) only for now.
+// AR (AFIP) and CL (SII) support will be added in a future phase.
 
 import type { Order } from "~/types/database";
 import type { InvoiceRecord, TaxRegion } from "~/types/database";
 
 // ─── Configuration ────────────────────────────────────────────────
-const TAX_WEBHOOK_URLS: Record<TaxRegion, string> = {
-    MX: process.env.CFDI_WEBHOOK_URL ?? "https://api.fiscalprovider.mx/cfdi/emit",
-    AR: process.env.AFIP_WEBHOOK_URL ?? "https://api.fiscalprovider.ar/factura/emit",
-    CL: process.env.SII_WEBHOOK_URL ?? "https://api.fiscalprovider.cl/boleta/emit",
-};
+const CFDI_WEBHOOK_URL = process.env.CFDI_WEBHOOK_URL ?? "https://api.fiscalprovider.mx/cfdi/emit";
 
-const TAX_RATES: Record<TaxRegion, number> = {
-    MX: 0.16,  // IVA 16%
-    AR: 0.21,  // IVA 21%
-    CL: 0.19,  // IVA 19%
-};
+// IVA rate for Mexico
+const MX_TAX_RATE = 0.16;
 
 // ─── Types ────────────────────────────────────────────────────────
-interface ProviderPayload {
+interface CfdiPayload {
     reference_id: string;
     customer_email: string;
     subtotal: number;
     tax_amount: number;
     total: number;
-    tax_region: TaxRegion;
+    tax_region: "MX";
     description: string;
     issued_at: string;
 }
 
-interface ProviderResponse {
+interface CfdiResponse {
     success: boolean;
-    uuid?: string;         // MX: CFDI UUID
-    cae?: string;          // AR: CAE
-    folio?: string;        // CL: Folio SII
+    uuid?: string;         // CFDI UUID
     pdf_url?: string;
     xml_url?: string;
     error?: string;
@@ -43,31 +34,36 @@ interface ProviderResponse {
 // ─── Main Function ────────────────────────────────────────────────
 
 /**
- * Emits a fiscal receipt (CFDI/AFIP/SII) for an order.
- * Calls the regional tax provider webhook and returns a typed InvoiceRecord.
+ * Emits a CFDI 4.0 fiscal receipt for an order (Mexico only).
+ * Calls the CFDI provider webhook and returns a typed InvoiceRecord.
  *
  * @param order      - The paid order to invoice
  * @param userEmail  - Customer email for the receipt
- * @param taxRegion  - Fiscal jurisdiction (MX | AR | CL)
- * @returns          InvoiceRecord with all fiscal identifiers
+ * @param taxRegion  - Must be "MX" for now; other regions throw an error
+ * @returns          InvoiceRecord with CFDI identifiers
  */
 export async function emitFiscalReceipt(
     order: Pick<Order, "id" | "total" | "user_id">,
     userEmail: string,
     taxRegion: TaxRegion
 ): Promise<InvoiceRecord> {
-    const taxRate = TAX_RATES[taxRegion];
-    const subtotal = Math.round((order.total / (1 + taxRate)) * 100) / 100;
-    const taxAmount = Math.round(order.total - subtotal * 100) / 100;
+    if (taxRegion !== "MX") {
+        throw new Error(
+            `Tax region "${taxRegion}" is not yet supported. Only CFDI (MX) is available.`
+        );
+    }
+
+    const subtotal = Math.round((order.total / (1 + MX_TAX_RATE)) * 100) / 100;
+    const taxAmount = Math.round((order.total - subtotal) * 100) / 100;
     const issuedAt = new Date().toISOString();
 
-    const payload: ProviderPayload = {
+    const payload: CfdiPayload = {
         reference_id: order.id,
         customer_email: userEmail,
         subtotal,
         tax_amount: taxAmount,
         total: order.total,
-        tax_region: taxRegion,
+        tax_region: "MX",
         description: `Servicios de fitness – Orden ${order.id}`,
         issued_at: issuedAt,
     };
@@ -75,40 +71,39 @@ export async function emitFiscalReceipt(
     // In development / no webhook configured: return a mock issued invoice
     const isDev = process.env.NODE_ENV !== "production";
     if (isDev) {
-        return buildMockInvoice(order, userEmail, taxRegion, subtotal, taxAmount, issuedAt);
+        return buildMockInvoice(order, subtotal, taxAmount, issuedAt);
     }
 
-    // ── Production: call regional provider ───────────────────────
-    let providerResponse: ProviderResponse;
+    // ── Production: call CFDI provider ─────────────────────────────
+    let providerResponse: CfdiResponse;
     try {
-        const res = await fetch(TAX_WEBHOOK_URLS[taxRegion], {
+        const res = await fetch(CFDI_WEBHOOK_URL, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${process.env.TAX_PROVIDER_API_KEY}`,
+                Authorization: `Bearer ${process.env.CFDI_PROVIDER_API_KEY}`,
             },
             body: JSON.stringify(payload),
         });
 
         if (!res.ok) {
-            throw new Error(`Provider HTTP ${res.status}: ${await res.text()}`);
+            throw new Error(`CFDI provider HTTP ${res.status}: ${await res.text()}`);
         }
-        providerResponse = (await res.json()) as ProviderResponse;
+        providerResponse = (await res.json()) as CfdiResponse;
     } catch (err) {
-        console.error("[tax.service] Fiscal emission failed:", err);
-        return buildErrorInvoice(order, userEmail, taxRegion, subtotal, taxAmount);
+        console.error("[tax.server] CFDI emission failed:", err);
+        return buildErrorInvoice(order, subtotal, taxAmount);
     }
 
-    // ── Map provider response → InvoiceRecord ────────────────────
     return {
         id: crypto.randomUUID(),
         order_id: order.id,
-        user_id: order.user_id,
-        tax_region: taxRegion,
+        user_id: order.user_id || "",
+        tax_region: "MX",
         status: providerResponse.success ? "issued" : "error",
-        cfdi_uuid: taxRegion === "MX" ? (providerResponse.uuid ?? null) : null,
-        afip_cae: taxRegion === "AR" ? (providerResponse.cae ?? null) : null,
-        sii_folio: taxRegion === "CL" ? (providerResponse.folio ?? null) : null,
+        cfdi_uuid: providerResponse.uuid ?? null,
+        afip_cae: null,
+        sii_folio: null,
         subtotal,
         tax_amount: taxAmount,
         total: order.total,
@@ -123,8 +118,6 @@ export async function emitFiscalReceipt(
 
 function buildMockInvoice(
     order: Pick<Order, "id" | "total" | "user_id">,
-    _email: string,
-    taxRegion: TaxRegion,
     subtotal: number,
     taxAmount: number,
     issuedAt: string
@@ -133,17 +126,17 @@ function buildMockInvoice(
     return {
         id: crypto.randomUUID(),
         order_id: order.id,
-        user_id: order.user_id,
-        tax_region: taxRegion,
+        user_id: order.user_id || "",
+        tax_region: "MX",
         status: "issued",
-        cfdi_uuid: taxRegion === "MX" ? fakeUUID : null,
-        afip_cae: taxRegion === "AR" ? `CAE-${Date.now()}` : null,
-        sii_folio: taxRegion === "CL" ? `F-${Date.now()}` : null,
+        cfdi_uuid: fakeUUID,
+        afip_cae: null,
+        sii_folio: null,
         subtotal,
         tax_amount: taxAmount,
         total: order.total,
         pdf_url: `/api/invoices/${order.id}/pdf`,
-        xml_url: taxRegion === "MX" ? `/api/invoices/${order.id}/xml` : null,
+        xml_url: `/api/invoices/${order.id}/xml`,
         issued_at: issuedAt,
         created_at: issuedAt,
     };
@@ -151,8 +144,6 @@ function buildMockInvoice(
 
 function buildErrorInvoice(
     order: Pick<Order, "id" | "total" | "user_id">,
-    _email: string,
-    taxRegion: TaxRegion,
     subtotal: number,
     taxAmount: number
 ): InvoiceRecord {
@@ -160,8 +151,8 @@ function buildErrorInvoice(
     return {
         id: crypto.randomUUID(),
         order_id: order.id,
-        user_id: order.user_id,
-        tax_region: taxRegion,
+        user_id: order.user_id || "",
+        tax_region: "MX",
         status: "error",
         cfdi_uuid: null, afip_cae: null, sii_folio: null,
         subtotal, tax_amount: taxAmount, total: order.total,

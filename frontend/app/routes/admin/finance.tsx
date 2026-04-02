@@ -1,54 +1,67 @@
 // app/routes/admin/finance.tsx
-// Admin – Financial reports with stacked bar chart, MRR, cash close (MOCK DATA).
+// Admin – Financial reports with stacked bar chart, MRR, cash close.
 // Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/finance";
 import { useFetcher } from "react-router";
 import { useState } from "react";
-import { DollarSign, TrendingUp, Banknote, ShoppingBag, Coffee, Wallet, Lock } from "lucide-react";
-
-// ─── Mock Data ───────────────────────────────────────────────────
-const WEEKLY_DATA = [
-    { day: "Lun", memberships: 3200, dropins: 450, cafeteria: 680 },
-    { day: "Mar", memberships: 2800, dropins: 300, cafeteria: 520 },
-    { day: "Mié", memberships: 1600, dropins: 600, cafeteria: 440 },
-    { day: "Jue", memberships: 4100, dropins: 150, cafeteria: 710 },
-    { day: "Vie", memberships: 2200, dropins: 750, cafeteria: 830 },
-    { day: "Sáb", memberships: 5400, dropins: 900, cafeteria: 960 },
-    { day: "Dom", memberships: 800, dropins: 200, cafeteria: 350 },
-];
-
-const MOCK_ORDERS = [
-    { id: "ord-a1b2c3d4", total: 799, payment_method: "mercado_pago", category: "membership", created_at: "2025-02-17T10:00:00Z" },
-    { id: "ord-e5f6g7h8", total: 65, payment_method: "cash", category: "cafeteria", created_at: "2025-02-17T14:30:00Z" },
-    { id: "ord-i9j0k1l2", total: 150, payment_method: "cash", category: "dropin", created_at: "2025-02-17T09:15:00Z" },
-    { id: "ord-m3n4o5p6", total: 35, payment_method: "cash", category: "cafeteria", created_at: "2025-02-17T16:45:00Z" },
-    { id: "ord-q7r8s9t0", total: 1399, payment_method: "mercado_pago", category: "membership", created_at: "2025-02-16T11:20:00Z" },
-    { id: "ord-u1v2w3x4", total: 55, payment_method: "cash", category: "cafeteria", created_at: "2025-02-16T08:00:00Z" },
-    { id: "ord-y5z6a7b8", total: 280, payment_method: "mercado_pago", category: "supplement", created_at: "2025-02-15T13:10:00Z" },
-    { id: "ord-c9d0e1f2", total: 350, payment_method: "cash", category: "merch", created_at: "2025-02-15T17:30:00Z" },
-];
-
-const MRR = 68400;
-const MRR_CHANGE = 4.2;
-const TOTAL_CASH_TODAY = MOCK_ORDERS.filter((o) => o.payment_method === "cash" && o.created_at.startsWith("2025-02-17")).reduce((s, o) => s + o.total, 0);
+import { DollarSign, TrendingUp, Banknote, ShoppingBag, Wallet, Lock } from "lucide-react";
 
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { profile, gymId } = await requireGymAdmin(request);
-    const totalRevenue = MOCK_ORDERS.reduce((s, o) => s + o.total, 0);
-    const cashRevenue = MOCK_ORDERS.filter((o) => o.payment_method === "cash").reduce((s, o) => s + o.total, 0);
-    const mpRevenue = MOCK_ORDERS.filter((o) => o.payment_method === "mercado_pago").reduce((s, o) => s + o.total, 0);
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
+
+    // Fetch recent orders from Supabase
+    const { data: orders, error } = await supabaseAdmin
+        .from("orders")
+        .select("id, total, payment_method, created_at")
+        .eq("gym_id", gymId)
+        .eq("status", "paid")
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+    if (error) console.error("[finance] Error fetching orders:", error);
+
+    const allOrders = (orders ?? []) as { id: string; total: number; payment_method: string; created_at: string }[];
+
+    const totalRevenue = allOrders.reduce((s, o) => s + Number(o.total), 0);
+    const cashRevenue = allOrders.filter((o) => o.payment_method === "cash").reduce((s, o) => s + Number(o.total), 0);
+    const mpRevenue = allOrders.filter((o) => o.payment_method === "mercado_pago").reduce((s, o) => s + Number(o.total), 0);
+
+    // Calculate today's cash
+    const todayStr = new Date().toISOString().split("T")[0];
+    const cashToday = allOrders
+        .filter((o) => o.payment_method === "cash" && o.created_at.startsWith(todayStr))
+        .reduce((s, o) => s + Number(o.total), 0);
+
+    // MRR from active memberships
+    const { data: memberships } = await supabaseAdmin
+        .from("memberships")
+        .select("price")
+        .eq("gym_id", gymId)
+        .eq("status", "active");
+
+    const mrr = (memberships ?? []).reduce((s, m: any) => s + Number(m.price), 0);
+
+    // Build weekly data from orders (last 7 days)
+    const dayNames = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+    const weeklyData = dayNames.map((day) => ({ day, memberships: 0, dropins: 0, cafeteria: 0 }));
+    for (const order of allOrders) {
+        const d = new Date(order.created_at);
+        const dayIdx = d.getDay();
+        weeklyData[dayIdx].cafeteria += Number(order.total);
+    }
 
     return {
-        orders: MOCK_ORDERS,
+        orders: allOrders,
         totalRevenue,
         cashRevenue,
         mpRevenue,
-        orderCount: MOCK_ORDERS.length,
-        weeklyData: WEEKLY_DATA,
-        mrr: MRR,
-        mrrChange: MRR_CHANGE,
-        cashToday: TOTAL_CASH_TODAY,
+        orderCount: allOrders.length,
+        weeklyData,
+        mrr,
+        mrrChange: 0,
+        cashToday,
     };
 }
 
@@ -64,8 +77,10 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 // ─── Stacked Bar Chart (pure SVG) ────────────────────────────────
-function StackedBarChart({ data }: { data: typeof WEEKLY_DATA }) {
-    const maxTotal = Math.max(...data.map((d) => d.memberships + d.dropins + d.cafeteria));
+type WeeklyDataPoint = { day: string; memberships: number; dropins: number; cafeteria: number };
+
+function StackedBarChart({ data }: { data: WeeklyDataPoint[] }) {
+    const maxTotal = Math.max(1, ...data.map((d: WeeklyDataPoint) => d.memberships + d.dropins + d.cafeteria));
     const barWidth = 40;
     const gap = 20;
     const chartHeight = 200;
@@ -130,14 +145,6 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
     const { orders, totalRevenue, cashRevenue, mpRevenue, orderCount, weeklyData, mrr, mrrChange, cashToday } = loaderData;
     const fetcher = useFetcher();
     const [showCashClose, setShowCashClose] = useState(false);
-
-    const categoryLabels: Record<string, string> = {
-        membership: "Membresía",
-        cafeteria: "Cafetería",
-        dropin: "Drop-in",
-        supplement: "Suplemento",
-        merch: "Merchandise",
-    };
 
     return (
         <div className="space-y-6">
@@ -246,7 +253,6 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                             <tr className="border-b border-white/[0.08] text-white/50 text-left bg-white/5">
                                 <th className="px-6 py-3 font-medium">ID</th>
                                 <th className="px-6 py-3 font-medium">Fecha</th>
-                                <th className="px-6 py-3 font-medium">Categoría</th>
                                 <th className="px-6 py-3 font-medium">Método</th>
                                 <th className="px-6 py-3 font-medium text-right">Monto</th>
                             </tr>
@@ -257,11 +263,6 @@ export default function Finance({ loaderData }: Route.ComponentProps) {
                                     <td className="px-6 py-3 font-mono text-xs text-white/40">{order.id.slice(4, 12)}</td>
                                     <td className="px-6 py-3 text-white/50">
                                         {new Date(order.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                                    </td>
-                                    <td className="px-6 py-3">
-                                        <span className="text-xs bg-white/5/10 text-white/60 px-2 py-1 rounded-full">
-                                            {categoryLabels[order.category] ?? order.category}
-                                        </span>
                                     </td>
                                     <td className="px-6 py-3">
                                         <span className={`text-xs px-2 py-1 rounded-full ${order.payment_method === "cash" ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"}`}>

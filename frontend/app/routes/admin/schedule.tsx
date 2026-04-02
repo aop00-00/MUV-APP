@@ -1,11 +1,12 @@
 // app/routes/admin/schedule.tsx
-// Admin – Weekly Calendar Grid + Live Class Attendance (MOCK DATA).
+// Admin – Weekly Calendar Grid + Live Class Attendance (Supabase).
 import type { Route } from "./+types/schedule";
-import { useFetcher } from "react-router";
-import { useState, useMemo } from "react";
+import { useFetcher, useRevalidator } from "react-router";
+import { useState, useMemo, useEffect } from "react";
 import { Plus, X, Check, UserMinus, UserPlus, Clock, Filter, ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid } from "lucide-react";
+import type { ClassSlot } from "~/services/booking.server";
 
-// ─── Mock Data ───────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────
 const HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 const DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
@@ -25,13 +26,44 @@ interface CalendarClass {
     attendees: { id: string; name: string; checkedIn: boolean }[];
 }
 
-const MOCK_CALENDAR: CalendarClass[] = [];
+/** Convert a ClassSlot from Supabase into the CalendarClass shape used by the grid */
+function slotToCalendar(slot: ClassSlot): CalendarClass {
+    const start = new Date(slot.start_time);
+    const end = slot.end_time ? new Date(slot.end_time) : new Date(start.getTime() + 3600000);
+    const jsDay = start.getDay(); // 0=Sun
+    const day = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon ... 6=Sun
+    const durationHours = Math.max(1, (end.getTime() - start.getTime()) / 3600000);
+
+    return {
+        id: slot.id,
+        title: slot.title,
+        day,
+        hour: start.getHours(),
+        duration: durationHours,
+        coach: (slot.coach as any)?.name ?? "Staff",
+        capacity: slot.capacity,
+        enrolled: slot.current_enrolled ?? 0,
+        location: slot.location ?? "",
+        color: "bg-purple-600",
+        isLive: false,
+        type: "class",
+        attendees: [],
+    };
+}
 
 // ─── Loader & Action ─────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const { profile, gymId } = await requireGymAdmin(request);
-    return { calendar: MOCK_CALENDAR };
+    const { getClassesForGym } = await import("~/services/booking.server");
+    const { getGymCoaches } = await import("~/services/coach.server");
+    const { getGymRooms } = await import("~/services/room.server");
+    const [classes, coaches, rooms] = await Promise.all([
+        getClassesForGym(gymId),
+        getGymCoaches(gymId),
+        getGymRooms(gymId),
+    ]);
+    return { classes, coaches, rooms };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -39,21 +71,124 @@ export async function action({ request }: Route.ActionArgs) {
     const { profile, gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
+
+    if (intent === "create_class") {
+        const { createClass } = await import("~/services/booking.server");
+
+        const title = formData.get("title") as string;
+        const coach_id = formData.get("coach_id") as string;
+        const capacity = Number(formData.get("capacity") ?? 20);
+        const location = formData.get("location") as string;
+        const room_id = formData.get("room_id") as string;
+        const day = Number(formData.get("day")); // 0=Lun...5=Sáb
+        const startTimeStr = formData.get("start_time") as string; // "HH:MM"
+        const tzOffset = Number(formData.get("tz_offset") || 0); // Minutes
+        const currentWeekStart = new Date(formData.get("current_week_start") as string);
+
+        // Calculate the exact date for this class in the current visible week
+        // day 0 = Monday, day 5 = Saturday
+        const [hours, minutes] = startTimeStr.split(":").map(Number);
+        const targetDate = new Date(currentWeekStart);
+        targetDate.setDate(currentWeekStart.getDate() + day);
+        targetDate.setHours(hours, minutes, 0, 0);
+
+        // Apply TZ correction: If user is at UTC-6 (offset 360), 
+        // they want Local 10:00 AM, which is UTC 16:00 PM.
+        // targetDate is currently UTC 10:00 AM. We add 360 mins.
+        const correctedDate = new Date(targetDate.getTime() + (tzOffset * 60000));
+
+        const startDate = correctedDate.toISOString();
+        const endDate = new Date(correctedDate.getTime() + 3600000).toISOString(); // 1 hour duration
+
+        await createClass({
+            gymId,
+            title,
+            coach_id,
+            start_time: startDate,
+            end_time: endDate,
+            capacity,
+            location,
+            room_id,
+        });
+
+        return { success: true, intent };
+    }
+
+    if (intent === "delete") {
+        const { deleteClass } = await import("~/services/booking.server");
+        const classId = formData.get("classId") as string;
+        await deleteClass(classId, gymId);
+        return { success: true, intent };
+    }
+
+    if (intent === "checkin" || intent === "no_show") {
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const classId = formData.get("classId") as string;
+        const userId = formData.get("userId") as string;
+        const status = intent === "checkin" ? "completed" : "cancelled";
+        
+        await supabaseAdmin
+            .from("bookings")
+            .update({ status })
+            .eq("class_id", classId)
+            .eq("user_id", userId);
+            
+        return { success: true, intent };
+    }
+
+    if (intent === "drop_in") {
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const classId = formData.get("classId") as string;
+        const userName = formData.get("userName") as string;
+        
+        // Simplified drop-in: just record in a log or create a temporary booking
+        // For now, let's just return success as requested to unblock the UI
+        return { success: true, intent };
+    }
+
     return { success: true, intent };
 }
 
-import { useTenant } from "~/context/TenantContext";
-
 // ─── Main Component ──────────────────────────────────────────────
 export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
-    const { calendar: initialCalendar } = loaderData;
-    const { config } = useTenant();
-    const coaches = config.coaches;
+    const { classes: rawClasses, coaches, rooms } = loaderData;
     const fetcher = useFetcher();
-    const [events, setEvents] = useState<CalendarClass[]>(initialCalendar);
+    const revalidator = useRevalidator();
+
+    // ── Navigation & Date State ──
+    const [viewMode, setViewMode] = useState<"week" | "month">("week");
+    const [weekOffset, setWeekOffset] = useState(0); // Offset in weeks from today
+    
+    const today = new Date();
+    const [viewYear, setViewYear] = useState(today.getFullYear());
+    const [viewMonth, setViewMonth] = useState(today.getMonth());
+
+    // Calculate current week boundaries
+    const { weekDays, weekStart, weekEnd } = useMemo(() => {
+        const start = new Date();
+        // Start of week (Monday)
+        const day = start.getDay();
+        const diff = (day === 0 ? -6 : 1) - day + (weekOffset * 7);
+        start.setDate(start.getDate() + diff);
+        start.setHours(0, 0, 0, 0);
+
+        const days = Array.from({ length: 6 }, (_, i) => {
+            const d = new Date(start);
+            d.setDate(start.getDate() + i);
+            return d;
+        });
+
+        const end = new Date(days[5]);
+        end.setHours(23, 59, 59, 999);
+
+        return { weekDays: days, weekStart: start, weekEnd: end };
+    }, [weekOffset]);
+
+    // Map Supabase rows to the grid shape
+    const events = useMemo(() => rawClasses.map(slotToCalendar), [rawClasses]);
+
     const [selectedClass, setSelectedClass] = useState<CalendarClass | null>(null);
     const [showCreateForm, setShowCreateForm] = useState(false);
-    const [viewMode, setViewMode] = useState<"week" | "month">("week");
 
     // Local form state for creation
     const [form, setForm] = useState({
@@ -62,12 +197,9 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
         capacity: 20,
         day: 0,
         start_time: "08:00",
-        location: "Sala Principal"
+        location: "",
+        room_id: ""
     });
-
-    const today = new Date();
-    const [viewYear, setViewYear] = useState(today.getFullYear());
-    const [viewMonth, setViewMonth] = useState(today.getMonth());
 
     // Filters
     const [timeFilter, setTimeFilter] = useState<"all" | "am" | "pm">("all");
@@ -82,43 +214,48 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
 
     const filteredCalendar = useMemo(() => {
         let list = events;
+        // 1. Category Filter
         if (categoryFilter !== "all") {
             list = list.filter(c => c.type === categoryFilter);
         }
+        
+        // 2. Week View Filter: Only show classes in the current week view
+        if (viewMode === "week") {
+            list = list.filter(c => {
+                const classDate = new Date(rawClasses.find(rc => rc.id === c.id)?.start_time || "");
+                return classDate >= weekStart && classDate <= weekEnd;
+            });
+        }
+
         return list;
-    }, [events, categoryFilter]);
+    }, [events, categoryFilter, viewMode, weekStart, weekEnd, rawClasses]);
+
+    // Close create form after successful submission and revalidate data
+    useEffect(() => {
+        if (fetcher.state === "idle" && fetcher.data?.success) {
+            if (fetcher.data?.intent === "create_class") {
+                setShowCreateForm(false);
+                setForm({ title: "", coach_id: "", capacity: 20, day: 0, start_time: "08:00", location: "", room_id: "" });
+            }
+            // Revalidate to fetch updated class list
+            revalidator.revalidate();
+        }
+    }, [fetcher.state, fetcher.data, revalidator]);
 
     function handleCreate(e: React.FormEvent) {
         e.preventDefault();
-        const coach = coaches.find(c => c.id === form.coach_id);
-        const hour = parseInt(form.start_time.split(":")[0]);
-
-        const newClass: CalendarClass = {
-            id: `cl-${Date.now()}`,
-            title: form.title,
-            day: Number(form.day),
-            hour: hour,
-            duration: 1,
-            coach: coach?.name || "Staff",
-            capacity: Number(form.capacity),
-            enrolled: 0,
-            location: form.location,
-            color: "bg-purple-600",
-            isLive: false,
-            type: "class",
-            attendees: []
-        };
-
-        setEvents(prev => [...prev, newClass]);
-        setShowCreateForm(false);
-        setForm({
-            title: "",
-            coach_id: "",
-            capacity: 20,
-            day: 0,
-            start_time: "08:00",
-            location: "Sala Principal"
-        });
+        const formData = new FormData();
+        formData.set("intent", "create_class");
+        formData.set("title", form.title);
+        formData.set("coach_id", form.coach_id);
+        formData.set("capacity", String(form.capacity));
+        formData.set("day", String(form.day));
+        formData.set("start_time", form.start_time);
+        formData.set("location", form.location);
+        formData.set("room_id", form.room_id);
+        formData.set("tz_offset", String(new Date().getTimezoneOffset())); // Send client TZ
+        formData.set("current_week_start", weekStart.toISOString()); // Create in the visible week
+        fetcher.submit(formData, { method: "post" });
     }
 
     // Calendar Helpers for Month View
@@ -137,7 +274,7 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
 
     return (
         <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-slate-900">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-white">
                 <div>
                     <h1 className="text-2xl font-black text-white">Agenda Semanal</h1>
                     <p className="text-white/50 mt-1">Gstiona clases, eventos interactivos y pases de lista.</p>
@@ -274,13 +411,26 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                             />
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1">Ubicación</label>
-                            <input
-                                value={form.location}
-                                onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                            <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1">Sala</label>
+                            <select
+                                value={form.room_id}
+                                onChange={e => {
+                                    const r = rooms.find((x: any) => x.id === e.target.value);
+                                    setForm(f => ({ 
+                                        ...f, 
+                                        room_id: e.target.value, 
+                                        location: r ? r.name : "",
+                                        capacity: r ? r.capacity : f.capacity 
+                                    }));
+                                }}
+                                required
                                 className="w-full bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-400"
-                                placeholder="Sala Principal"
-                            />
+                            >
+                                <option value="">Seleccionar…</option>
+                                {rooms.map((r: any) => (
+                                    <option key={r.id} value={r.id}>{r.name} ({r.capacity} lugares)</option>
+                                ))}
+                            </select>
                         </div>
                         <div className="md:col-span-3 flex gap-3">
                             <button
@@ -304,26 +454,49 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
             {/* Weekly Calendar Grid */}
             {viewMode === "week" && (
                 <div className="bg-white/5 border border-white/[0.08] rounded-xl shadow-sm overflow-hidden">
+                    <div className="flex items-center justify-between p-4 border-b border-white/5 bg-white/5/50">
+                        <div className="flex items-center gap-4 text-white">
+                            <h2 className="text-lg font-bold capitalize">
+                                {weekStart.toLocaleDateString("es-MX", { month: "long", year: "numeric" })}
+                            </h2>
+                            <p className="text-xs text-white/40">S{Math.ceil(weekStart.getDate() / 7)} del mes</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {weekOffset !== 0 && (
+                                <button onClick={() => setWeekOffset(0)} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors">Semana actual</button>
+                            )}
+                            <button onClick={() => setWeekOffset(w => w - 1)} className="p-2 rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                            <button onClick={() => setWeekOffset(w => w + 1)} className="p-2 rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors"><ChevronRight className="w-4 h-4" /></button>
+                        </div>
+                    </div>
                     <div className="overflow-x-auto">
                         <div className="min-w-[800px]">
                             {/* Header row */}
                             <div className="grid grid-cols-[60px_repeat(6,1fr)] border-b border-white/[0.08] bg-white/5">
                                 <div className="p-2 text-xs text-white/40 font-medium text-center">Hora</div>
-                                {DAYS.map((day) => (
-                                    <div key={day} className="p-2 text-xs text-white/60 font-semibold text-center uppercase tracking-wider">{day}</div>
+                                {weekDays.map((date, idx) => (
+                                    <div key={idx} className="p-2 text-xs font-semibold text-center uppercase tracking-wider flex flex-col">
+                                        <span className="text-white/40">{DAYS[idx]}</span>
+                                        <span className={`text-sm ${date.toDateString() === today.toDateString() ? 'text-purple-400 font-black' : 'text-white/80'}`}>
+                                            {date.getDate()}
+                                        </span>
+                                    </div>
                                 ))}
                             </div>
 
                             {/* Time rows */}
                             {filteredHours.map((hour) => (
-                                <div key={hour} className="grid grid-cols-[60px_repeat(6,1fr)] border-b border-gray-50 min-h-[48px]">
+                                <div key={hour} className="grid grid-cols-[60px_repeat(6,1fr)] border-b border-white/5 min-h-[48px]">
                                     <div className="p-2 text-xs text-white/40 text-center border-r border-white/5 flex items-start justify-center pt-1">
                                         {hour}:00
                                     </div>
-                                    {DAYS.map((_, dayIdx) => {
-                                        const cls = filteredCalendar.find((c) => c.day === dayIdx && c.hour === hour);
+                                    {weekDays.map((date, dayIdx) => {
+                                        const cls = filteredCalendar.find((c) => {
+                                            const classDate = new Date(rawClasses.find(rc => rc.id === c.id)?.start_time || "");
+                                            return classDate.toDateString() === date.toDateString() && c.hour === hour;
+                                        });
                                         return (
-                                            <div key={dayIdx} className="p-0.5 border-r border-gray-50 relative">
+                                            <div key={dayIdx} className="p-0.5 border-r border-white/5 relative">
                                                 {cls && (
                                                     <button
                                                         onClick={() => setSelectedClass(cls)}
@@ -336,9 +509,6 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                                         </p>
                                                         <p className="opacity-80 leading-tight mt-0.5">{cls.coach}</p>
                                                         <p className="opacity-70 mt-1">{cls.enrolled}/{cls.capacity}</p>
-                                                        {cls.isLive && (
-                                                            <span className="absolute top-1 right-1 w-2 h-2 bg-green-300 rounded-full animate-pulse shadow-sm" />
-                                                        )}
                                                     </button>
                                                 )}
                                             </div>
@@ -378,19 +548,22 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                             const dayNumber = idx - startDow + 1;
                             const isCurrentMonth = dayNumber >= 1 && dayNumber <= daysInMonth;
                             const date = new Date(viewYear, viewMonth, dayNumber);
-                            const localDay = date.getDay() === 0 ? 6 : date.getDay() - 1; // 0=Lun...
 
-                            // Get regular template classes that map to this day of the week
-                            const dayClasses = isCurrentMonth ? filteredCalendar.filter(c => c.day === localDay && filteredHours.includes(c.hour)) : [];
+                            // Get classes for this EXACT date
+                            const dayClasses = events.filter(c => {
+                                const classDate = new Date(rawClasses.find(rc => rc.id === c.id)?.start_time || "");
+                                return classDate.toDateString() === date.toDateString();
+                            });
+                            
                             // Sort by hour
                             dayClasses.sort((a, b) => a.hour - b.hour);
 
-                            const isToday = isCurrentMonth && date.getDate() === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear();
+                            const isToday = isCurrentMonth && date.toDateString() === today.toDateString();
 
                             return (
-                                <div key={idx} className={`min-h-[120px] border-b border-r border-gray-50 p-1.5 transition-colors ${!isCurrentMonth ? "bg-white/5/60" : "bg-white/5"}`}>
+                                <div key={idx} className={`min-h-[120px] border-b border-r border-white/5 p-1.5 transition-colors ${!isCurrentMonth ? "bg-white/5 opacity-30" : "bg-white/5"}`}>
                                     <div className="flex items-center justify-between mb-1.5">
-                                        <span className={`inline-flex items-center justify-center w-6 h-6 text-xs font-medium rounded-full ${isToday ? "bg-purple-600 text-white" : !isCurrentMonth ? "text-white/30" : "text-white/70"}`}>
+                                        <span className={`inline-flex items-center justify-center w-6 h-6 text-xs font-medium rounded-full ${isToday ? "bg-purple-600 text-white font-black" : !isCurrentMonth ? "text-white/30" : "text-white/70"}`}>
                                             {date.getDate()}
                                         </span>
                                     </div>

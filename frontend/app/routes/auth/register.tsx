@@ -54,11 +54,17 @@ export async function action({ request }: Route.ActionArgs) {
         return { error: `Error al crear cuenta: ${error.message}` };
     }
 
-    // Set gym_id in profile table
+    // Create profile manually (trigger is disabled in Supabase)
     const { error: profileError } = await supabaseAdmin
         .from("profiles")
-        .update({ gym_id: gym.id, role: "member", full_name })
-        .eq("id", data.user.id);
+        .upsert({
+            id: data.user.id,
+            email,
+            full_name,
+            role: "member",
+            credits: 0,
+            gym_id: gym.id,
+        }, { onConflict: "id" });
 
     if (profileError) {
         console.error("Profile Update Error:", profileError);

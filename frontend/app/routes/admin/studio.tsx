@@ -1,20 +1,8 @@
 // admin/studio.tsx — Mi Estudio > General (branding & studio info)
 import { useState, useRef } from "react";
-import { Upload, Globe, Instagram, Twitter, Check } from "lucide-react";
-
-interface StudioForm {
-    name: string;
-    slug: string;
-    description: string;
-    phone: string;
-    email: string;
-    website: string;
-    instagram: string;
-    twitter: string;
-    logo: string | null;
-    primaryColor: string;
-    timezone: string;
-}
+import { Upload, Globe, Instagram, Check } from "lucide-react";
+import { useFetcher } from "react-router";
+import type { Route } from "./+types/studio";
 
 const TIMEZONES = [
     "America/Mexico_City", "America/Bogota", "America/Lima",
@@ -23,56 +11,156 @@ const TIMEZONES = [
 
 const PALETTE = ["#F59E0B", "#3B82F6", "#10B981", "#EF4444", "#8B5CF6", "#EC4899", "#6B7280"];
 
-import { useTenant } from "~/context/TenantContext";
+// ─── Loader: fetch gym data from Supabase ────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
 
-export default function StudioGeneral() {
-    const { config, updateTenant } = useTenant();
-    const [form, setForm] = useState<StudioForm>({
-        name: config.name,
-        slug: "aop",
-        description: "Estudio boutique de Pilates y Yoga en el corazón de la ciudad. Clases pequeñas, atención personalizada.",
-        phone: "+52 55 1234 5678",
-        email: "hola@grindproject.mx",
-        website: "https://grindproject.mx",
-        instagram: "@grindproject",
-        twitter: "@grindproject",
-        logo: config.logo,
-        primaryColor: config.primaryColor,
-        timezone: config.timezone,
-    });
-    const [saved, setSaved] = useState(false);
+    const { data: gym } = await supabaseAdmin
+        .from("gyms")
+        .select("name, slug, logo_url, primary_color, timezone")
+        .eq("id", gymId)
+        .single();
+
+    return {
+        gym: {
+            name: gym?.name || "",
+            slug: gym?.slug || "",
+            logoUrl: gym?.logo_url || "",
+            primaryColor: gym?.primary_color || "#7c3aed",
+            timezone: gym?.timezone || "America/Mexico_City",
+        }
+    };
+}
+
+// ─── Action: persist gym settings to Supabase ────────────────────
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "save") {
+        const updates: Record<string, any> = {};
+        const name = formData.get("name") as string;
+        const slug = formData.get("slug") as string;
+        const primaryColor = formData.get("primaryColor") as string;
+        const timezone = formData.get("timezone") as string;
+        const logoUrl = formData.get("logoUrl") as string;
+        const logoFile = formData.get("logoFile") as File | null;
+
+        let finalLogoUrl = logoUrl;
+        
+        // If a real file was uploaded, send it to Supabase Storage 'logos' bucket
+        if (logoFile && logoFile.size > 0) {
+            const fileExt = logoFile.name.split('.').pop() || 'png';
+            const fileName = `${gymId}_${Date.now()}.${fileExt}`;
+            
+            const { error: uploadError } = await supabaseAdmin.storage
+                .from('logos')
+                .upload(fileName, logoFile, {
+                    cacheControl: '3600',
+                    upsert: true
+                });
+
+            if (uploadError) {
+                console.error("[studio.tsx] Error subiendo logo:", uploadError);
+                return { success: false, error: "Error subiendo el logo: " + uploadError.message };
+            }
+
+            const { data: publicUrlData } = supabaseAdmin.storage
+                .from('logos')
+                .getPublicUrl(fileName);
+            
+            finalLogoUrl = publicUrlData.publicUrl;
+        }
+
+        if (name) updates.name = name;
+        if (slug) updates.slug = slug;
+        if (primaryColor) updates.primary_color = primaryColor;
+        if (timezone) updates.timezone = timezone;
+        if (finalLogoUrl !== undefined) updates.logo_url = finalLogoUrl || null;
+
+        const { error } = await supabaseAdmin
+            .from("gyms")
+            .update(updates)
+            .eq("id", gymId);
+
+        if (error) return { success: false, error: error.message };
+        return { success: true };
+    }
+
+    return { success: true };
+}
+
+// ─── Main Component ──────────────────────────────────────────────
+export default function StudioGeneral({ loaderData }: Route.ComponentProps) {
+    const { gym } = loaderData;
+    const fetcher = useFetcher();
     const fileRef = useRef<HTMLInputElement>(null);
+
+    const [form, setForm] = useState({
+        name: gym.name,
+        slug: gym.slug,
+        description: "",
+        phone: "",
+        email: "",
+        website: "",
+        instagram: "",
+        logoUrl: gym.logoUrl,
+        logoFile: null as File | null,
+        primaryColor: gym.primaryColor,
+        timezone: gym.timezone,
+    });
+
+    const saved = fetcher.data?.success && fetcher.state === "idle";
 
     function handleLogo(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = ev => {
-            const logo = ev.target?.result as string;
-            setForm(f => ({ ...f, logo }));
-            updateTenant({ logo }); // Live update
-        };
-        reader.readAsDataURL(file);
+        
+        // Generate a temporary local URL for preview
+        const localPreviewUrl = URL.createObjectURL(file);
+        setForm(f => ({ ...f, logoFile: file, logoUrl: localPreviewUrl }));
     }
 
     function updateColor(color: string) {
         setForm(f => ({ ...f, primaryColor: color }));
-        updateTenant({ primaryColor: color }); // Live update
     }
 
     function save(e: React.FormEvent) {
         e.preventDefault();
-        setSaved(true);
-        updateTenant({
-            name: form.name,
-            logo: form.logo ?? "",
-            primaryColor: form.primaryColor,
-            timezone: form.timezone
-        });
-        setTimeout(() => setSaved(false), 2500);
+        const fd = new FormData();
+        fd.set("intent", "save");
+        fd.set("name", form.name);
+        fd.set("slug", form.slug);
+        fd.set("primaryColor", form.primaryColor);
+        fd.set("timezone", form.timezone);
+        
+        if (form.logoFile) {
+            fd.set("logoFile", form.logoFile);
+        } else {
+            fd.set("logoUrl", form.logoUrl);
+        }
+        
+        fetcher.submit(fd, { method: "post" });
     }
 
-    const slugUrl = `koreo.mx/join/${form.slug}`;
+    const [urlCopied, setUrlCopied] = useState(false);
+    const fullSlugUrl = typeof window !== "undefined" && form.slug
+        ? `${window.location.origin}/${form.slug}`
+        : form.slug ? `/${form.slug}` : null;
+
+    function copyGymUrl() {
+        if (fullSlugUrl) {
+            navigator.clipboard.writeText(fullSlugUrl).then(() => {
+                setUrlCopied(true);
+                setTimeout(() => setUrlCopied(false), 2000);
+            });
+        }
+    }
 
     return (
         <form onSubmit={save} className="space-y-6 max-w-3xl">
@@ -80,6 +168,26 @@ export default function StudioGeneral() {
                 <h1 className="text-2xl font-black text-white">Mi Estudio — General</h1>
                 <p className="text-white/50 text-sm mt-0.5">Información pública y configuración de marca de tu estudio.</p>
             </div>
+
+            {/* Personalized URL */}
+            {fullSlugUrl && (
+                <div className="bg-amber-400/5 border border-amber-400/20 rounded-2xl p-5">
+                    <div className="flex items-center justify-between mb-2">
+                        <h2 className="font-bold text-amber-400 text-sm uppercase tracking-wider">URL personalizada de tu estudio</h2>
+                    </div>
+                    <div className="flex items-center gap-3 bg-black/30 rounded-xl p-3">
+                        <code className="text-white font-mono text-sm flex-1 break-all">{fullSlugUrl}</code>
+                        <button
+                            type="button"
+                            onClick={copyGymUrl}
+                            className="px-3 py-1.5 bg-amber-400 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition-all flex-shrink-0"
+                        >
+                            {urlCopied ? "Copiado!" : "Copiar"}
+                        </button>
+                    </div>
+                    <p className="text-xs text-white/40 mt-2">Comparte esta URL con tus alumnos para que se registren directamente.</p>
+                </div>
+            )}
 
             {/* Logo & Color */}
             <div className="bg-white/[0.03] backdrop-blur-2xl rounded-2xl border border-white/[0.08] shadow-2xl p-6 space-y-5">
@@ -90,10 +198,10 @@ export default function StudioGeneral() {
                         <div
                             onClick={() => fileRef.current?.click()}
                             className="w-24 h-24 rounded-2xl border-2 border-dashed border-white/[0.08] hover:border-amber-400 flex items-center justify-center cursor-pointer transition-colors overflow-hidden bg-white/5"
-                            style={{ backgroundColor: form.logo ? "transparent" : undefined }}
+                            style={{ backgroundColor: form.logoUrl ? "transparent" : undefined }}
                         >
-                            {form.logo
-                                ? <img src={form.logo} alt="Logo" className="w-full h-full object-contain" />
+                            {form.logoUrl
+                                ? <img src={form.logoUrl} alt="Logo" className="w-full h-full object-contain" />
                                 : <div className="text-center"><Upload className="w-6 h-6 text-white/30 mx-auto mb-1" /><span className="text-xs text-white/40">Logo</span></div>
                             }
                         </div>
@@ -136,10 +244,10 @@ export default function StudioGeneral() {
                     <div>
                         <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Slug (URL pública)</label>
                         <div className="flex items-center border border-white/[0.08] rounded-xl overflow-hidden focus-within:border-amber-400 transition-colors">
-                            <span className="pl-3 pr-1 text-white/40 text-xs shrink-0">koreo.mx/join/</span>
+                            <span className="pl-3 pr-1 text-white/40 text-xs shrink-0">/</span>
                             <input value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value.toLowerCase().replace(/\s+/g, "-") }))} className="flex-1 pr-3 py-2.5 text-sm focus:outline-none bg-transparent" />
                         </div>
-                        <p className="text-xs text-white/40 mt-1">{slugUrl}</p>
+                        {fullSlugUrl && <p className="text-xs text-white/40 mt-1">{fullSlugUrl}</p>}
                     </div>
                     <div>
                         <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Zona horaria</label>
@@ -158,15 +266,14 @@ export default function StudioGeneral() {
             <div className="bg-white/[0.03] backdrop-blur-2xl rounded-2xl border border-white/[0.08] shadow-2xl p-6 space-y-4">
                 <h2 className="font-bold text-white">Contacto y redes</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {[
-                        ["Teléfono / WhatsApp", "phone", "tel", "+52 55 1234 5678"],
-                        ["Correo de contacto", "email", "email", "hola@estudio.mx"],
-                    ].map(([label, key, type, ph]) => (
-                        <div key={key}>
-                            <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">{label}</label>
-                            <input type={type} value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder={ph} className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400 transition-colors" />
-                        </div>
-                    ))}
+                    <div>
+                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Teléfono / WhatsApp</label>
+                        <input type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="+52 55 1234 5678" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400 transition-colors" />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Correo de contacto</label>
+                        <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="hola@estudio.mx" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400 transition-colors" />
+                    </div>
                     <div>
                         <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Sitio web</label>
                         <div className="flex items-center border border-white/[0.08] rounded-xl overflow-hidden focus-within:border-amber-400 transition-colors">
@@ -186,10 +293,11 @@ export default function StudioGeneral() {
 
             {/* Save */}
             <div className="flex items-center gap-3">
-                <button type="submit" className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all ${saved ? "bg-green-500 text-white" : "bg-amber-400 hover:bg-amber-500 text-black hover:scale-105 active:scale-95"}`}>
-                    {saved ? <><Check className="w-4 h-4" /> Guardado</> : "Guardar cambios"}
+                <button type="submit" disabled={fetcher.state !== "idle"} className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all ${saved ? "bg-green-500 text-white" : "bg-amber-400 hover:bg-amber-500 text-black hover:scale-105 active:scale-95"} disabled:opacity-60`}>
+                    {fetcher.state !== "idle" ? "Guardando..." : saved ? <><Check className="w-4 h-4" /> Guardado</> : "Guardar cambios"}
                 </button>
                 {saved && <p className="text-sm text-green-600 font-medium">Los cambios se guardaron correctamente.</p>}
+                {fetcher.data?.error && <p className="text-sm text-red-500 font-medium">{fetcher.data.error}</p>}
             </div>
         </form>
     );

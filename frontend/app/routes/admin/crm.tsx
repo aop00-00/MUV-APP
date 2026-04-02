@@ -32,17 +32,23 @@ import {
 // Auth and DB services moved to dynamic imports inside loader/action
 import { toast } from "react-hot-toast";
 
-// ─── Mock Data ────────────────────────────────────────────────────
-const MOCK_LEADS: Lead[] = [
-    { id: "lead-001", full_name: "Sofía Torres", email: "sofia.t@gmail.com", phone: "+52 55 1111 2222", source: "instagram", stage: "new", notes: "Le interesa el plan Elite", assigned_to: null, days_in_stage: 1, created_at: "2026-03-01T10:00:00Z", updated_at: "2026-03-01T10:00:00Z" },
-    { id: "lead-002", full_name: "Diego Hernández", email: "diego.h@gmail.com", phone: "+52 55 3333 4444", source: "referral", stage: "new", notes: "Referido por María García", assigned_to: null, days_in_stage: 2, created_at: "2026-02-28T09:00:00Z", updated_at: "2026-02-28T09:00:00Z" },
-    { id: "lead-003", full_name: "Valeria Ruiz", email: "val.ruiz@hotmail.com", phone: null, source: "web", stage: "contacted", notes: "Contestó WhatsApp, quiere info de horarios", assigned_to: null, days_in_stage: 3, created_at: "2026-02-27T11:00:00Z", updated_at: "2026-03-01T14:00:00Z" },
-    { id: "lead-004", full_name: "Andrés López", email: "andres.lz@gmail.com", phone: "+52 55 5555 6666", source: "google", stage: "contacted", notes: "Preguntó por membresía anual", assigned_to: null, days_in_stage: 1, created_at: "2026-02-28T16:00:00Z", updated_at: "2026-03-01T16:00:00Z" },
-    { id: "lead-005", full_name: "Camila Vega", email: "cami.vega@gmail.com", phone: "+52 55 7777 8888", source: "instagram", stage: "trial", notes: "Prueba el sábado 9am CrossFit", assigned_to: null, days_in_stage: 2, created_at: "2026-02-27T08:00:00Z", updated_at: "2026-03-01T08:00:00Z" },
-    { id: "lead-006", full_name: "Javier Morales", email: "javier.m@yahoo.com", phone: "+52 55 9999 0000", source: "walk_in", stage: "trial", notes: "Vino de pasada, le gustó el gym", assigned_to: null, days_in_stage: 5, created_at: "2026-02-25T10:00:00Z", updated_at: "2026-02-28T10:00:00Z" },
-    { id: "lead-007", full_name: "Lucía Medina", email: "lucia.med@gmail.com", phone: "+52 55 1234 5678", source: "referral", stage: "converted", notes: "Compró Plan Starter", assigned_to: null, days_in_stage: 0, created_at: "2026-02-20T12:00:00Z", updated_at: "2026-03-01T12:00:00Z" },
-    { id: "lead-008", full_name: "Roberto Aguirre", email: "rober.ag@gmail.com", phone: null, source: "facebook", stage: "lost", notes: "Precio fuera de su presupuesto", assigned_to: null, days_in_stage: 8, created_at: "2026-02-22T09:00:00Z", updated_at: "2026-03-01T09:00:00Z" },
-];
+// Types used locally (matching database.ts Lead type)
+type LeadStage = "new" | "contacted" | "trial" | "converted" | "lost";
+type LeadSource = "instagram" | "referral" | "web" | "walk_in" | "facebook" | "google";
+interface Lead {
+    id: string;
+    full_name: string;
+    email: string;
+    phone: string | null;
+    source: LeadSource;
+    stage: LeadStage;
+    notes: string | null;
+    assigned_to: string | null;
+    days_in_stage: number;
+    gym_id?: string;
+    created_at: string;
+    updated_at: string;
+}
 
 const STAGES: { key: LeadStage; label: string; color: string; border: string; icon: React.ElementType }[] = [
     { key: "new", label: "Nuevos", color: "text-blue-500", border: "border-blue-500/30", icon: Users },
@@ -63,43 +69,55 @@ const SOURCE_ICONS: Record<LeadSource, { icon: React.ElementType; label: string;
 
 // ─── Loader & Action ─────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
-    const { requireGymAdmin } = await import("~/services/gym.server");
-    const { profile, gymId } = await requireGymAdmin(request);
-    const total = MOCK_LEADS.length;
-    const converted = MOCK_LEADS.filter((l) => l.stage === "converted").length;
+    const { requirePlanAccess } = await import("~/services/plan-access.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requirePlanAccess(request, "/admin/crm");
+
+    const { data: leads, error } = await supabaseAdmin
+        .from("leads")
+        .select("*")
+        .eq("gym_id", gymId)
+        .order("created_at", { ascending: false });
+
+    if (error) console.error("[crm] Error fetching leads:", error);
+
+    // Calculate days_in_stage from updated_at (DB stores 0 by default)
+    const allLeads = (leads ?? []).map((l: any) => ({
+        ...l,
+        days_in_stage: Math.max(0, Math.floor((Date.now() - new Date(l.updated_at).getTime()) / (1000 * 60 * 60 * 24))),
+    })) as Lead[];
+
+    const total = allLeads.length;
+    const converted = allLeads.filter((l) => l.stage === "converted").length;
     const conversionRate = total > 0 ? Math.round((converted / total) * 100) : 0;
-    const newThisWeek = MOCK_LEADS.filter((l) => l.days_in_stage <= 7 && l.stage === "new").length;
-    return { leads: MOCK_LEADS, stats: { total, converted, conversionRate, newThisWeek } };
+    const newThisWeek = allLeads.filter((l) => {
+        const daysSinceCreated = Math.floor((Date.now() - new Date(l.created_at).getTime()) / (1000 * 60 * 60 * 24));
+        return daysSinceCreated <= 7 && l.stage === "new";
+    }).length;
+
+    return { leads: allLeads, stats: { total, converted, conversionRate, newThisWeek } };
 }
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { supabase } = await import("~/lib/db.server");
-    const { profile, gymId } = await requireGymAdmin(request);
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
 
     if (intent === "move_stage") {
         const leadId = formData.get("leadId") as string;
-        const newStage = formData.get("stage") as LeadStage;
+        const newStage = formData.get("stage") as string;
 
-        // Update Supabase
-        const { error } = await supabase
+        const { error } = await supabaseAdmin
             .from("leads")
-            .update({ stage: newStage })
-            .eq("id", leadId);
+            .update({ stage: newStage, updated_at: new Date().toISOString() })
+            .eq("id", leadId)
+            .eq("gym_id", gymId);
 
         if (error) {
-            console.error("[crm] Error updating lead stage in Supabase:", error);
-            // Return error so the client can show a toast.
+            console.error("[crm] Error updating lead stage:", error);
             return { success: false, error: "No se pudo actualizar el estado en la base de datos." };
-        }
-
-        // Mutate local mock array so normal flow sees the updated state (Temporary until mock is removed)
-        const lead = MOCK_LEADS.find(l => l.id === leadId);
-        if (lead) {
-            lead.stage = newStage;
-            lead.updated_at = new Date().toISOString();
         }
 
         return { success: true, intent };
@@ -109,35 +127,56 @@ export async function action({ request }: Route.ActionArgs) {
         const full_name = formData.get("full_name") as string;
         const email = formData.get("email") as string;
         const phone = formData.get("phone") as string || null;
-        const source = formData.get("source") as LeadSource;
+        const source = formData.get("source") as string;
         const notes = formData.get("notes") as string || null;
 
-        const newLeadData = {
-            full_name,
-            email,
-            phone,
-            source,
-            stage: "new" as LeadStage,
-            notes,
-            days_in_stage: 0,
-        };
-
-        const { data: insertedLead, error } = await supabase
+        const { error } = await supabaseAdmin
             .from("leads")
-            .insert(newLeadData)
-            .select()
-            .single();
+            .insert({
+                gym_id: gymId,
+                full_name,
+                email,
+                phone,
+                source,
+                stage: "new",
+                notes,
+            });
 
         if (error) {
             console.error("[crm] Error creating new lead:", error);
             return { success: false, error: "Error al crear el lead en la base de datos." };
         }
 
-        // Add to MOCK_LEADS temporarily so it shows up without needing real DB fetch logic for loader yet
-        if (insertedLead) {
-            MOCK_LEADS.unshift(insertedLead as Lead);
-        }
+        return { success: true, intent };
+    }
 
+    if (intent === "delete_lead") {
+        const leadId = formData.get("leadId") as string;
+
+        const { error } = await supabaseAdmin
+            .from("leads")
+            .delete()
+            .eq("id", leadId)
+            .eq("gym_id", gymId);
+
+        if (error) {
+            console.error("[crm] Error deleting lead:", error);
+            return { success: false, error: "Error al eliminar el lead." };
+        }
+        return { success: true, intent };
+    }
+
+    if (intent === "update_notes") {
+        const leadId = formData.get("leadId") as string;
+        const notes = formData.get("notes") as string;
+
+        const { error } = await supabaseAdmin
+            .from("leads")
+            .update({ notes, updated_at: new Date().toISOString() })
+            .eq("id", leadId)
+            .eq("gym_id", gymId);
+
+        if (error) return { success: false, error: "Error al actualizar notas." };
         return { success: true, intent };
     }
 
@@ -515,7 +554,7 @@ export default function AdminCRM({ loaderData }: Route.ComponentProps) {
                 onDragOver={handleDragOver}
                 onDragEnd={handleDragEnd}
             >
-                <div className="flex lg:grid lg:grid-cols-5 gap-3 lg:gap-4 overflow-x-auto pb-6 snap-x snap-mandatory hide-scrollbar">
+                <div className="grid grid-cols-1 md:flex md:flex-nowrap lg:grid lg:grid-cols-5 gap-3 lg:gap-4 overflow-x-auto pb-6 snap-x snap-mandatory mb-4 hide-scrollbar">
                     {STAGES.map((stage) => {
                         const stageLeads = getLeadsByStage(stage.key);
                         return <DroppableColumn key={stage.key} stage={stage} stageLeads={stageLeads} />;

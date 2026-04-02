@@ -1,9 +1,23 @@
-import { useState } from "react";
+// admin/coaches.tsx — Coach management (Supabase)
+import type { Route } from "./+types/coaches";
+import { useFetcher } from "react-router";
+import { useState, useEffect } from "react";
 import { UserCog, Plus, Mail, MoreHorizontal, CheckCircle, Clock, Trash2 } from "lucide-react";
-import { useTenant, type Coach } from "~/context/TenantContext";
 
 type Role = "titular" | "part-time" | "sustituto";
 type Status = "activo" | "invitado" | "inactivo";
+
+interface Coach {
+    id: string;
+    name: string;
+    email: string;
+    role: Role;
+    specialties: string[];
+    status: Status;
+    sessionsThisMonth: number;
+    joinedAt: string;
+    avatar: string;
+}
 
 const ROLE_LABELS: Record<Role, string> = { titular: "Titular", "part-time": "Part-time", sustituto: "Sustituto" };
 const ROLE_COLORS: Record<Role, string> = { titular: "bg-purple-100 text-purple-700", "part-time": "bg-blue-100 text-blue-700", sustituto: "bg-white/5/10 text-white/60" };
@@ -12,38 +26,109 @@ const STATUS_CFG: Record<Status, { label: string; icon: React.ReactNode; color: 
     invitado: { label: "Invitado", icon: <Clock className="w-3.5 h-3.5" />, color: "text-amber-600" },
     inactivo: { label: "Inactivo", icon: <MoreHorizontal className="w-3.5 h-3.5" />, color: "text-white/40" },
 };
-
 const AVATAR_COLORS = ["bg-amber-100 text-amber-700", "bg-purple-100 text-purple-700", "bg-green-100 text-green-700", "bg-blue-100 text-blue-700", "bg-pink-100 text-pink-700"];
 
-export default function Coaches() {
-    const { config, addCoach, removeCoach } = useTenant();
-    const coaches = config.coaches;
-    const [showModal, setShowModal] = useState(false);
-    const [sent, setSent] = useState(false);
-    const [form, setForm] = useState({ name: "", email: "", role: "titular" as Role, specialties: "" });
+// ─── Loader & Action ─────────────────────────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
+    const { getGymCoaches } = await import("~/services/coach.server");
 
-    function handleAdd() {
-        const newCoach: Coach = {
-            id: `co${Date.now()}`,
-            name: form.name,
-            email: form.email,
-            role: form.role,
-            specialties: form.specialties.split(",").map(s => s.trim()).filter(Boolean),
-            status: "activo",
-            sessionsThisMonth: 0,
-            joinedAt: new Date().toLocaleDateString("es-MX", { month: "short", year: "numeric" }),
-            avatar: form.name.split(" ").map(n => n[0]).join("").substring(0, 2).toUpperCase(),
-        };
-        addCoach(newCoach);
-        setSent(true);
-        setTimeout(() => {
-            setSent(false);
-            setShowModal(false);
-            setForm({ name: "", email: "", role: "titular", specialties: "" });
-        }, 1500);
+    const rawCoaches = await getGymCoaches(gymId);
+
+    const coaches: Coach[] = rawCoaches.map(c => ({
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        role: c.role,
+        specialties: c.specialties ?? [],
+        status: c.status,
+        sessionsThisMonth: c.sessions_this_month,
+        joinedAt: new Date(c.created_at).toLocaleDateString("es-MX", { month: "short", year: "numeric" }),
+        avatar: c.name.split(" ").map(n => n[0]).join("").substring(0, 2).toUpperCase(),
+    }));
+
+    return { coaches };
+}
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "create") {
+        const { createCoach } = await import("~/services/coach.server");
+        const specialtiesRaw = formData.get("specialties") as string || "";
+
+        // Enforce per-plan coach limits (DB trigger is the hard stop, this is the UX layer)
+        const { PLAN_FEATURES } = await import("~/config/plan-features");
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const { data: gymData } = await supabaseAdmin.from("gyms").select("plan_id").eq("id", gymId).single();
+        const gymPlanDef = PLAN_FEATURES[(gymData?.plan_id || "starter") as keyof typeof PLAN_FEATURES];
+        const coachLimit = gymPlanDef?.maxCoaches;
+        if (coachLimit != null) {   // null/undefined = unlimited
+            const { getGymCoaches } = await import("~/services/coach.server");
+            const existing = await getGymCoaches(gymId);
+            if (existing.length >= coachLimit) {
+                return {
+                    success: false,
+                    error: `Tu plan ${gymPlanDef.label} permite máximo ${coachLimit} coach activo. Actualiza para gestionar tu equipo completo.`,
+                    limitReached: "coaches",
+                };
+            }
+        }
+        await createCoach({
+            gymId,
+            name: formData.get("name") as string,
+            email: formData.get("email") as string,
+            role: formData.get("role") as string,
+            specialties: specialtiesRaw.split(",").map(s => s.trim()).filter(Boolean),
+        });
+        return { success: true, intent };
     }
 
-    const remove = (id: string) => removeCoach(id);
+    if (intent === "delete") {
+        const { deleteCoach } = await import("~/services/coach.server");
+        const coachId = formData.get("coachId") as string;
+        await deleteCoach(coachId, gymId);
+        return { success: true, intent };
+    }
+
+    return { success: false };
+}
+
+// ─── Component ───────────────────────────────────────────────────
+export default function Coaches({ loaderData }: Route.ComponentProps) {
+    const { coaches } = loaderData;
+    const fetcher = useFetcher();
+    const [showModal, setShowModal] = useState(false);
+    const [form, setForm] = useState({ name: "", email: "", role: "titular" as Role, specialties: "" });
+
+    // Close modal after successful creation
+    useEffect(() => {
+        if (fetcher.state === "idle" && fetcher.data?.success && fetcher.data?.intent === "create") {
+            setShowModal(false);
+            setForm({ name: "", email: "", role: "titular", specialties: "" });
+        }
+    }, [fetcher.state, fetcher.data]);
+
+    function save() {
+        const formData = new FormData();
+        formData.set("intent", "create");
+        formData.set("name", form.name);
+        formData.set("email", form.email);
+        formData.set("role", form.role);
+        formData.set("specialties", form.specialties);
+        fetcher.submit(formData, { method: "post" });
+    }
+
+    function remove(id: string) {
+        const formData = new FormData();
+        formData.set("intent", "delete");
+        formData.set("coachId", id);
+        fetcher.submit(formData, { method: "post" });
+    }
 
     const active = coaches.filter(c => c.status === "activo").length;
     const pending = coaches.filter(c => c.status === "invitado").length;
@@ -138,7 +223,7 @@ export default function Coaches() {
                 </div>
             )}
 
-            {/* Invite modal */}
+            {/* Add coach modal */}
             {showModal && (
                 <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white/5 rounded-2xl shadow-2xl w-full max-w-md">
@@ -146,35 +231,23 @@ export default function Coaches() {
                             <h2 className="text-lg font-black text-white">Agregar nuevo coach</h2>
                             <p className="text-sm text-white/50 mt-0.5">Ingresa los detalles para crear el perfil del instructor.</p>
                         </div>
-                        {sent ? (
-                            <div className="p-12 text-center space-y-3">
-                                <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-                                    <CheckCircle className="w-7 h-7 text-green-600" />
-                                </div>
-                                <p className="font-bold text-white">¡Coach agregado!</p>
-                                <p className="text-sm text-white/50">{form.name} ya está listo en el sistema.</p>
+                        <div className="p-6 space-y-4">
+                            <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Nombre completo *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Valentina Cruz" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
+                            <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Correo electrónico *</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="coach@ejemplo.com" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
+                            <div>
+                                <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Rol</label>
+                                <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))} className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm bg-white/5 focus:outline-none focus:border-amber-400">
+                                    {Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                </select>
                             </div>
-                        ) : (
-                            <>
-                                <div className="p-6 space-y-4">
-                                    <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Nombre completo *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Valentina Cruz" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
-                                    <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Correo electrónico *</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="coach@ejemplo.com" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
-                                    <div>
-                                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Rol</label>
-                                        <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))} className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm bg-white/5 focus:outline-none focus:border-amber-400">
-                                            {Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                                        </select>
-                                    </div>
-                                    <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Especialidades (separadas por coma)</label><input value={form.specialties} onChange={e => setForm(f => ({ ...f, specialties: e.target.value }))} placeholder="Pilates Reformer, Yoga Flow" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
-                                </div>
-                                <div className="p-6 border-t border-white/5 flex gap-3">
-                                    <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 border border-white/[0.08] rounded-xl text-sm font-medium text-white/60 hover:bg-white/5">Cancelar</button>
-                                    <button onClick={handleAdd} disabled={!form.name || !form.email} className="flex-1 flex items-center justify-center gap-2 bg-amber-400 hover:bg-amber-500 disabled:bg-white/5/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">
-                                        <Plus className="w-4 h-4" /> Guardar coach
-                                    </button>
-                                </div>
-                            </>
-                        )}
+                            <div><label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Especialidades (separadas por coma)</label><input value={form.specialties} onChange={e => setForm(f => ({ ...f, specialties: e.target.value }))} placeholder="Pilates Reformer, Yoga Flow" className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" /></div>
+                        </div>
+                        <div className="p-6 border-t border-white/5 flex gap-3">
+                            <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 border border-white/[0.08] rounded-xl text-sm font-medium text-white/60 hover:bg-white/5">Cancelar</button>
+                            <button onClick={save} disabled={!form.name || !form.email} className="flex-1 flex items-center justify-center gap-2 bg-amber-400 hover:bg-amber-500 disabled:bg-white/5/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">
+                                <Plus className="w-4 h-4" /> Guardar coach
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

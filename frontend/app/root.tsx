@@ -1,7 +1,6 @@
 // app/root.tsx
 // Root layout for the entire app.
-// The root loader identifies the tenant and injects its config
-// via TenantProvider so ALL routes inherit brand colors + fiscal rules.
+// The root loader identifies the gym and makes its config available to all routes.
 
 import React, { type ReactNode } from "react";
 
@@ -21,12 +20,38 @@ import {
 import type { Route } from "./+types/root";
 import "./app.css";
 
-import {
-  TenantProvider,
-  DEFAULT_TENANT,
-  type TenantConfig,
-} from "~/context/TenantContext";
 import { Toaster } from "react-hot-toast";
+
+// ─── Types ────────────────────────────────────────────────────────
+type TenantConfig = {
+  id: string;
+  name: string;
+  logo: string;
+  primaryColor: string;
+  accentColor: string;
+  taxRegion: "MX" | "AR" | "CL";
+  currency: string;
+  timezone: string;
+  features: {
+    fiscal: boolean;
+    mercadoPago: boolean;
+    accessControl: boolean;
+  };
+  coaches: Array<{ id: string; name: string }>;
+};
+
+const DEFAULT_TENANT: TenantConfig = {
+  id: "default",
+  name: "GRIND PROJECT",
+  logo: "💪",
+  primaryColor: "#3b82f6",
+  accentColor: "#8b5cf6",
+  taxRegion: "MX",
+  currency: "MXN",
+  timezone: "America/Mexico_City",
+  features: { fiscal: false, mercadoPago: false, accessControl: false },
+  coaches: [],
+};
 
 // ─── Google Fonts ─────────────────────────────────────────────────
 export const links: Route.LinksFunction = () => [
@@ -38,7 +63,7 @@ export const links: Route.LinksFunction = () => [
   },
   {
     rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
+    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Outfit:wght@100..900&display=swap",
   },
 ];
 
@@ -80,40 +105,51 @@ export function Layout({ children }: { children: ReactNode }) {
 export async function loader({ request }: Route.LoaderArgs) {
   let tenant: TenantConfig = DEFAULT_TENANT;
 
+  // Detect subdomain (e.g. "estudio" from estudio.grindproject.com)
+  const { getSubdomain } = await import("./services/subdomain.server");
+  const subdomain = getSubdomain(request);
+
   // Only attempt Supabase if env vars are present (avoids 500 in local dev
   // without a configured .env file or when SUPABASE_URL is missing)
   const supabaseUrl = typeof process !== "undefined" ? process.env.SUPABASE_URL : undefined;
   if (!supabaseUrl) {
-    return { tenant };
+    return { tenant, subdomain };
   }
 
   try {
-    // Lazy require avoids a hard crash at module load if @supabase/supabase-js
-    // env vars are missing. Use require() not import() to keep SSR compat.
     const { supabaseAdmin } = await import("./services/supabase.server");
 
     // Resolve which gym to display:
-    // 1. Try to get the authenticated user's gym_id from the session
-    // 2. Fall back to: first gym in the DB (single-tenant demo mode)
+    // Priority: 1) subdomain slug  2) session gym_id  3) first gym in DB
     let gymId: string | null = null;
 
-    try {
-      const { getSession } = await import("./services/auth.server");
-      const session = await getSession(request);
-      const userId = session.get("userId");
-      if (userId) {
-        const { data: profile } = await supabaseAdmin
-          .from("profiles")
-          .select("gym_id")
-          .eq("id", userId)
-          .single();
-        gymId = profile?.gym_id ?? null;
-      }
-    } catch {
-      // No active session — demo mode
+    // 1. If on a subdomain, resolve gym by slug (takes priority)
+    if (subdomain) {
+      const { getGymBySlug } = await import("./services/gym-lookup.server");
+      const subdomainGym = await getGymBySlug(subdomain);
+      if (subdomainGym) gymId = subdomainGym.id;
     }
 
-    // If still no gymId (unauthenticated visitor), use the first gym as demo
+    // 2. Try to get the authenticated user's gym_id from the session
+    if (!gymId) {
+      try {
+        const { getSession } = await import("./services/auth.server");
+        const session = await getSession(request);
+        const userId = session.get("userId");
+        if (userId) {
+          const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("gym_id")
+            .eq("id", userId)
+            .single();
+          gymId = profile?.gym_id ?? null;
+        }
+      } catch {
+        // No active session — demo mode
+      }
+    }
+
+    // 3. If still no gymId (unauthenticated visitor on main domain), use first gym
     if (!gymId) {
       const { data: firstGym } = await supabaseAdmin
         .from("gyms")
@@ -125,7 +161,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       gymId = firstGym?.id ?? null;
     }
 
-    if (!gymId) return { tenant }; // No gym found → use DEFAULT_TENANT
+    if (!gymId) return { tenant, subdomain };
 
     const { data: gym } = await supabaseAdmin
       .from("gyms")
@@ -154,22 +190,18 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
-  return { tenant };
+  return { tenant, subdomain };
 }
 
 // ─── App Root ─────────────────────────────────────────────────────
-// Wrapping with TenantProvider here means every child route gets access
-// to useTenant() and the --primary-brand / --accent-brand CSS variables.
-// Component-level classes like `bg-brand` or `text-brand` automatically
-// reflect the active studio's palette.
+// The tenant config is available via useRouteLoaderData("root") in any route
 
-export default function App({ loaderData }: Route.ComponentProps) {
-  const { tenant } = loaderData;
+export default function App() {
   return (
-    <TenantProvider config={tenant}>
+    <>
       <Outlet />
       <Toaster position="top-right" />
-    </TenantProvider>
+    </>
   );
 }
 

@@ -13,16 +13,16 @@ const FAQS = [
         a: "No. El onboarding es guiado y lo puedes hacer en menos de 30 minutos sin conocimientos técnicos. Sin embargo, ofrecemos sesiones de configuración asistida si lo prefieres.",
     },
     {
-        q: "¿Cómo funciona la facturación CFDI 4.0 en México?",
-        a: "Cuando un alumno paga (en línea o en efectivo), el sistema timbra automáticamente el comprobante fiscal ante el SAT y lo envía al correo del cliente. No necesitas Facturama ni ningún otro servicio externo.",
+        q: "¿Qué incluye el servicio de Landing Page Personalizada?",
+        a: "Diseñamos una interfaz profesional y moderna de una sola página (Landing Page), optimizada para conversiones y completamente integrada con tu ecosistema de Project Studio.",
     },
     {
-        q: "¿Puedo migrar mis datos desde Mindbody o Vagaro?",
-        a: "Sí. Ofrecemos importación de clientes, historial de membresías y paquetes desde CSV o directamente por API. El soporte te ayuda en el proceso sin costo adicional.",
+        q: "¿Cómo se integra mi nueva web con la plataforma?",
+        a: "La integración es nativa y automática. Tus clientes pueden ver horarios, reservar clases y realizar pagos directamente desde tu landing page sin fricciones ni procesos manuales.",
     },
     {
-        q: "¿Funciona sin internet en el estudio?",
-        a: "El lector de QR guarda una caché local de usuarios válidos, por lo que puede operar hasta 4 horas sin conexión. Las reservas y pagos se sincronizan al reconectarse.",
+        q: "¿Tiene un costo extra el diseño de mi sitio web?",
+        a: "Sí, es un servicio adicional con una tarifa única de implementación. Los usuarios en planes Pro y Elite disfrutan de descuentos exclusivos y soporte prioritario en el mantenimiento.",
     },
     {
         q: "¿Cuántos estudios puedo gestionar con un plan?",

@@ -45,7 +45,7 @@ export async function requireGymAuth(request: Request): Promise<{
     // Verify gym exists and is active
     const { data: gym, error } = await supabaseAdmin
         .from("gyms")
-        .select("id, plan_status, name, slug")
+        .select("id, plan_id, plan_status, trial_ends_at, name, slug")
         .eq("id", profile.gym_id)
         .single();
 
@@ -79,6 +79,10 @@ export async function requireGymAuth(request: Request): Promise<{
 
     // Check gym status
     if (gym.plan_status === 'suspended' || gym.plan_status === 'cancelled') {
+        // If suspended due to trial expiry, redirect to upgrade page
+        if (gym.plan_status === 'suspended') {
+            throw redirect("/admin/upgrade");
+        }
         console.warn(`[ACCESS DENIED] User ${profile.id} tried to access suspended gym ${gym.id} (${gym.name})`);
         throw json(
             {
@@ -88,6 +92,19 @@ export async function requireGymAuth(request: Request): Promise<{
             },
             { status: 403 }
         );
+    }
+
+    // Check trial expiry — lazily suspend if trial has ended
+    if (gym.plan_status === 'trial' && gym.trial_ends_at) {
+        const trialEnd = new Date(gym.trial_ends_at);
+        if (trialEnd < new Date()) {
+            console.warn(`[TRIAL EXPIRED] Gym ${gym.id} (${gym.name}) trial ended at ${gym.trial_ends_at}`);
+            await supabaseAdmin
+                .from("gyms")
+                .update({ plan_status: "suspended" })
+                .eq("id", gym.id);
+            throw redirect("/admin/upgrade");
+        }
     }
 
     return {
@@ -115,6 +132,44 @@ export async function requireGymAdmin(request: Request): Promise<{
             { error: "Acceso solo para administradores" },
             { status: 403 }
         );
+    }
+
+    return { profile, gymId };
+}
+
+/**
+ * Onboarding guard - blocks access to admin panel until setup is complete.
+ * Use this in admin layout loader instead of requireGymAdmin.
+ *
+ * Validates:
+ * 1. User has valid gym_id and is admin (via requireGymAdmin)
+ * 2. Gym has completed post-checkout onboarding
+ *
+ * @throws redirect to /onboarding/setup if onboarding not completed
+ * @returns Profile and validated gymId
+ */
+export async function requireOnboardingComplete(request: Request): Promise<{
+    profile: Profile;
+    gymId: string;
+}> {
+    const { profile, gymId } = await requireGymAdmin(request);
+
+    const { data: gym, error } = await supabaseAdmin
+        .from("gyms")
+        .select("onboarding_completed, created_at")
+        .eq("id", gymId)
+        .single();
+
+    if (error || !gym) {
+        console.error(`[ONBOARDING] Gym ${gymId} not found for user ${profile.id}`, error);
+        throw json({ error: "Gym not found" }, { status: 404 });
+    }
+
+    // Legacy gyms (created before migration) are automatically marked complete in migration
+    // New gyms (created after migration) must complete onboarding
+    if (!gym.onboarding_completed) {
+        console.warn(`[ONBOARDING] Blocking admin access for gym ${gymId} - onboarding incomplete`);
+        throw redirect("/onboarding/setup");
     }
 
     return { profile, gymId };

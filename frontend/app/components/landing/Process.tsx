@@ -25,15 +25,13 @@ const ENTRIES: Entry[] = [
         icon: Package,
         step: "01",
         title: "Elige tu plan",
-        subtitle: "Starter, Pro o Elite · 7 días gratis",
+        subtitle: "Starter, Pro o Elite · Digitalización total",
         description:
-            "Sin tarjeta de crédito ni contratos forzosos. Elige el plan que se adapte al tamaño actual de tu estudio y escala cuando lo necesites. Puedes cambiar de plan en cualquier momento desde tu panel.",
+            "Escoge un plan sin contratos forzosos y escala las funciones de tu estudio según crezca tu comunidad.",
         items: [
-            "Starter — hasta 1 sede y 80 alumnas activas, ideal para estudios que arrancan",
-            "Pro — hasta 3 sedes, alumnas ilimitadas, facturación fiscal y CRM de leads",
-            "Elite — sedes ilimitadas, API pública, marca blanca y gerente de cuenta dedicado",
-            "Todos los planes incluyen 7 días de prueba gratuita completa",
-            "Sin penalizaciones si decides cancelar en cualquier momento",
+            "Comienza gratis con el plan Starter.",
+            "Planes flexibles: Starter, Pro y Elite.",
+            "Cancela o cambia de nivel en cualquier momento.",
         ],
         button: { to: "/onboarding", text: "Ver planes y precios" },
     },
@@ -43,30 +41,24 @@ const ENTRIES: Entry[] = [
         title: "Configura tu estudio",
         subtitle: "Listo en menos de 10 minutos",
         description:
-            "El asistente de configuración te guía paso a paso. Ingresa el nombre del estudio, carga tu paleta de colores y logotipo, define los tipos de clase que ofreces, establece horarios, capacidades y precios. No necesitas apoyo técnico.",
+            "Nuestro asistente inteligente te guía paso a paso para dejar todo operando en tiempo récord.",
         items: [
-            "Carga tu logotipo y define la paleta de color de tu marca",
-            "Crea tipos de clase: Pilates Mat, Reformer, Barre, Yoga Ashtanga, CrossFit, etc.",
-            "Define horarios recurrentes o sesiones únicas con control de cupos por clase",
-            "Configura métodos de pago: Mercado Pago, Kushki, Conekta o SPEI",
-            "Activa la facturación fiscal automática (CFDI 4.0 / AFIP / SII según tu país)",
-            "Conecta el lector de acceso QR o torniquete si cuentas con control físico",
+            "Personaliza con tu logo, colores y marca única.",
+            "Crea tus tipos de clase, horarios y control de cupos.",
+            "Configura tus métodos de pago y facturación automática.",
         ],
     },
     {
         icon: Users,
         step: "03",
         title: "Invita a tu equipo",
-        subtitle: "Roles diferenciados por función",
+        subtitle: "Roles específicos por función",
         description:
-            "Cada miembro del equipo ve solo lo que necesita. El sistema de roles garantiza que la información sensible (finanzas, datos personales) esté disponible solo para quien corresponda. Añade tantos usuarios como necesites sin costo adicional.",
+            "Define permisos granulares para que cada miembro acceda solo a la información que le corresponde.",
         items: [
-            "Admin — acceso total: métricas, finanzas, configuración, CRM y reportes",
-            "Recepcionista — reservas, cobros en caja y gestión de alumnas",
-            "Coach / Instructor — vista de su agenda y lista de asistentes por clase",
-            "Barista / Tienda — punto de venta para consumibles o complementos",
-            "Alumna — app self-service para reservas, historial y FitCoins",
-            "Invitaciones por email con link de activación seguro (token de un solo uso)",
+            "Paneles para Admin, Recepción y Coaches.",
+            "App auto-servicio para reservas y pagos de alumnas.",
+            "Invitaciones seguras por email con un solo clic.",
         ],
     },
     {
@@ -75,14 +67,11 @@ const ENTRIES: Entry[] = [
         title: "Abre las puertas",
         subtitle: "En operación en menos de un día",
         description:
-            "Comparte el link de reservas con tus alumnas por WhatsApp, Instagram o correo. A partir de ese momento el sistema trabaja por ti: cobra membresías recurrentes, timbra facturas, envía recordatorios automáticos y registra cada acceso al estudio.",
+            "Automatizamos las ventas, recordatorios y accesos para que tú te enfoques en brindar la mejor clase.",
         items: [
-            "Link de reservas personalizado con tu dominio o subdominio (ej. mibarre.projectstudio.app)",
-            "Cobros recurrentes automáticos en la fecha de renovación de cada membresía",
-            "Recordatorios de clase por WhatsApp / email 24h y 1h antes",
-            "QR de acceso generado automáticamente al confirmar reserva y pago",
-            "Dashboard en tiempo real: asistencia, ingresos y leads del día",
-            "Soporte en español vía chat — tiempo de respuesta promedio < 2 horas",
+            "Link de reservas directo para WhatsApp e Instagram.",
+            "Notificaciones automáticas y acceso físico por QR.",
+            "Métricas clave y dashboard de ingresos en tiempo real.",
         ],
         button: { to: "/onboarding", text: "Empezar ahora" },
     },
@@ -124,7 +113,7 @@ export default function Process() {
                 {/* Header */}
                 <ScrollReveal>
                     <p className="text-white/60 text-sm uppercase tracking-widest mb-3">Así de fácil</p>
-                    <h2 className="text-4xl md:text-5xl font-black text-white mb-4 leading-tight">
+                    <h2 className="text-4xl md:text-5xl font-semibold text-white mb-4 leading-tight">
                         Operativo en<br />
                         <span className="text-white/70">menos de un día</span>
                     </h2>
@@ -152,8 +141,8 @@ export default function Process() {
                                         className="absolute -top-20 left-0 h-8 w-8 opacity-0 pointer-events-none"
                                     />
 
-                                    {/* Sticky left meta column - optimized for mobile with sticky top-24 instead of md:sticky top-10 */}
-                                    <div className="sticky top-24 flex h-min w-full md:w-56 shrink-0 items-center md:items-start gap-4 md:gap-3 z-10 bg-[#0a0a0a]/80 backdrop-blur-md md:bg-transparent md:backdrop-blur-none py-2 md:py-0 border-b border-white/10 md:border-none -mx-6 px-6 md:mx-0 md:px-0">
+                                    {/* Sticky left meta column - optimized for mobile: relative on mobile, sticky on desktop */}
+                                    <div className="relative md:sticky md:top-24 flex h-min w-full md:w-56 shrink-0 items-center md:items-start gap-4 md:gap-3 z-10 bg-transparent py-2 md:py-0 border-b border-white/10 md:border-none -mx-0 px-0 md:mx-0 md:px-0 mb-4 md:mb-0">
                                         <div
                                             className="p-2.5 rounded-xl transition-all duration-300 flex-shrink-0"
                                             style={{

@@ -1,26 +1,22 @@
-// admin/sustituciones.tsx — Coach substitution approval flow
+// admin/sustituciones.tsx — Coach substitution approval flow (Supabase)
+import type { Route } from "./+types/sustituciones";
+import { useFetcher } from "react-router";
 import { useState } from "react";
-import { ArrowLeftRight, Check, X, Clock } from "lucide-react";
+import { ArrowLeftRight, Check, X } from "lucide-react";
 
 type Status = "pendiente" | "aprobada" | "rechazada";
 
 interface Substitution {
     id: string;
-    session: string;
-    date: string;
-    time: string;
-    originalCoach: string;
-    substituteCoach: string;
+    session_name: string;
+    session_date: string;
+    session_time: string;
+    original_coach: string;
+    substitute_coach: string;
     reason: string;
     status: Status;
-    requestedAt: string;
+    created_at: string;
 }
-
-const MOCK: Substitution[] = [
-    { id: "s1", session: "Pilates Reformer", date: "2025-05-12", time: "07:00", originalCoach: "Valentina Cruz", substituteCoach: "Mariana López", reason: "Cita médica", status: "pendiente", requestedAt: "hace 2 horas" },
-    { id: "s2", session: "Yoga Flow", date: "2025-05-10", time: "09:00", originalCoach: "Andrea Ríos", substituteCoach: "Sofía Gutiérrez", reason: "Viaje familiar", status: "aprobada", requestedAt: "hace 1 día" },
-    { id: "s3", session: "Barre", date: "2025-05-08", time: "11:00", originalCoach: "Camila Torres", substituteCoach: "Valentina Cruz", reason: "Emergencia personal", status: "rechazada", requestedAt: "hace 3 días" },
-];
 
 const STATUS_CONFIG: Record<Status, { label: string; bg: string; text: string }> = {
     pendiente: { label: "Pendiente", bg: "bg-amber-100", text: "text-amber-700" },
@@ -28,15 +24,55 @@ const STATUS_CONFIG: Record<Status, { label: string; bg: string; text: string }>
     rechazada: { label: "Rechazada", bg: "bg-red-100", text: "text-red-700" },
 };
 
-export default function Sustituciones() {
-    const [subs, setSubs] = useState<Substitution[]>(MOCK);
+function timeAgo(dateStr: string): string {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const hours = Math.floor(diff / 3600000);
+    if (hours < 1) return "hace unos minutos";
+    if (hours < 24) return `hace ${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `hace ${days}d`;
+}
+
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requirePlanAccess } = await import("~/services/plan-access.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requirePlanAccess(request, "/admin/sustituciones");
+
+    const { data, error } = await supabaseAdmin
+        .from("substitutions")
+        .select("*")
+        .eq("gym_id", gymId)
+        .order("created_at", { ascending: false });
+
+    if (error) console.error("[sustituciones] Error:", error);
+    return { substitutions: (data ?? []) as Substitution[] };
+}
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+    const id = formData.get("id") as string;
+
+    if (intent === "approve") {
+        await supabaseAdmin.from("substitutions").update({ status: "aprobada" }).eq("id", id).eq("gym_id", gymId);
+    }
+    if (intent === "reject") {
+        await supabaseAdmin.from("substitutions").update({ status: "rechazada" }).eq("id", id).eq("gym_id", gymId);
+    }
+
+    return { success: true };
+}
+
+export default function Sustituciones({ loaderData }: Route.ComponentProps) {
+    const { substitutions } = loaderData;
+    const fetcher = useFetcher();
     const [filter, setFilter] = useState<Status | "todas">("todas");
 
-    function approve(id: string) { setSubs(s => s.map(x => x.id === id ? { ...x, status: "aprobada" } : x)); }
-    function reject(id: string) { setSubs(s => s.map(x => x.id === id ? { ...x, status: "rechazada" } : x)); }
-
-    const filtered = filter === "todas" ? subs : subs.filter(s => s.status === filter);
-    const pending = subs.filter(s => s.status === "pendiente").length;
+    const filtered = filter === "todas" ? substitutions : substitutions.filter(s => s.status === filter);
+    const pending = substitutions.filter(s => s.status === "pendiente").length;
 
     return (
         <div className="space-y-6">
@@ -51,7 +87,7 @@ export default function Sustituciones() {
             </div>
 
             {/* Filter tabs */}
-            <div className="flex items-center gap-2 bg-white/5/10 rounded-xl p-1 w-fit">
+            <div className="flex items-center gap-2 bg-white/10 rounded-xl p-1 w-fit">
                 {(["todas", "pendiente", "aprobada", "rechazada"] as const).map(f => (
                     <button key={f} onClick={() => setFilter(f)} className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-all ${filter === f ? "bg-white/5 shadow-sm text-white" : "text-white/50 hover:text-white/70"}`}>
                         {f === "todas" ? "Todas" : STATUS_CONFIG[f].label}
@@ -72,32 +108,40 @@ export default function Sustituciones() {
                             <div key={s.id} className="bg-white/5 rounded-xl border border-white/[0.08] p-5">
                                 <div className="flex items-start justify-between gap-4">
                                     <div className="flex items-start gap-4">
-                                        <div className="w-10 h-10 bg-white/5/10 rounded-xl flex items-center justify-center shrink-0 mt-0.5">
+                                        <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center shrink-0 mt-0.5">
                                             <ArrowLeftRight className="w-5 h-5 text-white/40" />
                                         </div>
                                         <div>
                                             <div className="flex items-center gap-2 mb-1">
-                                                <p className="font-bold text-white">{s.session}</p>
+                                                <p className="font-bold text-white">{s.session_name}</p>
                                                 <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${cfg.bg} ${cfg.text}`}>{cfg.label}</span>
                                             </div>
-                                            <p className="text-sm text-white/50">{s.date} · {s.time}</p>
+                                            <p className="text-sm text-white/50">{s.session_date} · {s.session_time}</p>
                                             <div className="flex items-center gap-2 mt-2 text-sm">
-                                                <span className="text-white/60 font-medium">{s.originalCoach}</span>
+                                                <span className="text-white/60 font-medium">{s.original_coach}</span>
                                                 <ArrowLeftRight className="w-3.5 h-3.5 text-white/40" />
-                                                <span className="text-white font-bold">{s.substituteCoach}</span>
+                                                <span className="text-white font-bold">{s.substitute_coach}</span>
                                             </div>
-                                            <p className="text-xs text-white/40 mt-1">Motivo: {s.reason} · Solicitado {s.requestedAt}</p>
+                                            <p className="text-xs text-white/40 mt-1">Motivo: {s.reason} · Solicitado {timeAgo(s.created_at)}</p>
                                         </div>
                                     </div>
 
                                     {s.status === "pendiente" && (
                                         <div className="flex items-center gap-2 shrink-0">
-                                            <button onClick={() => reject(s.id)} className="flex items-center gap-1.5 px-3 py-2 border border-white/[0.08] rounded-lg text-sm text-white/60 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all">
-                                                <X className="w-3.5 h-3.5" /> Rechazar
-                                            </button>
-                                            <button onClick={() => approve(s.id)} className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-all">
-                                                <Check className="w-3.5 h-3.5" /> Aprobar
-                                            </button>
+                                            <fetcher.Form method="post" className="inline">
+                                                <input type="hidden" name="intent" value="reject" />
+                                                <input type="hidden" name="id" value={s.id} />
+                                                <button type="submit" className="flex items-center gap-1.5 px-3 py-2 border border-white/[0.08] rounded-lg text-sm text-white/60 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all">
+                                                    <X className="w-3.5 h-3.5" /> Rechazar
+                                                </button>
+                                            </fetcher.Form>
+                                            <fetcher.Form method="post" className="inline">
+                                                <input type="hidden" name="intent" value="approve" />
+                                                <input type="hidden" name="id" value={s.id} />
+                                                <button type="submit" className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-all">
+                                                    <Check className="w-3.5 h-3.5" /> Aprobar
+                                                </button>
+                                            </fetcher.Form>
                                         </div>
                                     )}
                                 </div>

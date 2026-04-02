@@ -5,13 +5,16 @@
 
 import React from "react";
 import { Link } from "react-router";
-import { ArrowRight, ChevronRight, Menu, X } from "lucide-react";
+import { ArrowRight, ChevronRight, Menu, X, Accessibility, Dumbbell, Zap, Building2, Swords, Activity, Music, Flower2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { AnimatedGroup } from "~/components/ui/animated-group";
 import { ScrollReveal } from "~/components/ui/scroll-reveal";
 import { cn } from "~/lib/utils";
+import ImageHaloCarousel from "./ImageHaloCarousel";
 
 // ── Transition config (mirrors the framer-motion variants API) ────
+import { motion, type PanInfo } from "framer-motion";
+
 const transitionVariants = {
     item: {
         hidden: { opacity: 0, filter: "blur(12px)", y: 12 },
@@ -33,10 +36,10 @@ const menuItems = [
 ];
 
 // ── Grind Project wordmark ────────────────────────────────────────
-const Logo = ({ className }: { className?: string }) => (
+export const Logo = ({ className }: { className?: string }) => (
     <span
         className={cn(
-            "text-white font-black tracking-tight text-xl select-none",
+            "text-white font-semibold tracking-tight text-xl select-none font-display",
             className
         )}
     >
@@ -168,19 +171,19 @@ export const HeroHeader = () => {
                                 <Button
                                     asChild
                                     size="sm"
-                                    className={cn(isScrolled && "lg:hidden")}
+                                    className={cn(isScrolled && "hidden")}
                                 >
                                     <Link to="/onboarding">
-                                        <span>Empezar gratis</span>
+                                        <span>Empezar ahora</span>
                                     </Link>
                                 </Button>
                                 <Button
                                     asChild
                                     size="sm"
-                                    className={cn(!isScrolled ? "hidden" : "lg:inline-flex")}
+                                    className={cn(!isScrolled ? "hidden" : "inline-flex")}
                                 >
                                     <Link to="/onboarding">
-                                        <span>Empezar gratis →</span>
+                                        <span>Empezar ahora →</span>
                                     </Link>
                                 </Button>
                             </div>
@@ -191,6 +194,18 @@ export const HeroHeader = () => {
         </header>
     );
 };
+
+// ── Vertical Image Stack for Disciplines ──────────────────────────
+const DISCIPLINE_IMAGES = [
+    { id: 1, src: "/images/landing/pilates.png", label: "Pilates", alt: "Pilates studio" },
+    { id: 2, src: "/images/landing/yoga.png", label: "Yoga", alt: "Yoga session" },
+    { id: 3, src: "/images/landing/barre.png", label: "Barre", alt: "Barre studio" },
+    { id: 4, src: "/images/landing/crossfit.png", label: "CrossFit", alt: "CrossFit training" },
+    { id: 5, src: "/images/landing/hiit.png", label: "Funcional & HIIT", alt: "HIIT session" },
+    { id: 7, src: "/images/landing/artes_marciales.png", label: "Artes Marciales", alt: "Martial arts dojo" },
+    { id: 8, src: "/images/landing/dance.png", label: "Dance Studio", alt: "Dance practice" },
+];
+
 
 // ── Main Hero section ─────────────────────────────────────────────
 export default function Hero() {
@@ -252,7 +267,7 @@ export default function Hero() {
                                     </Link>
 
                                     {/* H1 */}
-                                    <h1 className="mt-8 max-w-4xl mx-auto text-balance text-5xl font-black md:text-7xl lg:mt-16 xl:text-[5.25rem] text-white leading-[1.05] tracking-tight">
+                                    <h1 className="mt-8 max-w-4xl mx-auto text-balance text-5xl font-semibold md:text-7xl lg:mt-16 xl:text-[5.25rem] text-white leading-[1.05] tracking-tight font-display">
                                         El software que potencia tu estudio de fitness
                                     </h1>
 
@@ -282,7 +297,7 @@ export default function Hero() {
                                     <div className="bg-white/5 rounded-[14px] border border-white/10 p-0.5">
                                         <Button asChild size="lg" className="rounded-xl px-6 text-base">
                                             <Link to="/onboarding">
-                                                <span className="text-nowrap">Empieza gratis 7 días</span>
+                                                <span className="text-nowrap">Empieza ahora</span>
                                             </Link>
                                         </Button>
                                     </div>
@@ -335,12 +350,40 @@ export default function Hero() {
                                     />
                                     {/* Fallback dashboard preview */}
                                     <div
-                                        className="w-full rounded-xl aspect-[15/8] hidden items-center justify-center"
+                                        className="w-full rounded-xl aspect-[15/8] hidden items-center justify-center relative overflow-hidden"
                                         style={{
-                                            background: "linear-gradient(135deg, #0a0a0a 0%, #111111 50%, #0a0a0a 100%)",
+                                            background: "rgba(0,0,0,0.2)",
                                         }}
                                     >
-                                        <div className="text-center">
+                                        <style>{`
+                                            @keyframes fallback-orbit {
+                                                0%   { transform: translate(0, 0) scale(1); }
+                                                50%  { transform: translate(10px, -10px) scale(1.1); }
+                                                100% { transform: translate(0, 0) scale(1); }
+                                            }
+                                        `}</style>
+                                        <div style={{
+                                            position: "absolute",
+                                            top: "-20%",
+                                            left: "-10%",
+                                            width: "70%",
+                                            height: "70%",
+                                            background: "radial-gradient(circle, rgba(200,110,20,0.15) 0%, transparent 70%)",
+                                            filter: "blur(40px)",
+                                            animation: "fallback-orbit 10s ease-in-out infinite",
+                                        }} />
+                                        <div style={{
+                                            position: "absolute",
+                                            bottom: "-20%",
+                                            right: "-10%",
+                                            width: "60%",
+                                            height: "60%",
+                                            background: "radial-gradient(circle, rgba(15,130,130,0.12) 0%, transparent 70%)",
+                                            filter: "blur(40px)",
+                                            animation: "fallback-orbit 14s ease-in-out infinite reverse",
+                                        }} />
+                                        
+                                        <div className="text-center relative z-10">
                                             <div className="text-4xl mb-4">📊</div>
                                             <p className="text-white font-bold text-xl">Panel de Administración</p>
                                             <p className="text-white/40 text-sm mt-1">Grind Project · Vista en vivo</p>
@@ -352,42 +395,32 @@ export default function Hero() {
                     </div>
                 </section>
 
-                {/* ── Designed for ──────────────────────────────────────── */}
-                <section className="py-16 md:py-20">
-                    <ScrollReveal className="mx-auto max-w-4xl px-6 text-center">
-                        <p className="text-white/30 text-sm uppercase tracking-widest font-semibold mb-8">
-                            Diseñado para todo tipo de estudio
-                        </p>
+                <section className="py-24">
+                    <div className="mx-auto max-w-7xl px-6">
+                        <ScrollReveal className="text-center mb-16">
+                            <p className="text-white/30 text-sm uppercase tracking-[0.2em] font-bold mb-4">Grind Project</p>
+                            <h2 className="text-white text-4xl md:text-5xl font-semibold tracking-tight leading-tight">
+                                Diseñado para todo tipo<br />
+                                <span className="text-white/40">de estudio</span>
+                            </h2>
+                        </ScrollReveal>
 
-                        <div className="flex flex-wrap items-center justify-center gap-4">
-                            {[
-                                { label: "Pilates", icon: "🤸" },
-                                { label: "Yoga", icon: "🧘" },
-                                { label: "Barre", icon: "🩰" },
-                                { label: "CrossFit", icon: "🏋️" },
-                                { label: "Funcional & HIIT", icon: "💪" },
-                                { label: "Cadenas de Gimnasios", icon: "🏢" },
-                                { label: "Artes Marciales", icon: "🥋" },
-                                { label: "Dance Studio", icon: "💃" },
-                            ].map(({ label, icon }) => (
-                                <span
-                                    key={label}
-                                    className="inline-flex items-center gap-3 bg-white/[0.06] border border-white/10 rounded-full px-7 py-3 text-base text-white/70 font-medium backdrop-blur-sm hover:bg-white/[0.12] hover:text-white hover:border-white/25 transition-all duration-200"
-                                >
-                                    <span className="text-xl">{icon}</span>
-                                    {label}
-                                </span>
-                            ))}
+                        <ImageHaloCarousel
+                            images={DISCIPLINE_IMAGES}
+                            radiusX={440}
+                            radiusZ={340}
+                        />
+
+                        <div className="text-center absolute bottom-12 w-full left-0 z-10 pointer-events-none">
+                            <a
+                                href="#features"
+                                className="inline-flex items-center gap-1.5 text-sm text-white/30 hover:text-white/60 transition-colors duration-150 pointer-events-auto"
+                            >
+                                Ver todas las funciones
+                                <ChevronRight className="size-3" />
+                            </a>
                         </div>
-
-                        <a
-                            href="#features"
-                            className="inline-flex items-center gap-1.5 mt-10 text-sm text-white/30 hover:text-white/60 transition-colors duration-150"
-                        >
-                            Ver todas las funciones
-                            <ChevronRight className="size-3" />
-                        </a>
-                    </ScrollReveal>
+                    </div>
                 </section>
             </main>
         </>

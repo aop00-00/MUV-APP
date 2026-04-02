@@ -2,9 +2,10 @@
 // Admin – CRM User Management with segmentation, attendance semaphore, and tags (MOCK DATA).
 // Auth and Server services moved to dynamic imports inside loader/action
 import type { Route } from "./+types/users";
-import { useFetcher } from "react-router";
-import { useState, useEffect } from "react";
-import { Search, PhoneForwarded, Tag, X, UserPlus } from "lucide-react";
+import { useFetcher, useRevalidator } from "react-router";
+import { useState, useEffect, useRef } from "react";
+import { Search, PhoneForwarded, Tag, X, UserPlus, Mail, FileText, MoreVertical, Check } from "lucide-react";
+import { toast } from "react-hot-toast";
 
 // ─── Mock Data ───────────────────────────────────────────────────
 // Server services moved to dynamic imports
@@ -12,7 +13,7 @@ import { Search, PhoneForwarded, Tag, X, UserPlus } from "lucide-react";
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const { supabaseAdmin } = await import("~/services/supabase.server");
-    const { PLAN_CATALOG } = await import("~/services/subscription.server");
+    const { getGymPlans } = await import("~/services/plan.server");
 
     const { profile, gymId } = await requireGymAdmin(request);
 
@@ -28,6 +29,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             role,
             created_at,
             gym_id,
+            metadata,
             memberships (
                 plan_name,
                 end_date,
@@ -39,18 +41,25 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     if (error) {
         console.error("Error fetching users:", error);
-        return { users: [] };
+        return { users: [], plans: [] };
     }
+
+    // Fetch gym's real plans from products table
+    const gymPlans = await getGymPlans(gymId);
 
     // Map DB data to CRMUser interface
     const mappedUsers = (users || []).map(u => {
         const membership = u.memberships && Array.isArray(u.memberships) ? u.memberships[0] : null;
         const lastVisitDaysAgo = 0; // Mocked for now until attendance is real
-        
+
         let segment: any = "new";
         if (u.credits > 10) segment = "vip";
         else if (membership?.status === "active") segment = "active";
-        
+
+        // Extract tags from metadata
+        const metadata = u.metadata || {};
+        const tags = Array.isArray(metadata.tags) ? metadata.tags : [];
+
         return {
             id: u.id,
             full_name: u.full_name || "Sin nombre",
@@ -65,21 +74,22 @@ export async function loader({ request }: Route.LoaderArgs) {
                 end_date: membership.end_date,
                 status: membership.status
             } : null,
-            tags: [],
+            tags,
             totalSpent: 0
         };
     });
 
-    return { 
+    return {
         users: mappedUsers,
-        plans: PLAN_CATALOG
+        plans: gymPlans.filter(p => p.is_active),
     };
 }
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const { supabaseAdmin } = await import("~/services/supabase.server");
-    const { PLAN_CATALOG, createMembership } = await import("~/services/subscription.server");
+    const { createMembership } = await import("~/services/subscription.server");
+    const { getGymPlans } = await import("~/services/plan.server");
 
     const { profile, gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
@@ -90,6 +100,28 @@ export async function action({ request }: Route.ActionArgs) {
         const full_name = formData.get("full_name") as string;
         const password = formData.get("password") as string || "Grind2026!";
         const planId = formData.get("planId") as string;
+
+        // Enforce per-plan member limits
+        // DB trigger is the hard stop, this is the UX layer
+        const { PLAN_FEATURES } = await import("~/config/plan-features");
+        const { data: gymData } = await supabaseAdmin.from("gyms").select("plan_id").eq("id", gymId).single();
+        const gymPlanDef = PLAN_FEATURES[(gymData?.plan_id || "starter") as keyof typeof PLAN_FEATURES];
+        const maxMembers = gymPlanDef?.maxMembers;
+        
+        if (maxMembers != null) {
+            const { count } = await supabaseAdmin
+                .from("profiles")
+                .select("id", { count: "exact", head: true })
+                .eq("gym_id", gymId)
+                .eq("role", "member");
+            if ((count ?? 0) >= maxMembers) {
+                const upgradeTarget = gymData?.plan_id === "emprendedor" ? "Starter" : "Pro";
+                return {
+                    error: `Tu studio alcanzó el límite de ${maxMembers} alumnos del plan ${gymPlanDef?.label}. Actualiza a ${upgradeTarget} para seguir creciendo.`,
+                    limitReached: "members",
+                };
+            }
+        }
 
         const { data, error } = await supabaseAdmin.auth.admin.createUser({
             email,
@@ -107,23 +139,51 @@ export async function action({ request }: Route.ActionArgs) {
             return { error: error.message };
         }
 
-        // Integrated Plan Assignment
+        // Create profile manually (trigger is disabled in Supabase)
+        const { error: profileError } = await supabaseAdmin
+            .from("profiles")
+            .upsert({
+                id: data.user.id,
+                email,
+                full_name,
+                role: "member",
+                credits: 0,
+                gym_id: gymId,
+            }, { onConflict: "id" });
+
+        if (profileError) {
+            console.error("Error creating profile:", profileError);
+            await supabaseAdmin.auth.admin.deleteUser(data.user.id);
+            return { error: `Error al crear perfil: ${profileError.message}` };
+        }
+
+        // Integrated Plan Assignment — uses gym's real plans from products table
         if (planId && planId !== "none") {
-            const plan = PLAN_CATALOG.find(p => p.id === planId);
+            const gymPlans = await getGymPlans(gymId);
+            const plan = gymPlans.find(p => p.id === planId);
             if (plan) {
                 try {
+                    const creditsToAssign = plan.credits ?? 999; // null = ilimitado
+
                     await createMembership({
                         userId: data.user.id,
                         gymId: gymId,
                         planName: plan.name,
                         price: plan.price,
-                        credits: plan.credits,
-                        months: 1
+                        credits: creditsToAssign,
+                        validityDays: plan.validity_days,
                     });
+
+                    // Sum credits to profile
+                    await supabaseAdmin
+                        .from("profiles")
+                        .update({ credits: creditsToAssign })
+                        .eq("id", data.user.id)
+                        .eq("gym_id", gymId);
                 } catch (subError: any) {
-                    return { 
-                        success: true, 
-                        message: `Usuario creado, pero hubo un error al vincular el plan: ${subError.message}` 
+                    return {
+                        success: true,
+                        message: `Usuario creado, pero hubo un error al vincular el plan: ${subError.message}`
                     };
                 }
             }
@@ -139,6 +199,60 @@ export async function action({ request }: Route.ActionArgs) {
         const { error } = await supabaseAdmin
             .from("profiles")
             .update({ credits })
+            .eq("id", userId)
+            .eq("gym_id", gymId);
+
+        if (error) return { error: error.message };
+        return { success: true };
+    }
+
+    if (intent === "add_tag") {
+        const userId = formData.get("userId") as string;
+        const tag = formData.get("tag") as string;
+
+        // Fetch current profile to get existing tags
+        const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("metadata")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        const currentMetadata = profile?.metadata || {};
+        const currentTags = Array.isArray(currentMetadata.tags) ? currentMetadata.tags : [];
+
+        if (!currentTags.includes(tag)) {
+            const newTags = [...currentTags, tag];
+            const { error } = await supabaseAdmin
+                .from("profiles")
+                .update({ metadata: { ...currentMetadata, tags: newTags } })
+                .eq("id", userId)
+                .eq("gym_id", gymId);
+
+            if (error) return { error: error.message };
+        }
+
+        return { success: true };
+    }
+
+    if (intent === "remove_tag") {
+        const userId = formData.get("userId") as string;
+        const tag = formData.get("tag") as string;
+
+        const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("metadata")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        const currentMetadata = profile?.metadata || {};
+        const currentTags = Array.isArray(currentMetadata.tags) ? currentMetadata.tags : [];
+        const newTags = currentTags.filter((t: string) => t !== tag);
+
+        const { error } = await supabaseAdmin
+            .from("profiles")
+            .update({ metadata: { ...currentMetadata, tags: newTags } })
             .eq("id", userId)
             .eq("gym_id", gymId);
 
@@ -177,7 +291,17 @@ function AttendanceSemaphore({ daysAgo }: { daysAgo: number }) {
 export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     const { users, plans } = loaderData;
     const fetcher = useFetcher();
+    const creditFetcher = useFetcher();
+    const tagFetcher = useFetcher();
+    const revalidator = useRevalidator();
     const [showAddModal, setShowAddModal] = useState(false);
+    const [editingCredits, setEditingCredits] = useState<{ userId: string; value: number } | null>(null);
+    const [addingTagFor, setAddingTagFor] = useState<string | null>(null);
+    const [newTagText, setNewTagText] = useState("");
+    const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null);
+    const lastCreditSubmissionId = useRef<string | null>(null);
+    const lastTagSubmissionId = useRef<string | null>(null);
+
 
     // Close modal on success
     useEffect(() => {
@@ -186,6 +310,59 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             return () => clearTimeout(timer);
         }
     }, [fetcher.data, fetcher.state]);
+
+    // Show toast notification when credits are updated and revalidate data
+    useEffect(() => {
+        if (creditFetcher.state === "submitting") {
+            // Track submitting state but doesn't trigger toast
+        } else if (creditFetcher.state === "idle" && creditFetcher.data?.success) {
+            // Only show toast if we haven't processed this submission yet
+            // Use a combination of timestamp or a unique marker if available, 
+            // but since it's a fetcher, we check if it's a "fresh" success
+            if (lastCreditSubmissionId.current !== JSON.stringify(creditFetcher.data)) {
+                toast.success("Créditos actualizados correctamente", {
+                    duration: 2000,
+                    position: "bottom-right",
+                });
+                lastCreditSubmissionId.current = JSON.stringify(creditFetcher.data);
+                setEditingCredits(null);
+                revalidator.revalidate();
+            }
+        } else if (creditFetcher.state === "idle" && creditFetcher.data?.error) {
+            if (lastCreditSubmissionId.current !== JSON.stringify(creditFetcher.data)) {
+                toast.error(`Error: ${creditFetcher.data.error}`, {
+                    duration: 3000,
+                    position: "bottom-right",
+                });
+                lastCreditSubmissionId.current = JSON.stringify(creditFetcher.data);
+            }
+        }
+    }, [creditFetcher.data, creditFetcher.state, revalidator]);
+
+    // Handle tag operations
+    useEffect(() => {
+        if (tagFetcher.state === "idle" && tagFetcher.data?.success) {
+            if (lastTagSubmissionId.current !== JSON.stringify(tagFetcher.data)) {
+                toast.success("Etiqueta actualizada", {
+                    duration: 1500,
+                    position: "bottom-right",
+                });
+                lastTagSubmissionId.current = JSON.stringify(tagFetcher.data);
+                setAddingTagFor(null);
+                setNewTagText("");
+                revalidator.revalidate();
+            }
+        } else if (tagFetcher.state === "idle" && tagFetcher.data?.error) {
+            if (lastTagSubmissionId.current !== JSON.stringify(tagFetcher.data)) {
+                toast.error(`Error: ${tagFetcher.data.error}`, {
+                    duration: 3000,
+                    position: "bottom-right",
+                });
+                lastTagSubmissionId.current = JSON.stringify(tagFetcher.data);
+            }
+        }
+    }, [tagFetcher.data, tagFetcher.state, revalidator]);
+
     const [activeSegment, setActiveSegment] = useState<string>("all");
     const [searchTerm, setSearchTerm] = useState("");
 
@@ -260,10 +437,13 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                     <option value="none" className="bg-slate-900 text-white">Sin plan (Solo registro)</option>
                                     {plans?.map((plan: any) => (
                                         <option key={plan.id} value={plan.id} className="bg-slate-900 text-white">
-                                            {plan.name} — ${plan.price} ({plan.credits} creds)
+                                            {plan.name} — ${plan.price.toLocaleString("es-MX")} ({plan.credits ?? "∞"} créditos, {plan.validity_days}d)
                                         </option>
                                     ))}
                                 </select>
+                                {(!plans || plans.length === 0) && (
+                                    <p className="text-xs text-amber-400 mt-1">No hay planes creados. Ve a Planes para crear tus paquetes.</p>
+                                )}
                             </div>
 
                             {fetcher.data?.error && (
@@ -325,18 +505,18 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             </div>
 
             {/* Users Table */}
-            <div className="bg-white/5 border border-white/[0.08] rounded-xl overflow-hidden shadow-sm">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+            <div className="bg-white/5 border border-white/[0.08] rounded-xl shadow-sm">
+                <div className="overflow-x-auto min-h-[300px]">
+                    <table className="w-full text-sm whitespace-nowrap">
                         <thead>
                             <tr className="border-b border-white/[0.08] text-white/50 text-left bg-white/5">
-                                <th className="px-4 py-3 font-medium">Usuario</th>
+                                <th className="px-4 py-3 font-medium rounded-tl-xl text-white/40">Usuario</th>
                                 <th className="px-4 py-3 font-medium">Segmento</th>
                                 <th className="px-4 py-3 font-medium">Asistencia</th>
                                 <th className="px-4 py-3 font-medium">Membresía</th>
                                 <th className="px-4 py-3 font-medium">Créditos</th>
                                 <th className="px-4 py-3 font-medium">Tags</th>
-                                <th className="px-4 py-3 font-medium">Acciones</th>
+                                <th className="px-4 py-3 font-medium rounded-tr-xl text-white/40 text-right">Acciones</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
@@ -381,47 +561,172 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
 
                                         {/* Credits */}
                                         <td className="px-4 py-3">
-                                            <fetcher.Form method="post" className="flex items-center gap-1.5">
-                                                <input type="hidden" name="intent" value="update_credits" />
-                                                <input type="hidden" name="userId" value={user.id} />
-                                                <input
-                                                    type="number"
-                                                    name="credits"
-                                                    defaultValue={user.credits}
-                                                    min={0}
-                                                    className="w-16 bg-white/5 border border-white/[0.08] rounded px-2 py-1 text-center text-xs"
-                                                />
-                                                <button type="submit" className="text-xs text-blue-600 hover:text-blue-800 font-medium">✓</button>
-                                            </fetcher.Form>
+                                            {editingCredits?.userId === user.id ? (
+                                                <creditFetcher.Form method="post" className="flex items-center gap-1">
+                                                    <input type="hidden" name="intent" value="update_credits" />
+                                                    <input type="hidden" name="userId" value={user.id} />
+                                                    <input type="hidden" name="credits" value={editingCredits?.value ?? 0} />
+                                                    <input
+                                                        type="number"
+                                                        value={editingCredits?.value ?? 0}
+                                                        onChange={(e) => setEditingCredits({ userId: user.id, value: parseInt(e.target.value) || 0 })}
+                                                        min={0}
+                                                        className="w-14 bg-white/5 border border-blue-400 rounded px-2 py-1 text-center text-xs text-white"
+                                                        autoFocus
+                                                    />
+                                                    <button
+                                                        type="submit"
+                                                        disabled={creditFetcher.state !== "idle"}
+                                                        className="p-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50"
+                                                        title="Confirmar"
+                                                    >
+                                                        <Check className="w-3 h-3" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setEditingCredits(null)}
+                                                        className="p-1 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                                                        title="Cancelar"
+                                                    >
+                                                        <X className="w-3 h-3" />
+                                                    </button>
+                                                </creditFetcher.Form>
+                                            ) : (
+                                                <button
+                                                    onClick={() => setEditingCredits({ userId: user.id, value: user.credits })}
+                                                    className="text-sm font-semibold text-blue-600 hover:text-blue-400 transition-colors"
+                                                >
+                                                    {user.credits} <span className="text-xs text-white/40">créditos</span>
+                                                </button>
+                                            )}
                                         </td>
 
                                         {/* Tags */}
                                         <td className="px-4 py-3">
-                                            <div className="flex flex-wrap gap-1 max-w-48">
-                                                {user.tags.map((tag, i) => (
-                                                    <span key={i} className="inline-flex items-center gap-0.5 text-[10px] bg-violet-50 text-violet-700 border border-violet-200 px-2 py-0.5 rounded-full">
+                                            <div className="flex flex-wrap gap-1 items-center max-w-48">
+                                                {user.tags.map((tag: string, i: number) => (
+                                                    <span
+                                                        key={i}
+                                                        className="inline-flex items-center gap-1 text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full group"
+                                                    >
                                                         <Tag className="w-2.5 h-2.5" />
                                                         {tag}
+                                                        <tagFetcher.Form method="post" className="inline">
+                                                            <input type="hidden" name="intent" value="remove_tag" />
+                                                            <input type="hidden" name="userId" value={user.id} />
+                                                            <input type="hidden" name="tag" value={tag} />
+                                                            <button
+                                                                type="submit"
+                                                                className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-all"
+                                                            >
+                                                                <X className="w-2.5 h-2.5" />
+                                                            </button>
+                                                        </tagFetcher.Form>
                                                     </span>
                                                 ))}
-                                                {user.tags.length === 0 && <span className="text-xs text-white/30">—</span>}
+                                                {addingTagFor === user.id ? (
+                                                    <tagFetcher.Form method="post" className="inline-flex items-center gap-1">
+                                                        <input type="hidden" name="intent" value="add_tag" />
+                                                        <input type="hidden" name="userId" value={user.id} />
+                                                        <input
+                                                            type="text"
+                                                            name="tag"
+                                                            value={newTagText}
+                                                            onChange={(e) => setNewTagText(e.target.value)}
+                                                            placeholder="Nueva etiqueta"
+                                                            className="w-24 bg-white/5 border border-violet-400 rounded px-2 py-0.5 text-xs text-white"
+                                                            autoFocus
+                                                        />
+                                                        <button
+                                                            type="submit"
+                                                            disabled={!newTagText.trim()}
+                                                            className="p-0.5 bg-violet-600 hover:bg-violet-700 text-white rounded disabled:opacity-50"
+                                                        >
+                                                            <Check className="w-3 h-3" />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => { setAddingTagFor(null); setNewTagText(""); }}
+                                                            className="p-0.5 bg-red-600 hover:bg-red-700 text-white rounded"
+                                                        >
+                                                            <X className="w-3 h-3" />
+                                                        </button>
+                                                    </tagFetcher.Form>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => setAddingTagFor(user.id)}
+                                                        className="text-[10px] text-violet-400 hover:text-violet-300 border border-dashed border-violet-500/30 hover:border-violet-400 px-2 py-0.5 rounded-full transition-all"
+                                                    >
+                                                        + Agregar
+                                                    </button>
+                                                )}
                                             </div>
                                         </td>
 
                                         {/* Actions */}
-                                        <td className="px-4 py-3">
-                                            <div className="flex items-center gap-1.5">
-                                                {user.lastVisitDaysAgo > 14 && (
+                                        <td className="px-4 py-3 relative">
+                                            <div className="flex items-center justify-end gap-1.5">
+                                                {user.lastVisitDaysAgo > 14 && user.phone && (
                                                     <a
-                                                        href={`https://wa.me/${user.phone.replace(/\+/g, "")}?text=${encodeURIComponent(`Hola ${user.full_name.split(" ")[0]}, ¡te extrañamos! 💪`)}`}
+                                                        href={`https://wa.me/${user.phone.replace(/\D/g, "")}?text=${encodeURIComponent(`Hola ${user.full_name.split(" ")[0]}, ¡te extrañamos! 💪`)}`}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white text-[10px] px-2.5 py-1.5 rounded-lg font-medium transition-colors"
+                                                        className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white text-[10px] px-2 py-1 rounded-lg font-medium transition-colors"
+                                                        title="Enviar WhatsApp"
                                                     >
                                                         <PhoneForwarded className="w-3 h-3" />
-                                                        WhatsApp
                                                     </a>
                                                 )}
+                                                <div className="relative">
+                                                    <button
+                                                        onClick={() => setActionMenuOpen(actionMenuOpen === user.id ? null : user.id)}
+                                                        className="p-1.5 bg-white/5 hover:bg-white/10 text-white rounded-lg transition-colors"
+                                                        title="Más acciones"
+                                                    >
+                                                        <MoreVertical className="w-3.5 h-3.5" />
+                                                    </button>
+                                                    {actionMenuOpen === user.id && (
+                                                        <>
+                                                            <div
+                                                                className="fixed inset-0 z-10"
+                                                                onClick={() => setActionMenuOpen(null)}
+                                                            />
+                                                            <div className="absolute right-0 top-full mt-1 w-48 bg-slate-800 border border-white/10 rounded-lg shadow-2xl z-20 overflow-hidden">
+                                                                <a
+                                                                    href={`mailto:${user.email}`}
+                                                                    className="flex items-center gap-2 px-3 py-2 text-xs text-white hover:bg-white/10 transition-colors"
+                                                                    onClick={() => setActionMenuOpen(null)}
+                                                                >
+                                                                    <Mail className="w-3.5 h-3.5" />
+                                                                    Enviar email
+                                                                </a>
+                                                                <button
+                                                                    onClick={() => {
+                                                                        navigator.clipboard.writeText(user.id);
+                                                                        toast.success("ID copiado");
+                                                                        setActionMenuOpen(null);
+                                                                    }}
+                                                                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white hover:bg-white/10 transition-colors text-left"
+                                                                >
+                                                                    <FileText className="w-3.5 h-3.5" />
+                                                                    Copiar ID
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const info = `Nombre: ${user.full_name}\nEmail: ${user.email}\nCréditos: ${user.credits}\nTeléfono: ${user.phone || 'N/A'}`;
+                                                                        navigator.clipboard.writeText(info);
+                                                                        toast.success("Info copiada");
+                                                                        setActionMenuOpen(null);
+                                                                    }}
+                                                                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white hover:bg-white/10 transition-colors text-left"
+                                                                >
+                                                                    <FileText className="w-3.5 h-3.5" />
+                                                                    Copiar info completa
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
                                             </div>
                                         </td>
                                     </tr>

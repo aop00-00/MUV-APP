@@ -1,4 +1,4 @@
-import { json } from "react-router";
+import { data } from "react-router";
 // Test endpoint to verify authentication and gym context
 
 export async function loader({ request }: any) {
@@ -15,7 +15,7 @@ export async function loader({ request }: any) {
             .eq("id", gymId)
             .single();
 
-        return json({
+        return data({
             success: true,
             profile: {
                 id: profile.id,
@@ -28,7 +28,7 @@ export async function loader({ request }: any) {
             gymError
         });
     } catch (error: any) {
-        return json({
+        return data({
             success: false,
             error: error.message || "Authentication failed"
         }, { status: 401 });

@@ -2,8 +2,11 @@
 // Premium collapsible sidebar — groups mirror Koreo's nav structure.
 
 import { useState } from "react";
-import { Link, Outlet, useLocation } from "react-router";
+import { Link, Outlet, useLocation, useRouteLoaderData } from "react-router";
 import ParticleBackground from "~/components/landing/ParticleBackground";
+import { TrialBanner } from "~/components/admin/TrialBanner";
+import { isRouteAllowed, type PlanId } from "~/config/plan-features";
+import type { Route } from "./+types/layout";
 import {
     LayoutDashboard,
     CalendarDays,
@@ -23,7 +26,6 @@ import {
     MapPin,
     Wrench,
     UserCog,
-    MonitorSmartphone,
     UserCircle,
     LogOut,
     ChevronDown,
@@ -100,7 +102,64 @@ const NAV: NavItem[] = [
     },
 ];
 
+// ─── Nav filtering by plan ────────────────────────────────────────────────────
 
+function filterNavByPlan(nav: NavItem[], planId: PlanId): NavItem[] {
+    return nav
+        .map((item) => {
+            if (item.kind === "link") {
+                return isRouteAllowed(planId, item.href) ? item : null;
+            }
+            const allowedChildren = item.children.filter((child) =>
+                isRouteAllowed(planId, child.href)
+            );
+            if (allowedChildren.length === 0) return null;
+            return { ...item, children: allowedChildren };
+        })
+        .filter(Boolean) as NavItem[];
+}
+
+// ─── Loader: fetch gym branding from Supabase ─────────────────────────────────
+
+export async function loader({ request }: Route.LoaderArgs) {
+    // Use requireOnboardingComplete instead of requireGymAdmin
+    // This blocks admin access until post-checkout onboarding is done
+    const { requireOnboardingComplete } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireOnboardingComplete(request);
+
+    const { data: gym } = await supabaseAdmin
+        .from("gyms")
+        .select("name, logo_url, primary_color, brand_color, studio_type, plan_id, plan_status, trial_ends_at")
+        .eq("id", gymId)
+        .single();
+
+    // Compute trial banner info
+    let trialDaysLeft: number | null = null;
+    if (gym?.plan_status === "trial" && gym?.trial_ends_at) {
+        const msLeft = new Date(gym.trial_ends_at).getTime() - Date.now();
+        trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
+    }
+
+    // Demo mode: treat demo gyms as elite so all nav items show
+    const isDemoGym = gymId.startsWith("00000000-");
+    const planId = isDemoGym ? "elite" : (gym?.plan_id || "starter");
+
+    return {
+        gymBranding: {
+            name: gym?.name || "Mi Estudio",
+            logo: gym?.logo_url || "",
+            primaryColor: gym?.brand_color || gym?.primary_color || "#7c3aed",
+            studioType: gym?.studio_type || null,
+        },
+        planInfo: {
+            planId: planId as PlanId,
+            planStatus: gym?.plan_status || "trial",
+            trialDaysLeft,
+            isTrialActive: gym?.plan_status === "trial" && trialDaysLeft !== null && trialDaysLeft > 0,
+        },
+    };
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -116,15 +175,11 @@ function useDefaultOpen(nav: NavItem[], pathname: string): Record<string, boolea
 
 // ─── Sidebar content ──────────────────────────────────────────────────────────
 
-import { useTenant } from "~/context/TenantContext";
-
-// ─── Sidebar content ──────────────────────────────────────────────────────────
-
-function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
+function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: string; logo: string; primaryColor: string }; planId: PlanId; onLinkClick?: () => void }) {
     const location = useLocation();
-    const { config } = useTenant();
+    const filteredNav = filterNavByPlan(NAV, planId);
     const [open, setOpen] = useState<Record<string, boolean>>(
-        () => useDefaultOpen(NAV, location.pathname)
+        () => useDefaultOpen(filteredNav, location.pathname)
     );
 
     const toggle = (name: string) =>
@@ -139,18 +194,18 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
             {/* Logo / Studio name */}
             <div className="px-5 py-5 border-b border-white/[0.07]">
                 <div className="flex items-center gap-3">
-                    {config.logo && (
+                    {branding.logo && (
                         <div className="w-8 h-8 rounded-lg overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
-                            {config.logo.startsWith("http") || config.logo.startsWith("data:") ? (
-                                <img src={config.logo} alt="Logo" className="w-full h-full object-cover" />
+                            {branding.logo.startsWith("http") || branding.logo.startsWith("data:") ? (
+                                <img src={branding.logo} alt="Logo" className="w-full h-full object-cover" />
                             ) : (
-                                <span className="text-xl">{config.logo}</span>
+                                <span className="text-xl">{branding.logo}</span>
                             )}
                         </div>
                     )}
                     <div className="flex flex-col min-w-0">
                         <span className="text-white font-black text-lg tracking-tight truncate leading-tight">
-                            {config.name}
+                            {branding.name}
                         </span>
                         <p className="text-white/30 text-[10px] uppercase font-bold tracking-widest mt-0.5">Admin</p>
                     </div>
@@ -159,7 +214,7 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
 
             {/* Scrollable nav */}
             <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-0.5">
-                {NAV.map((item) => {
+                {filteredNav.map((item) => {
                     if (item.kind === "link") {
                         const active = isActive(item.href);
                         return (
@@ -171,9 +226,9 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
                                     ? "bg-white/10 text-white shadow-sm"
                                     : "text-white/50 hover:text-white hover:bg-white/[0.05]"
                                     }`}
-                                style={active ? { borderColor: config.primaryColor } : {}}
+                                style={active ? { borderColor: branding.primaryColor } : {}}
                             >
-                                <item.icon className="w-4 h-4 shrink-0" style={active ? { color: config.primaryColor } : {}} />
+                                <item.icon className="w-4 h-4 shrink-0" style={active ? { color: branding.primaryColor } : {}} />
                                 {item.name}
                             </Link>
                         );
@@ -192,7 +247,7 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
                                     : "text-white/50 hover:text-white hover:bg-white/[0.05]"
                                     }`}
                             >
-                                <item.icon className="w-4 h-4 shrink-0" style={hasActive ? { color: config.primaryColor } : {}} />
+                                <item.icon className="w-4 h-4 shrink-0" style={hasActive ? { color: branding.primaryColor } : {}} />
                                 <span className="flex-1 text-left">{item.name}</span>
                                 {isOpen
                                     ? <ChevronDown className="w-3.5 h-3.5 opacity-40" />
@@ -218,7 +273,7 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
                                                     : "text-white/40 hover:text-white hover:bg-white/[0.05]"
                                                     }`}
                                             >
-                                                <child.icon className="w-3.5 h-3.5 shrink-0" style={active ? { color: config.primaryColor } : {}} />
+                                                <child.icon className="w-3.5 h-3.5 shrink-0" style={active ? { color: branding.primaryColor } : {}} />
                                                 {child.name}
                                             </Link>
                                         );
@@ -232,8 +287,6 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
 
             {/* Bottom section */}
             <div className="px-3 pb-4 pt-3 border-t border-white/[0.07] space-y-0.5">
-
-
                 <form action="/auth/logout" method="post">
                     <button
                         type="submit"
@@ -250,72 +303,80 @@ function SidebarContent({ onLinkClick }: { onLinkClick?: () => void }) {
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
-export default function AdminLayout() {
+export default function AdminLayout({ loaderData }: Route.ComponentProps) {
     const [mobileOpen, setMobileOpen] = useState(false);
-    const { config } = useTenant();
+    const branding = loaderData.gymBranding;
+    const { planId, isTrialActive, trialDaysLeft } = loaderData.planInfo;
 
     return (
         <>
             <ParticleBackground />
-            <div className="relative z-10 min-h-screen flex">
+            <div className="relative z-10 min-h-screen flex flex-col">
 
-                {/* ── Desktop sidebar ── */}
-                <aside className="hidden md:flex flex-col w-60 shrink-0 bg-black/40 border-r border-white/[0.07] backdrop-blur-xl">
-                    <SidebarContent />
-                </aside>
-
-                {/* ── Mobile overlay sidebar ── */}
-                {mobileOpen && (
-                    <div className="md:hidden fixed inset-0 z-50 flex">
-                        {/* Backdrop */}
-                        <div
-                            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-                            onClick={() => setMobileOpen(false)}
-                        />
-                        {/* Drawer */}
-                        <aside className="relative w-64 bg-[#0a0a0a] border-r border-white/[0.08] flex flex-col h-full">
-                            <button
-                                onClick={() => setMobileOpen(false)}
-                                className="absolute top-4 right-4 text-white/40 hover:text-white"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                            <SidebarContent onLinkClick={() => setMobileOpen(false)} />
-                        </aside>
-                    </div>
+                {/* ── Trial banner ── */}
+                {isTrialActive && trialDaysLeft !== null && (
+                    <TrialBanner daysLeft={trialDaysLeft} />
                 )}
 
-                {/* ── Main content ── */}
-                <div className="flex-1 flex flex-col min-w-0">
-                    {/* Mobile top bar */}
-                    <header className="md:hidden flex items-center justify-between px-4 py-3 bg-black/40 border-b border-white/[0.07] backdrop-blur-xl">
-                        <div className="flex items-center gap-2">
-                            {config.logo && (
-                                <div className="w-6 h-6 rounded-md overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
-                                    {config.logo.startsWith("http") || config.logo.startsWith("data:") ? (
-                                        <img src={config.logo} alt="Logo" className="w-full h-full object-cover" />
-                                    ) : (
-                                        <span className="text-sm">{config.logo}</span>
-                                    )}
-                                </div>
-                            )}
-                            <span className="text-white font-black text-base tracking-tight truncate max-w-[150px]">
-                                {config.name}
-                            </span>
-                        </div>
-                        <button
-                            onClick={() => setMobileOpen(true)}
-                            className="text-white/50 hover:text-white transition-colors"
-                        >
-                            <Menu className="w-5 h-5" />
-                        </button>
-                    </header>
+                <div className="flex-1 flex">
+                    {/* ── Desktop sidebar ── */}
+                    <aside className="hidden md:flex flex-col w-60 shrink-0 bg-black/40 border-r border-white/[0.07] backdrop-blur-xl">
+                        <SidebarContent branding={branding} planId={planId} />
+                    </aside>
 
-                    <main className="flex-1 overflow-y-auto p-6 md:p-8 text-slate-950">
-                        <Outlet />
-                    </main>
+                    {/* ── Mobile overlay sidebar ── */}
+                    {mobileOpen && (
+                        <div className="md:hidden fixed inset-0 z-50 flex">
+                            {/* Backdrop */}
+                            <div
+                                className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+                                onClick={() => setMobileOpen(false)}
+                            />
+                            {/* Drawer */}
+                            <aside className="relative w-full md:w-64 bg-[#0a0a0a] border-r border-white/[0.08] flex flex-col h-full">
+                                <button
+                                    onClick={() => setMobileOpen(false)}
+                                    className="absolute top-4 right-4 text-white/40 hover:text-white"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                                <SidebarContent branding={branding} planId={planId} onLinkClick={() => setMobileOpen(false)} />
+                            </aside>
+                        </div>
+                    )}
+
+                    {/* ── Main content ── */}
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {/* Mobile top bar */}
+                        <header className="md:hidden flex items-center justify-between p-4 md:px-4 md:py-3 bg-black/40 border-b border-white/[0.07] backdrop-blur-xl">
+                            <div className="flex items-center gap-2">
+                                {branding.logo && (
+                                    <div className="w-6 h-6 rounded-md overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
+                                        {branding.logo.startsWith("http") || branding.logo.startsWith("data:") ? (
+                                            <img src={branding.logo} alt="Logo" className="w-full h-full object-cover" />
+                                        ) : (
+                                            <span className="text-sm">{branding.logo}</span>
+                                        )}
+                                    </div>
+                                )}
+                                <span className="text-white font-black text-base tracking-tight truncate max-w-[150px]">
+                                    {branding.name}
+                                </span>
+                            </div>
+                            <button
+                                onClick={() => setMobileOpen(true)}
+                                className="text-white/50 hover:text-white transition-colors"
+                            >
+                                <Menu className="w-5 h-5" />
+                            </button>
+                        </header>
+
+                        <main className="flex-1 overflow-y-auto p-6 md:p-8 text-white">
+                            <Outlet />
+                        </main>
+                    </div>
                 </div>
-            </div >
+            </div>
         </>
     );
 }

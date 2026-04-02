@@ -54,49 +54,65 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { PLAN_CATALOG, createMembership, listSubscriptions } = await import("~/services/subscription.server");
-    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const {
+        PLAN_CATALOG, createMembership,
+        freezeMembership, reactivateMembership, cancelMembership,
+    } = await import("~/services/subscription.server");
 
     const { profile, gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     const subId = formData.get("subscriptionId") as string;
 
-    // TODO (production): call real service functions
-    switch (intent) {
-        case "freeze":
-            // TODO: call real service function
-            return { success: true, message: `Membresía ${subId} congelada.` };
-        case "reactivate":
-            return { success: true, message: `Membresía ${subId} reactivada.` };
-        case "cancel":
-            return { success: true, message: `Membresía ${subId} cancelada.` };
-        case "renew":
-            return { success: true, message: `Membresía renovada.` };
-        case "link_plan": {
-            const userId = formData.get("userId") as string;
-            const planId = formData.get("planId") as string;
-            const plan = PLAN_CATALOG.find(p => p.id === planId);
-            if (!plan) return { success: false, error: "Plan inválido" };
-            
-            const gymId = formData.get("gymId") as string;
-            
-            try {
+    try {
+        switch (intent) {
+            case "freeze":
+                await freezeMembership(subId, gymId);
+                return { success: true, message: `Membresía congelada.` };
+            case "reactivate":
+                await reactivateMembership(subId, gymId);
+                return { success: true, message: `Membresía reactivada.` };
+            case "cancel":
+                await cancelMembership(subId, gymId);
+                return { success: true, message: `Membresía cancelada.` };
+            case "renew": {
+                // Renew = reactivate + extend end_date by 1 month
+                const { supabaseAdmin } = await import("~/services/supabase.server");
+                const newEnd = new Date();
+                newEnd.setMonth(newEnd.getMonth() + 1);
+                await supabaseAdmin
+                    .from("memberships")
+                    .update({
+                        status: "active",
+                        end_date: newEnd.toISOString().split("T")[0],
+                    })
+                    .eq("id", subId)
+                    .eq("gym_id", gymId);
+                return { success: true, message: `Membresía renovada.` };
+            }
+            case "link_plan": {
+                const userId = formData.get("userId") as string;
+                const planId = formData.get("planId") as string;
+                const plan = PLAN_CATALOG.find(p => p.id === planId);
+                if (!plan) return { success: false, error: "Plan inválido" };
+
+                const linkGymId = formData.get("gymId") as string || gymId;
+
                 await createMembership({
                     userId,
-                    gymId,
+                    gymId: linkGymId,
                     planName: plan.name,
                     price: plan.price,
                     credits: plan.credits,
                     months: 1
                 });
                 return { success: true, message: "Plan vinculado con éxito." };
-            } catch (err: any) {
-                return { success: false, error: err.message };
             }
+            default:
+                return { success: false, error: "Intent no reconocido" };
         }
-        default:
-            return { success: false };
+    } catch (err: any) {
+        return { success: false, error: err.message };
     }
 }
 

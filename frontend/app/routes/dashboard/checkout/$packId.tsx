@@ -3,74 +3,102 @@
 // Auth and Payment services moved to dynamic imports inside loader/action
 import { redirect } from "react-router";
 import type { Route } from "./+types/$packId";
-import type { Product } from "~/types/database";
 import { useFetcher } from "react-router";
-
-// ── Fetch product from Supabase ───────────────────────────────────
-// This helper is now in services/supabase.server.ts
-// Supabase service moved to dynamic import inside loader
-
-// ── Demo fallback catalogue ───────────────────────────────────────
-const MOCK_PACKAGES: Record<string, Product> = {
-    "pkg-001": {
-        id: "pkg-001", name: "Paquete 5 Clases", price: 450,
-        description: "5 créditos para cualquier clase.", image_url: null,
-        category: "package", stock: 99, is_active: true,
-        created_at: "2025-01-01T00:00:00Z",
-    },
-    "pkg-002": {
-        id: "pkg-002", name: "Paquete 10 Clases", price: 799,
-        description: "10 créditos – ahorra un 15%.", image_url: null,
-        category: "package", stock: 99, is_active: true,
-        created_at: "2025-01-01T00:00:00Z",
-    },
-    "pkg-003": {
-        id: "pkg-003", name: "Paquete 20 Clases", price: 1399,
-        description: "20 créditos – el mejor precio.", image_url: null,
-        category: "package", stock: 99, is_active: true,
-        created_at: "2025-01-01T00:00:00Z",
-    },
-};
+import { useEffect } from "react";
 
 // ── Loader ────────────────────────────────────────────────────────
 export async function loader({ request, params }: Route.LoaderArgs) {
+    console.log("[checkout/$packId/loader] ========== INICIO DE LOADER ==========");
+    console.log("[checkout/$packId/loader] Params:", params);
+    console.log("[checkout/$packId/loader] Request URL:", request.url);
+
     const { requireGymAuth } = await import("~/services/gym.server");
     const { getProduct } = await import("~/services/supabase.server");
-    const { profile, gymId } = await requireGymAuth(request);
+
+    let profile, gymId;
+    try {
+        const auth = await requireGymAuth(request);
+        profile = auth.profile;
+        gymId = auth.gymId;
+        console.log("[checkout/$packId/loader] ✅ Auth exitoso - User ID:", profile.id, "Gym ID:", gymId);
+    } catch (authError) {
+        console.error("[checkout/$packId/loader] ❌ Error en requireGymAuth:", authError);
+        throw authError;
+    }
+
+    console.log("[checkout/$packId/loader] 🔍 Buscando producto con ID:", params.packId, "para gym:", gymId);
     const product = await getProduct(params.packId, gymId);
 
     if (!product) {
+        console.error("[checkout/$packId/loader] ❌ Producto NO encontrado");
         throw new Response("Producto no encontrado", { status: 404 });
     }
+
+    console.log("[checkout/$packId/loader] ✅ Producto encontrado:", {
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        category: product.category
+    });
+    console.log("[checkout/$packId/loader] ========== FIN DE LOADER ==========");
+
     return { product, gymId };
 }
 
 // ── Action — creates MP preference (Tenant B2C Flow 2) ───────────
 export async function action({ request, params }: Route.ActionArgs) {
+    console.log("[checkout/$packId] ========== INICIO DE ACTION ==========");
+    console.log("[checkout/$packId] Params:", params);
+    console.log("[checkout/$packId] Request URL:", request.url);
+
     const { requireGymAuth } = await import("~/services/gym.server");
     const { getGymMpToken, createPreference } = await import("~/services/payment.server");
     const { getProduct } = await import("~/services/supabase.server");
 
-    const { profile, gymId } = await requireGymAuth(request);
+    let profile, gymId;
+    try {
+        const auth = await requireGymAuth(request);
+        profile = auth.profile;
+        gymId = auth.gymId;
+        console.log("[checkout/$packId] ✅ Auth exitoso - User ID:", profile.id, "Gym ID:", gymId);
+    } catch (authError) {
+        console.error("[checkout/$packId] ❌ Error en requireGymAuth:", authError);
+        throw authError;
+    }
 
     // Demo mode: no Supabase / no gym → skip to success
     if (!gymId || gymId === "demo" || !process.env.SUPABASE_URL) {
+        console.log("[checkout/$packId] ⚠️ Modo DEMO detectado - Redirigiendo a success");
         return redirect("/dashboard/checkout/success?status=approved&payment_id=demo-12345");
     }
 
     // Get the product from DB
+    console.log("[checkout/$packId] 🔍 Obteniendo producto con ID:", params.packId, "para gym:", gymId);
     const product = await getProduct(params.packId, gymId);
-    if (!product) throw new Response("Producto no encontrado", { status: 404 });
+    if (!product) {
+        console.error("[checkout/$packId] ❌ Producto NO encontrado - ID:", params.packId, "Gym:", gymId);
+        throw new Response("Producto no encontrado", { status: 404 });
+    }
+    console.log("[checkout/$packId] ✅ Producto encontrado:", {
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        category: product.category
+    });
 
     // ── Flujo 2 (Tenant B2C): money goes to gym owner's account ──
     let mpToken: string;
     try {
+        console.log("[checkout/$packId] 🔑 Obteniendo token de Mercado Pago para gym:", gymId);
         mpToken = await getGymMpToken(gymId);
+        console.log("[checkout/$packId] ✅ Token de MP obtenido exitosamente - Longitud:", mpToken?.length || 0);
     } catch (err) {
         // If gym has no MP token configured, show helpful error
-        console.error("[checkout] No MP token for gym:", gymId, err);
+        console.error("[checkout/$packId] ❌ Error al obtener token de MP:", err);
+        console.error("[checkout/$packId] Stack trace:", (err as Error).stack);
         // In development fall back to demo success
         if (process.env.NODE_ENV !== "production") {
+            console.log("[checkout/$packId] ⚠️ Modo desarrollo - Redirigiendo a success de prueba");
             return redirect("/dashboard/checkout/success?status=approved&payment_id=dev-12345");
         }
         throw new Response(
@@ -80,8 +108,19 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
 
     // Create MP preference using the gym's own token
-    const initPoint = await createPreference(product, profile.id, mpToken, gymId);
-    return redirect(initPoint);
+    try {
+        console.log("[checkout/$packId] 📝 Creando preferencia de MP...");
+        const initPoint = await createPreference(product, profile.id, mpToken, gymId);
+        console.log("[checkout/$packId] ✅ Preferencia creada exitosamente");
+        console.log("[checkout/$packId] 🔗 Init Point:", initPoint);
+        console.log("[checkout/$packId] ========== FIN DE ACTION (EXITOSO) ==========");
+        return redirect(initPoint);
+    } catch (preferenceError) {
+        console.error("[checkout/$packId] ❌ Error al crear preferencia de MP:", preferenceError);
+        console.error("[checkout/$packId] Stack trace:", (preferenceError as Error).stack);
+        console.log("[checkout/$packId] ========== FIN DE ACTION (CON ERROR) ==========");
+        throw preferenceError;
+    }
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -89,6 +128,39 @@ export default function CheckoutPack({ loaderData }: Route.ComponentProps) {
     const { product } = loaderData;
     const fetcher = useFetcher();
     const isSubmitting = fetcher.state !== "idle";
+
+    // Log component mount and state changes
+    console.log("[CheckoutPack Component] Renderizando componente");
+    console.log("[CheckoutPack Component] Producto:", product);
+    console.log("[CheckoutPack Component] Fetcher state:", fetcher.state);
+    console.log("[CheckoutPack Component] Fetcher data:", fetcher.data);
+
+    // Monitor fetcher state changes
+    useEffect(() => {
+        console.log("[CheckoutPack Component] ⚡ Fetcher state cambió a:", fetcher.state);
+
+        if (fetcher.state === "idle" && fetcher.data) {
+            console.log("[CheckoutPack Component] 📦 Datos del fetcher:", fetcher.data);
+        }
+
+        if (fetcher.state === "submitting") {
+            console.log("[CheckoutPack Component] ⏳ Enviando formulario...");
+        }
+
+        if (fetcher.state === "loading") {
+            console.log("[CheckoutPack Component] 🔄 Cargando respuesta...");
+        }
+    }, [fetcher.state, fetcher.data]);
+
+    // Log when form is submitted
+    const handleSubmit = (e: React.FormEvent) => {
+        console.log("[CheckoutPack Component] 🚀 Formulario enviado");
+        console.log("[CheckoutPack Component] Producto a comprar:", {
+            id: product.id,
+            name: product.name,
+            price: product.price
+        });
+    };
 
     return (
         <div className="max-w-lg mx-auto space-y-6">
@@ -126,7 +198,7 @@ export default function CheckoutPack({ loaderData }: Route.ComponentProps) {
                     </p>
                 </div>
 
-                <fetcher.Form method="post">
+                <fetcher.Form method="post" onSubmit={handleSubmit}>
                     <button
                         type="submit"
                         disabled={isSubmitting}

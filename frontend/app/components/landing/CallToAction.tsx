@@ -130,7 +130,7 @@ export default function CallToAction() {
                     {/* CTA content overlaid on top */}
                     <div className="relative z-10 h-full flex flex-col items-center justify-center gap-8 px-8 py-12 text-center">
                         <p className="text-white/55 text-lg max-w-xl">
-                            7 días de prueba gratuita. Sin tarjeta de crédito. Sin compromisos.
+                            La plataforma ideal para tu crecimiento. Sin contratos forzosos. Sin compromisos.
                             Tu estudio operando en menos de un día.
                         </p>
 
@@ -139,7 +139,7 @@ export default function CallToAction() {
                                 to="/onboarding"
                                 className="inline-flex items-center gap-2 bg-white text-black px-8 py-4 rounded-xl font-bold text-lg hover:bg-white/85 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
                             >
-                                Comenzar prueba gratuita
+                                Empezar ahora
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                                 </svg>

@@ -30,16 +30,17 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAuth } = await import("~/services/gym.server");
+    const { redeemReward } = await import("~/services/gamification.server");
     const { profile, gymId } = await requireGymAuth(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
     const rewardId = formData.get("rewardId") as string;
 
     if (intent === "redeem") {
-        // TODO (production): call redeemFitCoins(profile.id, rewardId)
-        return { success: true, message: "¡Recompensa canjeada! Revisa tu email para el código." };
+        const result = await redeemReward(profile.id, rewardId, gymId);
+        return result;
     }
-    return { success: false };
+    return { success: false, message: "Acción no soportada" };
 }
 
 // ─── Source Config ────────────────────────────────────────────────

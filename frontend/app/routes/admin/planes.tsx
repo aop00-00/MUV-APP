@@ -1,5 +1,7 @@
-// admin/planes.tsx — Plan & package management (Negocio)
-import { useState } from "react";
+// admin/planes.tsx — Plan & package management (Supabase)
+import type { Route } from "./+types/planes";
+import { useFetcher } from "react-router";
+import { useState, useEffect } from "react";
 import { CreditCard, Plus, Pencil, Trash2, Star } from "lucide-react";
 
 type PlanType = "creditos" | "membresia" | "ilimitado";
@@ -11,7 +13,7 @@ interface Plan {
     name: string;
     type: PlanType;
     price: number;
-    credits: number | null; // null = unlimited
+    credits: number | null;
     validityDays: number;
     popular: boolean;
     active: boolean;
@@ -25,22 +27,118 @@ const QUICK_TEMPLATES = [
     { name: "Mensual ilimitado", type: "ilimitado" as PlanType, price: 1299, credits: null, validityDays: 30 },
 ];
 
-const MOCK: Plan[] = [];
+// ─── Loader & Action ─────────────────────────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
+    const { getGymPlans } = await import("~/services/plan.server");
+    const rawPlans = await getGymPlans(gymId);
 
-export default function Planes() {
-    const [plans, setPlans] = useState<Plan[]>(MOCK);
+    const plans: Plan[] = rawPlans.map(p => ({
+        id: p.id,
+        name: p.name,
+        type: p.plan_type,
+        price: p.price,
+        credits: p.credits,
+        validityDays: p.validity_days,
+        popular: p.is_popular,
+        active: p.is_active,
+    }));
+
+    return { plans };
+}
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { profile, gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "create") {
+        const { createPlan } = await import("~/services/plan.server");
+        await createPlan({
+            gymId,
+            name: formData.get("name") as string,
+            price: Number(formData.get("price")),
+            credits: formData.get("credits") ? Number(formData.get("credits")) : null,
+            validityDays: Number(formData.get("validityDays") ?? 30),
+            planType: formData.get("type") as string,
+            isPopular: formData.get("popular") === "true",
+        });
+        return { success: true, intent };
+    }
+
+    if (intent === "toggle") {
+        const { togglePlan } = await import("~/services/plan.server");
+        const planId = formData.get("planId") as string;
+        const isActive = formData.get("isActive") === "true";
+        await togglePlan(planId, gymId, !isActive);
+        return { success: true, intent };
+    }
+
+    if (intent === "delete") {
+        const { deletePlan } = await import("~/services/plan.server");
+        const planId = formData.get("planId") as string;
+        await deletePlan(planId, gymId);
+        return { success: true, intent };
+    }
+
+    return { success: false };
+}
+
+// ─── Component ───────────────────────────────────────────────────
+export default function Planes({ loaderData }: Route.ComponentProps) {
+    const { plans } = loaderData;
+    const fetcher = useFetcher();
     const [showModal, setShowModal] = useState(false);
     const [form, setForm] = useState({ name: "", type: "creditos" as PlanType, price: 0, credits: 10 as number | null, validityDays: 30, popular: false });
 
+    // Close modal after successful creation
+    useEffect(() => {
+        if (fetcher.state === "idle" && fetcher.data?.success && fetcher.data?.intent === "create") {
+            setShowModal(false);
+            setForm({ name: "", type: "creditos", price: 0, credits: 10, validityDays: 30, popular: false });
+        }
+    }, [fetcher.state, fetcher.data]);
+
     function addFromTemplate(t: typeof QUICK_TEMPLATES[0]) {
-        setPlans(p => [...p, { id: `pl${Date.now()}`, ...t, popular: false, active: true }]);
+        const formData = new FormData();
+        formData.set("intent", "create");
+        formData.set("name", t.name);
+        formData.set("price", String(t.price));
+        if (t.credits !== null) formData.set("credits", String(t.credits));
+        formData.set("validityDays", String(t.validityDays));
+        formData.set("type", t.type);
+        formData.set("popular", "false");
+        fetcher.submit(formData, { method: "post" });
     }
+
     function save() {
-        setPlans(p => [...p, { id: `pl${Date.now()}`, ...form, active: true }]);
-        setShowModal(false);
+        const formData = new FormData();
+        formData.set("intent", "create");
+        formData.set("name", form.name);
+        formData.set("price", String(form.price));
+        if (form.type === "creditos" && form.credits !== null) formData.set("credits", String(form.credits));
+        formData.set("validityDays", String(form.validityDays));
+        formData.set("type", form.type);
+        formData.set("popular", String(form.popular));
+        fetcher.submit(formData, { method: "post" });
     }
-    const toggle = (id: string) => setPlans(p => p.map(x => x.id === id ? { ...x, active: !x.active } : x));
-    const remove = (id: string) => setPlans(p => p.filter(x => x.id !== id));
+
+    function toggle(id: string, isActive: boolean) {
+        const formData = new FormData();
+        formData.set("intent", "toggle");
+        formData.set("planId", id);
+        formData.set("isActive", String(isActive));
+        fetcher.submit(formData, { method: "post" });
+    }
+
+    function remove(id: string) {
+        const formData = new FormData();
+        formData.set("intent", "delete");
+        formData.set("planId", id);
+        fetcher.submit(formData, { method: "post" });
+    }
 
     return (
         <div className="space-y-6">
@@ -83,7 +181,7 @@ export default function Planes() {
                                     <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${TYPE_COLORS[p.type]}`}>{TYPE_LABELS[p.type]}</span>
                                 </div>
                                 <div className="flex gap-1">
-                                    <button onClick={() => toggle(p.id)} className="p-1.5 hover:bg-white/5/10 rounded-lg"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
+                                    <button onClick={() => toggle(p.id, p.active)} className="p-1.5 hover:bg-white/5/10 rounded-lg"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
                                     <button onClick={() => remove(p.id)} className="p-1.5 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5 text-red-400" /></button>
                                 </div>
                             </div>
@@ -95,7 +193,7 @@ export default function Planes() {
                                 <p>{p.credits === null ? "Clases ilimitadas" : `${p.credits} crédito${p.credits > 1 ? "s" : ""}`}</p>
                                 <p>Vigencia: {p.validityDays} días</p>
                             </div>
-                            <button onClick={() => toggle(p.id)} className={`w-full py-2 rounded-xl text-xs font-bold transition-colors ${p.active ? "bg-white/5/10 text-white/60 hover:bg-white/5/20" : "bg-green-100 text-green-700 hover:bg-green-200"}`}>
+                            <button onClick={() => toggle(p.id, p.active)} className={`w-full py-2 rounded-xl text-xs font-bold transition-colors ${p.active ? "bg-white/5/10 text-white/60 hover:bg-white/5/20" : "bg-green-100 text-green-700 hover:bg-green-200"}`}>
                                 {p.active ? "Pausar plan" : "Activar plan"}
                             </button>
                         </div>

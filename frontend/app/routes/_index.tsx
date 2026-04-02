@@ -1,15 +1,45 @@
 // app/routes/_index.tsx
-import type { MetaFunction } from "react-router";
-import ParticleBackground from "../components/landing/ParticleBackground";
-import Hero from "../components/landing/Hero";
-import Features from "../components/landing/Features";
-import Process from "../components/landing/Process";
-import Testimonials from "../components/landing/Testimonials";
-import Pricing from "../components/landing/Pricing";
-import FAQ from "../components/landing/FAQ";
-import CallToAction from "../components/landing/CallToAction";
+// Landing page — conditionally renders:
+//   • SaaS marketing landing (grindproject.com)
+//   • Gym subdomain landing with auth (estudio.grindproject.com)
 
-export const meta: MetaFunction = () => {
+import type { Route } from "./+types/_index";
+import SaasLanding from "~/components/landing/SaasLanding";
+import GymLanding from "~/components/landing/GymLanding";
+import type { GymLandingData } from "~/services/gym-lookup.server";
+
+// ─── Loader ──────────────────────────────────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { getSubdomain } = await import("~/services/subdomain.server");
+    const subdomain = getSubdomain(request);
+
+    if (!subdomain) {
+        return { mode: "saas" as const, gym: null };
+    }
+
+    const { getGymLandingData } = await import("~/services/gym-lookup.server");
+    const gym = await getGymLandingData(subdomain);
+
+    if (!gym) {
+        throw new Response("Estudio no encontrado", { status: 404 });
+    }
+
+    return { mode: "gym" as const, gym };
+}
+
+// ─── Meta ────────────────────────────────────────────────────────
+export function meta({ data }: Route.MetaArgs) {
+    if (data?.mode === "gym" && data.gym) {
+        const gym = data.gym as GymLandingData;
+        return [
+            { title: `${gym.name} — Clases, Horarios y Planes` },
+            { name: "description", content: gym.tagline || `Reserva tu lugar en ${gym.name}` },
+            { property: "og:title", content: gym.name },
+            { property: "og:description", content: gym.tagline || `Reserva tu lugar en ${gym.name}` },
+            ...(gym.hero_image_url ? [{ property: "og:image", content: gym.hero_image_url }] : []),
+        ];
+    }
+
     return [
         { title: "Project Studio – Software para estudios de Pilates, Yoga y Barre" },
         {
@@ -18,24 +48,36 @@ export const meta: MetaFunction = () => {
                 "Reservas online, control de acceso QR, facturación CFDI/AFIP/SII automática y CRM de leads. El software SaaS para estudios boutique de fitness en Latinoamérica.",
         },
     ];
-};
+}
 
-export default function Index() {
-    return (
-        <>
-            {/* Aurora orb background — position:fixed z-index:-1, always behind content */}
-            <ParticleBackground />
+// ─── Action (gym auth only) ──────────────────────────────────────
+export async function action({ request }: Route.ActionArgs) {
+    const { getSubdomain } = await import("~/services/subdomain.server");
+    const subdomain = getSubdomain(request);
 
-            {/* Content sits at z-index:1, above the fixed background */}
-            <div className="text-white" style={{ position: "relative", zIndex: 1 }}>
-                <Hero />
-                <Features />
-                <Process />
-                <Testimonials />
-                <Pricing />
-                <FAQ />
-                <CallToAction />
-            </div>
-        </>
-    );
+    if (!subdomain) {
+        return new Response(JSON.stringify({ error: "No permitido" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+        });
+    }
+
+    const { getGymBySlug } = await import("~/services/gym-lookup.server");
+    const gym = await getGymBySlug(subdomain);
+    if (!gym) {
+        throw new Response("Estudio no encontrado", { status: 404 });
+    }
+
+    const { handleGymAuth } = await import("~/services/gym-auth.server");
+    const formData = await request.formData();
+    return handleGymAuth(request, gym, formData);
+}
+
+// ─── Component ───────────────────────────────────────────────────
+export default function Index({ loaderData }: Route.ComponentProps) {
+    if (loaderData.mode === "gym" && loaderData.gym) {
+        return <GymLanding gym={loaderData.gym as GymLandingData} />;
+    }
+
+    return <SaasLanding />;
 }

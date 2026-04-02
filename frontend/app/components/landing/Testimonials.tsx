@@ -1,8 +1,11 @@
 // app/components/landing/Testimonials.tsx
 // Infinite marquee testimonials — two rows scrolling in opposite directions.
+// + Custom Landing Page section below.
 
 import React, { useRef } from 'react';
+import { Sparkles } from 'lucide-react';
 import { ScrollReveal } from "~/components/ui/scroll-reveal";
+import ParticleBackground from "./ParticleBackground";
 
 // ─── Marquee primitive ────────────────────────────────────────────────────────
 
@@ -64,7 +67,7 @@ function Marquee({
     );
 }
 
-// ─── Data ─────────────────────────────────────────────────────────────────────
+// ─── Testimonials Data ───────────────────────────────────────────────────────
 
 const TESTIMONIALS = [
     {
@@ -123,11 +126,36 @@ const TESTIMONIALS = [
     },
 ];
 
-// Split into two rows: first half forward, second half reverse
 const ROW_A = TESTIMONIALS.slice(0, 3);
 const ROW_B = TESTIMONIALS.slice(3);
 
-// ─── Card ─────────────────────────────────────────────────────────────────────
+// ─── Custom Landing Features Data ────────────────────────────────────────────
+
+const LANDING_FEATURES = [
+    {
+        id: 'feature-1',
+        title: 'Diseño Moderno y Atractivo',
+        description:
+            'Interfaz limpia, profesional y construida con los últimos principios de diseño. Optimizada para ofrecer la mejor experiencia a tus clientes y maximizar conversiones.',
+        image: '/images/custom-landing/computer_mockup.png',
+    },
+    {
+        id: 'feature-2',
+        title: 'Eficiencia para todos',
+        description:
+            'Tanto tu sitio web como tu plataforma están diseñados bajo una arquitectura centrada en la eficiencia. Optimizamos cada pantalla para que tú y tus clientes disfruten de una experiencia fluida, rápida y profesional desde cualquier móvil, tablet o PC.',
+        image: '/images/custom-landing/mobile_mockup_1.png',
+    },
+    {
+        id: 'feature-3',
+        title: 'Potencia para Usuarios y Admins',
+        description:
+            'Nuestra plataforma está diseñada para empoderar a todos. Los usuarios disfrutan de una interfaz intuitiva para sus gestiones, mientras que los administradores obtienen el control total y las herramientas de análisis necesarias para escalar su negocio con fuerza.',
+        image: '/images/custom-landing/mobile_mockup_2.png',
+    },
+];
+
+// ─── Testimonial Card ────────────────────────────────────────────────────────
 
 function TestimonialCard({
     quote,
@@ -139,7 +167,6 @@ function TestimonialCard({
 }: (typeof TESTIMONIALS)[0]) {
     return (
         <figure className="relative w-72 sm:w-80 shrink-0 rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-sm p-6 flex flex-col gap-4 hover:border-white/20 hover:bg-white/[0.07] transition-all duration-300 cursor-default">
-            {/* Stars */}
             <div className="flex gap-0.5">
                 {Array.from({ length: stars }).map((_, i) => (
                     <svg key={i} className="w-4 h-4 fill-amber-400/80" viewBox="0 0 20 20">
@@ -147,13 +174,9 @@ function TestimonialCard({
                     </svg>
                 ))}
             </div>
-
-            {/* Quote */}
             <blockquote className="text-white/60 text-sm leading-relaxed flex-1">
                 &ldquo;{quote}&rdquo;
             </blockquote>
-
-            {/* Author */}
             <figcaption className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white font-bold text-xs shrink-0">
                     {avatar}
@@ -169,39 +192,92 @@ function TestimonialCard({
     );
 }
 
-// ─── Section ──────────────────────────────────────────────────────────────────
+// ─── Custom Landing Section ──────────────────────────────────────────────────
+
+function CustomLandingSection() {
+    return (
+        <section className="relative py-20 md:py-32 w-full">
+            <ParticleBackground isAbsolute transparent />
+            <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                {/* Header */}
+                <ScrollReveal>
+                    <div className="max-w-2xl mb-12 md:mb-16">
+                        <h2 className="mb-4 md:mb-6 text-3xl sm:text-4xl md:text-6xl lg:text-7xl font-black text-white tracking-tight leading-tight">
+                            Creación de Landing Page Personalizada
+                        </h2>
+                        <p className="mb-6 md:mb-8 text-gray-400 text-sm md:text-lg leading-relaxed max-w-xl">
+                            Diseñamos el sitio web que tu estudio necesita para destacar. Entregamos una interfaz limpia, moderna y estratégicamente optimizada para convertir a tus visitantes en socios.
+                        </p>
+                        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-400 text-sm md:text-base font-bold tracking-tight shadow-[0_0_20px_rgba(251,191,36,0.1)] animate-pulse-subtle">
+                            <Sparkles className="w-4 h-4 text-amber-500" />
+                            Tarifa preferencial para planes Pro y Elite
+                        </div>
+                    </div>
+                </ScrollReveal>
+
+                {/* Feature Cards */}
+                <div className="flex flex-col lg:grid lg:grid-cols-3 gap-6 md:gap-8">
+                    {LANDING_FEATURES.map((feature, i) => (
+                        <ScrollReveal key={feature.id} delay={i * 0.15}>
+                            <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm group hover:border-white/20 transition-all duration-300">
+                                <div className="h-56 sm:h-64 md:h-72 lg:h-64 bg-white/5 overflow-hidden shrink-0">
+                                    <img
+                                        src={feature.image}
+                                        alt={feature.title}
+                                        className="h-full w-full object-cover object-top filter group-hover:brightness-110 group-hover:scale-[1.03] transition-all duration-500"
+                                    />
+                                </div>
+                                <div className="px-5 py-5 md:px-8 md:py-6">
+                                    <h3 className="mb-2 md:mb-4 text-lg md:text-2xl font-bold text-white leading-tight">
+                                        {feature.title}
+                                    </h3>
+                                    <p className="text-gray-400 text-sm md:text-base leading-relaxed">
+                                        {feature.description}
+                                    </p>
+                                </div>
+                            </div>
+                        </ScrollReveal>
+                    ))}
+                </div>
+            </div>
+        </section>
+    );
+}
+
+// ─── Main Export ──────────────────────────────────────────────────────────────
 
 export default function Testimonials() {
     return (
-        <section className="py-24 overflow-hidden text-white">
-            {/* Header */}
-            <ScrollReveal className="text-center px-4 mb-14">
-                <p className="text-white/50 font-semibold text-xs tracking-widest uppercase mb-3">
-                    Lo que dicen nuestros clientes
-                </p>
-                <h2 className="text-4xl md:text-5xl font-black text-white">
-                    Estudios reales.{' '}
-                    <span className="text-white/50">Resultados reales.</span>
-                </h2>
-            </ScrollReveal>
+        <>
+            <section className="py-24 overflow-hidden text-white">
+                <ScrollReveal className="text-center px-4 mb-14">
+                    <p className="text-white/50 font-semibold text-xs tracking-widest uppercase mb-3">
+                        Lo que dicen nuestros clientes
+                    </p>
+                    <h2 className="text-4xl md:text-5xl font-semibold text-white">
+                        Estudios reales.{' '}
+                        <span className="text-white/50">Resultados reales.</span>
+                    </h2>
+                </ScrollReveal>
 
-            {/* Row 1 — left scroll */}
-            <ScrollReveal delay={0.1}>
-                <Marquee pauseOnHover className="mb-5 [--duration:40s]">
-                    {ROW_A.map((t) => (
-                        <TestimonialCard key={t.name} {...t} />
-                    ))}
-                </Marquee>
-            </ScrollReveal>
+                <ScrollReveal delay={0.1}>
+                    <Marquee pauseOnHover className="mb-5 [--duration:40s]">
+                        {ROW_A.map((t) => (
+                            <TestimonialCard key={t.name} {...t} />
+                        ))}
+                    </Marquee>
+                </ScrollReveal>
 
-            {/* Row 2 — right scroll */}
-            <ScrollReveal delay={0.2}>
-                <Marquee pauseOnHover reverse className="[--duration:45s]">
-                    {ROW_B.map((t) => (
-                        <TestimonialCard key={t.name} {...t} />
-                    ))}
-                </Marquee>
-            </ScrollReveal>
-        </section>
+                <ScrollReveal delay={0.2}>
+                    <Marquee pauseOnHover reverse className="[--duration:45s]">
+                        {ROW_B.map((t) => (
+                            <TestimonialCard key={t.name} {...t} />
+                        ))}
+                    </Marquee>
+                </ScrollReveal>
+            </section>
+
+            <CustomLandingSection />
+        </>
     );
 }

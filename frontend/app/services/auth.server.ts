@@ -18,7 +18,12 @@ const redirect = (url: string, init?: number | ResponseInit) => {
 
 import type { Profile } from "~/types/database";
 
-const sessionSecret = process.env.SESSION_SECRET || "grind-default-secret-change-in-prod";
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+    throw new Error(
+        "Missing SESSION_SECRET env var. Generate one with: openssl rand -base64 32"
+    );
+}
 
 export const sessionStorage = createCookieSessionStorage({
     cookie: {

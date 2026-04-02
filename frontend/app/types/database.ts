@@ -14,7 +14,9 @@ export interface Profile {
     avatar_url: string | null;
     credits: number; // class credits remaining
     phone: string | null;
+    balance: number; // wallet balance for POS purchases
     gym_id: string; // The tenant this profile belongs to
+    metadata?: { tags?: string[]; [key: string]: any }; // Custom metadata (tags, notes, etc.)
     created_at: string;
     updated_at: string;
 }
@@ -37,10 +39,12 @@ export interface Membership {
 // ─── Classes / Schedule ──────────────────────────────────────────
 export interface ClassSchedule {
     id: string;
+    gym_id: string; // FK → gyms.id
     title: string; // e.g. "CrossFit", "Yoga", "Spinning"
     description: string | null;
     coach_id: string; // FK → profiles.id
     capacity: number;
+    current_enrolled: number;
     start_time: string; // ISO datetime
     end_time: string;
     location: string | null;
@@ -88,12 +92,16 @@ export interface OrderItem {
 
 export interface Order {
     id: string;
-    user_id: string;
+    gym_id: string;
+    user_id: string | null;
     status: OrderStatus;
     payment_method: PaymentMethod;
+    subtotal: number;
+    tax: number;
     total: number;
-    mp_preference_id: string | null; // Mercado Pago preference ID
-    mp_payment_id: string | null; // Mercado Pago payment ID
+    customer_name: string | null;
+    mp_preference_id: string | null;
+    mp_payment_id: string | null;
     items: OrderItem[];
     created_at: string;
     updated_at: string;
@@ -251,4 +259,95 @@ export interface Lead {
     days_in_stage: number;
     created_at: string;
     updated_at: string;
+}
+
+// ─── Onboarding & Adaptive Booking (Migration 008) ───────────────────────────
+
+/**
+ * Type of fitness studio - determines booking mode and UI customization
+ */
+export type StudioType = 'pilates' | 'cycling' | 'yoga' | 'barre' | 'dance' | 'hiit' | 'martial';
+
+/**
+ * How bookings work for this gym
+ * - assigned_resource: Users select specific equipment (Reformer 1, Bike 3, etc.)
+ * - capacity_only: Simple count-based capacity (20 spots available)
+ * - capacity_or_none: Gym can choose to have limit or unlimited
+ */
+export type BookingMode = 'assigned_resource' | 'capacity_only' | 'capacity_or_none';
+
+/**
+ * Configuration for room layout (used by assigned_resource mode)
+ */
+export interface LayoutConfig {
+  rows?: number;
+  cols?: number;
+  resources?: Array<{
+    id: string;
+    name: string;
+    type: string;
+    row: number;
+    col: number;
+  }>;
+}
+
+/**
+ * Physical equipment/seats (Reformers, Bikes, Mats, etc.)
+ * Only used when gym.booking_mode = 'assigned_resource'
+ */
+export interface Resource {
+  id: string;
+  gym_id: string;
+  room_id: string | null;
+  name: string;                  // e.g. "Reformer 1", "Bici 12"
+  resource_type: string;          // e.g. "reformer", "bike", "mat"
+  position_row: number;           // Grid row (0-indexed)
+  position_col: number;           // Grid column (0-indexed)
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Onboarding progress tracker
+ */
+export interface OnboardingProgress {
+  current_step: number;           // 0-7
+  completed_steps: string[];
+  studio_type: StudioType | null;
+  booking_mode: BookingMode;
+}
+
+/**
+ * Gym/Studio - Extended with onboarding fields (Migration 008)
+ */
+export interface Gym {
+  id: string;
+  owner_id: string | null;
+  name: string;
+  slug: string;
+  logo_url: string | null;
+  primary_color: string;
+  accent_color: string;
+  plan_id: string;
+  plan_status: string;            // "trial", "active", "suspended", "cancelled"
+  trial_ends_at: string | null;
+  tax_region: TaxRegion;
+  currency: string;               // "MXN", "USD", "ARS", "CLP", "COP"
+  timezone: string;               // e.g. "America/Mexico_City"
+  features: Record<string, any>;
+
+  // NEW: Onboarding & Booking Configuration (Migration 008)
+  studio_type: StudioType | null;
+  booking_mode: BookingMode;
+  default_capacity: number;
+  has_capacity_limit: boolean;
+  layout_config: LayoutConfig;
+  brand_color: string | null;
+  onboarding_completed: boolean;
+  onboarding_completed_at: string | null;
+  onboarding_step: number;
+
+  created_at: string;
+  updated_at: string;
 }

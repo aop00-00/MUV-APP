@@ -1,32 +1,11 @@
 // admin/horarios.tsx — Recurring schedules ("factory" that generates sessions)
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Clock, Plus, Pencil, Trash2, ChevronDown, User, MapPin } from "lucide-react";
+import { useFetcher } from "react-router";
+import type { Route } from "./+types/horarios";
 
 type Day = "Lun" | "Mar" | "Mié" | "Jue" | "Vie" | "Sáb" | "Dom";
 const DAYS: Day[] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
-
-// Information from "Sesiones/Operaciones" (Class Types)
-const SESSION_TYPES = [
-    { name: "Pilates Reformer", duration: 50, capacity: 8, color: "#3B82F6" },
-    { name: "Yoga Flow", duration: 60, capacity: 12, color: "#10B981" },
-    { name: "Barre Intensivo", duration: 45, capacity: 10, color: "#EC4899" },
-];
-
-const ROOMS = ["Sala A — Reformers", "Sala B — Studio", "Sala C — Yoga"];
-
-interface Schedule {
-    id: string;
-    className: string;
-    coach: string;
-    room: string;
-    days: Day[];
-    time: string;
-    duration: number; // minutes
-    capacity: number;
-    active: boolean;
-}
-
-const MOCK: Schedule[] = [];
 
 const DAY_COLOR: Record<Day, string> = {
     Lun: "bg-blue-100 text-blue-700",
@@ -38,65 +17,251 @@ const DAY_COLOR: Record<Day, string> = {
     Dom: "bg-red-100 text-red-700",
 };
 
-import { useTenant } from "~/context/TenantContext";
+// ─── Loader & Action ─────────────────────────────────────────────
+export async function loader({ request }: Route.LoaderArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { getGymCoaches } = await import("~/services/coach.server");
+    const { getGymRooms, getGymClassTypes } = await import("~/services/room.server");
+    const { gymId } = await requireGymAdmin(request);
 
-export default function Horarios() {
-    const { config } = useTenant();
-    const coaches = config.coaches;
+    const [coaches, rooms, classTypes] = await Promise.all([
+        getGymCoaches(gymId),
+        getGymRooms(gymId),
+        getGymClassTypes(gymId),
+    ]);
 
-    const [schedules, setSchedules] = useState<Schedule[]>(MOCK);
+    // Fetch schedules from the schedules table
+    const { data: schedules, error } = await supabaseAdmin
+        .from("schedules")
+        .select("*")
+        .eq("gym_id", gymId)
+        .order("time", { ascending: true });
+
+    if (error) console.error("Error fetching schedules:", error);
+
+    return {
+        schedules: (schedules ?? []) as any[],
+        coaches,
+        rooms: rooms.filter(r => r.is_active),
+        classTypes,
+    };
+}
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAdmin } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId } = await requireGymAdmin(request);
+    const formData = await request.formData();
+    const intent = formData.get("intent") as string;
+
+    if (intent === "create") {
+        const days = formData.get("days") as string;
+        const { error } = await supabaseAdmin
+            .from("schedules")
+            .insert({
+                gym_id: gymId,
+                class_name: formData.get("className") as string,
+                coach_name: formData.get("coach") as string,
+                coach_id: formData.get("coachId") as string || null,
+                room_name: formData.get("room") as string,
+                room_id: formData.get("roomId") as string || null,
+                days: JSON.parse(days),
+                time: formData.get("time") as string,
+                duration: parseInt(formData.get("duration") as string, 10),
+                capacity: parseInt(formData.get("capacity") as string, 10),
+                is_active: true,
+            });
+
+        if (error) throw new Error(`Error creating schedule: ${error.message}`);
+        
+        // Auto-sync after creation
+        const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+        await syncGymClassesFromSchedules(gymId);
+
+        return { success: true, intent };
+    }
+
+    if (intent === "update") {
+        const scheduleId = formData.get("scheduleId") as string;
+        const days = formData.get("days") as string;
+        const { error } = await supabaseAdmin
+            .from("schedules")
+            .update({
+                class_name: formData.get("className") as string,
+                coach_name: formData.get("coach") as string,
+                coach_id: formData.get("coachId") as string || null,
+                room_name: formData.get("room") as string,
+                room_id: formData.get("roomId") as string || null,
+                days: JSON.parse(days),
+                time: formData.get("time") as string,
+                duration: parseInt(formData.get("duration") as string, 10),
+                capacity: parseInt(formData.get("capacity") as string, 10),
+            })
+            .eq("id", scheduleId)
+            .eq("gym_id", gymId);
+
+        if (error) throw new Error(`Error updating schedule: ${error.message}`);
+        
+        // Auto-sync after update
+        const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+        await syncGymClassesFromSchedules(gymId);
+
+        return { success: true, intent };
+    }
+
+    if (intent === "toggle") {
+        const scheduleId = formData.get("scheduleId") as string;
+        const isActive = formData.get("isActive") === "true";
+        const { error } = await supabaseAdmin
+            .from("schedules")
+            .update({ is_active: isActive })
+            .eq("id", scheduleId)
+            .eq("gym_id", gymId);
+
+        if (error) throw new Error(`Error toggling schedule: ${error.message}`);
+        
+        // Auto-sync after toggle
+        const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+        await syncGymClassesFromSchedules(gymId);
+
+        return { success: true, intent };
+    }
+
+    if (intent === "delete") {
+        const scheduleId = formData.get("scheduleId") as string;
+        const { error } = await supabaseAdmin
+            .from("schedules")
+            .delete()
+            .eq("id", scheduleId)
+            .eq("gym_id", gymId);
+
+        if (error) throw new Error(`Error deleting schedule: ${error.message}`);
+
+        // Auto-sync after delete (to remove classes generated by this template)
+        const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+        await syncGymClassesFromSchedules(gymId);
+
+        return { success: true, intent };
+    }
+
+    if (intent === "sync_manual") {
+        const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+        const result = await syncGymClassesFromSchedules(gymId);
+        return { success: true, intent, count: result.count };
+    }
+
+    return { success: true, intent };
+}
+
+// ─── Main Component ──────────────────────────────────────────────
+export default function Horarios({ loaderData }: Route.ComponentProps) {
+    const { schedules, coaches, rooms, classTypes } = loaderData;
+    const fetcher = useFetcher();
+
     const [showModal, setShowModal] = useState(false);
     const [editId, setEditId] = useState<string | null>(null);
     const [form, setForm] = useState({
         className: "",
-        coach: coaches.length > 0 ? coaches[0].name : "",
-        room: ROOMS[0],
+        coach: "",
+        coachId: "",
+        room: "",
+        roomId: "",
         days: [] as Day[],
         time: "08:00",
         duration: 50,
         capacity: 8
     });
 
+    // Close modal after successful submission
+    useEffect(() => {
+        if (fetcher.data?.success && fetcher.state === "idle") {
+            setShowModal(false);
+        }
+    }, [fetcher.data, fetcher.state]);
+
     function openNew() {
         setForm({
-            className: "",
+            className: classTypes.length > 0 ? classTypes[0].name : "",
             coach: coaches.length > 0 ? coaches[0].name : "",
-            room: ROOMS[0],
+            coachId: coaches.length > 0 ? coaches[0].id : "",
+            room: rooms.length > 0 ? rooms[0].name : "",
+            roomId: rooms.length > 0 ? rooms[0].id : "",
             days: [],
             time: "08:00",
-            duration: 50,
-            capacity: 8
+            duration: classTypes.length > 0 ? classTypes[0].duration : 50,
+            capacity: rooms.length > 0 ? rooms[0].capacity : 8,
         });
         setEditId(null);
         setShowModal(true);
     }
 
-    function openEdit(s: Schedule) {
-        setForm({ className: s.className, coach: s.coach, room: s.room, days: s.days, time: s.time, duration: s.duration, capacity: s.capacity });
+    function openEdit(s: any) {
+        setForm({
+            className: s.class_name,
+            coach: s.coach_name,
+            coachId: s.coach_id || "",
+            room: s.room_name,
+            roomId: s.room_id || "",
+            days: s.days || [],
+            time: s.time,
+            duration: s.duration,
+            capacity: s.capacity,
+        });
         setEditId(s.id);
         setShowModal(true);
     }
 
     function handleClassTypeChange(name: string) {
-        const type = SESSION_TYPES.find(t => t.name === name);
+        const type = classTypes.find(t => t.name === name);
         if (type) {
-            setForm(f => ({ ...f, className: name, duration: type.duration, capacity: type.capacity }));
+            setForm(f => ({ ...f, className: name, duration: type.duration, capacity: f.capacity }));
+        } else {
+            setForm(f => ({ ...f, className: name }));
         }
     }
 
-    function toggleDay(d: Day) { setForm(f => ({ ...f, days: f.days.includes(d) ? f.days.filter(x => x !== d) : [...f.days, d] })); }
+    function toggleDay(d: Day) {
+        setForm(f => ({ ...f, days: f.days.includes(d) ? f.days.filter(x => x !== d) : [...f.days, d] }));
+    }
 
     function save() {
-        if (editId) {
-            setSchedules(s => s.map(x => x.id === editId ? { ...x, ...form } : x));
-        } else {
-            setSchedules(s => [...s, { id: `h${Date.now()}`, ...form, active: true }]);
-        }
-        setShowModal(false);
+        const fd = new FormData();
+        fd.set("intent", editId ? "update" : "create");
+        if (editId) fd.set("scheduleId", editId);
+        fd.set("className", form.className);
+        fd.set("coach", form.coach);
+        fd.set("coachId", form.coachId);
+        fd.set("room", form.room);
+        fd.set("roomId", form.roomId);
+        fd.set("days", JSON.stringify(form.days));
+        fd.set("time", form.time);
+        fd.set("duration", String(form.duration));
+        fd.set("capacity", String(form.capacity));
+        fetcher.submit(fd, { method: "post" });
     }
 
-    function toggle(id: string) { setSchedules(s => s.map(x => x.id === id ? { ...x, active: !x.active } : x)); }
-    function remove(id: string) { setSchedules(s => s.filter(x => x.id !== id)); }
+    function toggle(id: string, currentActive: boolean) {
+        const fd = new FormData();
+        fd.set("intent", "toggle");
+        fd.set("scheduleId", id);
+        fd.set("isActive", String(!currentActive));
+        fetcher.submit(fd, { method: "post" });
+    }
+
+    function remove(id: string) {
+        if (!confirm("¿Seguro que deseas eliminar este horario y todas sus sesiones futuras?")) return;
+        const fd = new FormData();
+        fd.set("intent", "delete");
+        fd.set("scheduleId", id);
+        fetcher.submit(fd, { method: "post" });
+    }
+
+    function syncManual() {
+        const fd = new FormData();
+        fd.set("intent", "sync_manual");
+        fetcher.submit(fd, { method: "post" });
+    }
 
     return (
         <div className="space-y-6">
@@ -105,14 +270,19 @@ export default function Horarios() {
                     <h1 className="text-2xl font-black text-white">Horarios</h1>
                     <p className="text-white/50 text-sm mt-0.5">Define horarios recurrentes basado en tus tipos de sesión.</p>
                 </div>
-                <button onClick={openNew} className="flex items-center gap-2 bg-amber-400 hover:bg-amber-500 text-black font-bold px-4 py-2.5 rounded-xl text-sm transition-all hover:scale-105 active:scale-95">
-                    <Plus className="w-4 h-4" /> Nuevo horario
-                </button>
+                <div className="flex gap-2">
+                    <button onClick={syncManual} className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white font-bold px-4 py-2.5 rounded-xl text-sm transition-all border border-white/10 shadow-lg" title="Sincroniza las próximas 4 semanas">
+                         {fetcher.state !== 'idle' && fetcher.formData?.get('intent') === 'sync_manual' ? "Sincronizando..." : "🔄 Sincronizar Calendario"}
+                    </button>
+                    <button onClick={openNew} className="flex items-center gap-2 bg-amber-400 hover:bg-amber-500 text-black font-bold px-4 py-2.5 rounded-xl text-sm transition-all hover:scale-105 active:scale-95">
+                        <Plus className="w-4 h-4" /> Nuevo horario
+                    </button>
+                </div>
             </div>
 
             <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-start gap-3">
                 <Clock className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                <p className="text-amber-800 text-sm">Los horarios utilizan la información de <strong>Operaciones → Tipos de clase</strong> para definir duración y capacidad por defecto.</p>
+                <p className="text-amber-800 text-sm">Los horarios utilizan la información de <strong>Operaciones &gt; Tipos de clase</strong> y <strong>Coaches</strong> registrados en el sistema.</p>
             </div>
 
             {schedules.length === 0 && (
@@ -138,36 +308,36 @@ export default function Horarios() {
                             {schedules.map(s => (
                                 <tr key={s.id} className="hover:bg-white/5 transition-colors">
                                     <td className="px-4 py-3">
-                                        <p className="font-bold text-white">{s.className}</p>
+                                        <p className="font-bold text-white">{s.class_name}</p>
                                         <p className="text-[10px] text-white/40 uppercase font-bold">{s.duration} MIN</p>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex items-center gap-2">
-                                            <div className="w-6 h-6 rounded-full bg-white/5/10 flex items-center justify-center"><User className="w-3 h-3 text-white/40" /></div>
-                                            <span className="text-white/70">{s.coach}</span>
+                                            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center"><User className="w-3 h-3 text-white/40" /></div>
+                                            <span className="text-white/70">{s.coach_name}</span>
                                         </div>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex items-center gap-1.5 text-white/50">
                                             <MapPin className="w-3.5 h-3.5" />
-                                            <span>{s.room.split("—")[0]}</span>
+                                            <span>{s.room_name}</span>
                                         </div>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex flex-wrap gap-1">
-                                            {s.days.map(d => <span key={d} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${DAY_COLOR[d]}`}>{d}</span>)}
+                                            {(s.days || []).map((d: Day) => <span key={d} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${DAY_COLOR[d] || ""}`}>{d}</span>)}
                                         </div>
                                     </td>
                                     <td className="px-4 py-3 font-mono text-white/70 font-bold">{s.time}</td>
                                     <td className="px-4 py-3 text-white/50">{s.capacity} <span className="text-[10px]">LUG</span></td>
                                     <td className="px-4 py-3">
-                                        <button onClick={() => toggle(s.id)} className={`text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-wider ${s.active ? "bg-green-100 text-green-700" : "bg-white/5/10 text-white/50"}`}>
-                                            {s.active ? "Activo" : "Pausado"}
+                                        <button onClick={() => toggle(s.id, s.is_active)} className={`text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-wider ${s.is_active ? "bg-green-100 text-green-700" : "bg-white/10 text-white/50"}`}>
+                                            {s.is_active ? "Activo" : "Pausado"}
                                         </button>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex items-center gap-1">
-                                            <button onClick={() => openEdit(s)} className="p-1.5 hover:bg-white/5/10 rounded-lg transition-colors"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
+                                            <button onClick={() => openEdit(s)} className="p-1.5 hover:bg-white/10 rounded-lg transition-colors"><Pencil className="w-3.5 h-3.5 text-white/40" /></button>
                                             <button onClick={() => remove(s.id)} className="p-1.5 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-3.5 h-3.5 text-red-400" /></button>
                                         </div>
                                     </td>
@@ -187,25 +357,38 @@ export default function Horarios() {
                         <div className="p-6 space-y-4 text-left">
                             <div>
                                 <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Tipo de sesión</label>
-                                <input
-                                    type="text"
-                                    value={form.className}
-                                    onChange={e => setForm(f => ({ ...f, className: e.target.value }))}
-                                    placeholder="Ej: Pilates Reformer, Yoga Flow..."
-                                    className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400"
-                                />
+                                {classTypes.length > 0 ? (
+                                    <select
+                                        value={form.className}
+                                        onChange={e => handleClassTypeChange(e.target.value)}
+                                        className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm bg-white/5 focus:outline-none focus:border-amber-400"
+                                    >
+                                        {classTypes.map(ct => <option key={ct.id} value={ct.name}>{ct.name} ({ct.duration}min)</option>)}
+                                    </select>
+                                ) : (
+                                    <input
+                                        type="text"
+                                        value={form.className}
+                                        onChange={e => setForm(f => ({ ...f, className: e.target.value }))}
+                                        placeholder="Ej: Pilates Reformer, Yoga Flow..."
+                                        className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400"
+                                    />
+                                )}
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
                                     <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Coach</label>
                                     <select
-                                        value={form.coach}
-                                        onChange={e => setForm(f => ({ ...f, coach: e.target.value }))}
+                                        value={form.coachId}
+                                        onChange={e => {
+                                            const c = coaches.find(x => x.id === e.target.value);
+                                            setForm(f => ({ ...f, coachId: e.target.value, coach: c ? c.name : "" }));
+                                        }}
                                         className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm bg-white/5 focus:outline-none focus:border-amber-400"
                                     >
                                         {coaches.length > 0 ? (
-                                            coaches.map(c => <option key={c.id} value={c.name}>{c.name}</option>)
+                                            coaches.map(c => <option key={c.id} value={c.id}>{c.name}</option>)
                                         ) : (
                                             <option value="">Sin coaches</option>
                                         )}
@@ -214,11 +397,18 @@ export default function Horarios() {
                                 <div>
                                     <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Sala</label>
                                     <select
-                                        value={form.room}
-                                        onChange={e => setForm(f => ({ ...f, room: e.target.value }))}
+                                        value={form.roomId}
+                                        onChange={e => {
+                                            const r = rooms.find(x => x.id === e.target.value);
+                                            setForm(f => ({ ...f, roomId: e.target.value, room: r ? r.name : "" }));
+                                        }}
                                         className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm bg-white/5 focus:outline-none focus:border-amber-400"
                                     >
-                                        {ROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                                        {rooms.length > 0 ? (
+                                            rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)
+                                        ) : (
+                                            <option value="">Sin salas</option>
+                                        )}
                                     </select>
                                 </div>
                             </div>
@@ -252,7 +442,7 @@ export default function Horarios() {
                         </div>
                         <div className="p-6 border-t border-white/5 flex gap-3">
                             <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 border border-white/[0.08] rounded-xl text-sm font-medium text-white/60 hover:bg-white/5 transition-colors">Cancelar</button>
-                            <button onClick={save} disabled={form.days.length === 0} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/5/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm transition-all">Guardar</button>
+                            <button onClick={save} disabled={form.days.length === 0 || !form.className} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm transition-all">Guardar</button>
                         </div>
                     </div>
                 </div>

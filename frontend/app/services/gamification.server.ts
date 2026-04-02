@@ -64,12 +64,16 @@ export async function awardFitCoins(
         throw new Error("gymId is required for awardFitCoins");
     }
 
+    const currentBalance = await getFitCoinBalance(userId, gymId);
+    const newBalance = currentBalance + amount;
+
     const { error } = await supabaseAdmin.from("fitcoins").insert({
         gym_id: gymId,
         user_id: userId,
         amount,
         source,
         description,
+        balance_after: newBalance,
     });
     if (error) throw new Error(`Error awarding FitCoins: ${error.message}`);
 }
@@ -92,12 +96,15 @@ export async function redeemReward(
         return { success: false, message: `Necesitas ${reward.cost - balance} FitCoins más` };
     }
 
+    const newBalance = balance - reward.cost;
+
     const { error } = await supabaseAdmin.from("fitcoins").insert({
         gym_id: gymId,
         user_id: userId,
         amount: -reward.cost,
         source: "redemption",
         description: `Canje: ${reward.name}`,
+        balance_after: newBalance,
     });
 
     if (error) return { success: false, message: "Error al procesar el canje" };

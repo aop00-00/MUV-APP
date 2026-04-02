@@ -101,13 +101,36 @@ export const SUPABASE_PROJECT_URL = SUPABASE_URL;
  * Used in checkout and store flows.
  */
 export async function getProduct(packId: string, gymId: string): Promise<any | null> {
-    const { data } = await supabaseAdmin
+    console.log("[supabase.server/getProduct] 🔍 Buscando producto");
+    console.log("[supabase.server/getProduct] Pack ID:", packId);
+    console.log("[supabase.server/getProduct] Gym ID:", gymId);
+
+    const { data, error } = await supabaseAdmin
         .from("products")
         .select("*")
         .eq("id", packId)
         .eq("gym_id", gymId)
         .eq("is_active", true)
         .single();
+
+    if (error) {
+        console.error("[supabase.server/getProduct] ❌ Error al buscar producto:", {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint
+        });
+    } else if (data) {
+        console.log("[supabase.server/getProduct] ✅ Producto encontrado:", {
+            id: data.id,
+            name: data.name,
+            price: data.price,
+            category: data.category,
+            is_active: data.is_active
+        });
+    } else {
+        console.warn("[supabase.server/getProduct] ⚠️ No se encontró producto con los criterios especificados");
+    }
 
     return data ?? null;
 }

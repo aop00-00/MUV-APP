@@ -90,3 +90,15 @@ export async function triggerQRAccessLog(userId: string, gymId: string, status: 
         scanned_at: new Date().toISOString()
     });
 }
+
+/**
+ * Triggers Inactivity / Abuse Emails
+ */
+export async function triggerInactivityEmail(gymId: string, phase: "warning" | "archived" | "soft_delete", daysInactive: number) {
+    return callWebhook("grind-gym-inactivity", {
+        gymId,
+        phase,
+        daysInactive,
+        timestamp: new Date().toISOString()
+    });
+}
