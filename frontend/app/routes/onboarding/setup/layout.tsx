@@ -19,7 +19,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { supabaseAdmin } = await import("~/services/supabase.server");
     const { data: gym } = await supabaseAdmin
         .from("gyms")
-        .select("onboarding_completed, name, country_code, city, studio_type")
+        .select("onboarding_completed, name, country_code, city, studio_type, plan_id")
         .eq("id", gymId)
         .single();
 

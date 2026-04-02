@@ -9,6 +9,49 @@ import { Sparkles, ArrowRight, CheckCircle2, Building2, Palette, Calendar, Credi
 
 export default function StepWelcome() {
     const parentData = useRouteLoaderData("routes/onboarding/setup/layout") as any;
+    const planId = parentData?.gymInfo?.plan_id || "starter";
+
+    let title = "¡Suscripción confirmada!";
+    let subtitle = (
+        <>
+            Tu plan está activo con 7 días de prueba gratuita.<br />
+            Ahora configuremos tu estudio en menos de 5 minutos.
+        </>
+    );
+
+    if (planId === "emprendedor") {
+        title = "¡Bienvenido a Project Studio!";
+        subtitle = (
+            <>
+                Tu plan <strong className="text-white">Emprendedor (Gratis)</strong> está activo, perfecto para arrancar tu negocio con hasta 10 alumnos.<br />
+                Ahora configuremos tu estudio en menos de 5 minutos.
+            </>
+        );
+    } else if (planId === "starter") {
+        title = "¡Suscripción confirmada!";
+        subtitle = (
+            <>
+                Tu plan <strong className="text-white">Starter</strong> cuenta con 7 de prueba gratuita.<br />
+                Aprovecha alumnos y sedes ilimitadas. Configura tu estudio ahora.
+            </>
+        );
+    } else if (planId === "pro") {
+        title = "¡Suscripción Pro configurada!";
+        subtitle = (
+            <>
+                Tu plan <strong className="text-white">Pro</strong> está activo y tienes 7 días de prueba gratuita.<br />
+                Escala tu negocio con el CRM, control de accesos y Fitcoins. Comencemos la configuración.
+            </>
+        );
+    } else if (planId === "elite") {
+        title = "¡Suscripción Elite lista!";
+        subtitle = (
+            <>
+                Tu plan <strong className="text-white">Elite</strong> está preparado con 7 días de prueba gratuita.<br />
+                Tendrás facturación automática web y la app. Configura tu estudio en menos de 5 minutos.
+            </>
+        );
+    }
 
     return (
         <div className="text-center space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -20,12 +63,10 @@ export default function StepWelcome() {
             {/* Title */}
             <div>
                 <h1 className="text-3xl md:text-4xl font-black text-white mb-4">
-                    ¡Pago confirmado!
+                    {title}
                 </h1>
                 <p className="text-lg text-white/60 max-w-xl mx-auto leading-relaxed">
-                    Tu plan está activo con 7 días de prueba gratuita.
-                    <br />
-                    Ahora configuremos tu estudio en menos de 5 minutos.
+                    {subtitle}
                 </p>
             </div>
 
