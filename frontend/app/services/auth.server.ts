@@ -18,28 +18,41 @@ const redirect = (url: string, init?: number | ResponseInit) => {
 
 import type { Profile } from "~/types/database";
 
-const sessionSecret = process.env.SESSION_SECRET;
-if (!sessionSecret) {
-    throw new Error(
-        "Missing SESSION_SECRET env var. Generate one with: openssl rand -base64 32"
-    );
+// Lazy singleton — avoids Vercel cold-start crash if env vars aren't
+// available at module-evaluation time (Node 20 serverless edge case).
+let _sessionStorage: ReturnType<typeof createCookieSessionStorage> | null = null;
+
+function getOrCreateSessionStorage() {
+    if (_sessionStorage) return _sessionStorage;
+    const secret = process.env.SESSION_SECRET;
+    if (!secret) {
+        throw new Error(
+            "Missing SESSION_SECRET env var. Generate one with: openssl rand -base64 32"
+        );
+    }
+    _sessionStorage = createCookieSessionStorage({
+        cookie: {
+            name: "__grind_session",
+            httpOnly: true,
+            maxAge: 60 * 60 * 24 * 7, // 7 days
+            path: "/",
+            sameSite: "lax",
+            secrets: [secret],
+            secure: process.env.NODE_ENV === "production",
+        },
+    });
+    return _sessionStorage;
 }
 
-export const sessionStorage = createCookieSessionStorage({
-    cookie: {
-        name: "__grind_session",
-        httpOnly: true,
-        maxAge: 60 * 60 * 24 * 7, // 7 days
-        path: "/",
-        sameSite: "lax",
-        secrets: [sessionSecret],
-        secure: process.env.NODE_ENV === "production",
-    },
-});
+// Re-export as a proxy so call sites don't change
+export const sessionStorage = new Proxy(
+    {} as ReturnType<typeof createCookieSessionStorage>,
+    { get(_t, prop) { return (getOrCreateSessionStorage() as any)[prop]; } }
+);
 
 export async function getSession(request: Request) {
     const cookie = request.headers.get("Cookie");
-    return sessionStorage.getSession(cookie);
+    return getOrCreateSessionStorage().getSession(cookie);
 }
 
 // ── Session CRUD ─────────────────────────────────────────────────
