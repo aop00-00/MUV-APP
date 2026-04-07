@@ -3,88 +3,88 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  QrCodeIcon,
-  UserMultiple02Icon,
-  Calendar03Icon,
-  Store01Icon,
-  UserSearch01Icon,
-  BarChartIcon,
-  CreditCardIcon,
-  SmartPhone01Icon,
-  Award01Icon,
-  Invoice03Icon,
-} from "@hugeicons/core-free-icons";
+  QrCode,
+  Users,
+  Calendar,
+  ShoppingBag,
+  Search,
+  BarChart2,
+  CreditCard,
+  Smartphone,
+  Award,
+  FileText,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "~/lib/utils";
-import { HugeiconsIcon } from "@hugeicons/react";
 
-const FEATURES = [
+const FEATURES: { id: string; label: string; icon: LucideIcon; image: string; description: string }[] = [
   {
     id: "checkin",
     label: "Check-in QR",
-    icon: QrCodeIcon,
+    icon: QrCode,
     image: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?q=80&w=1200",
     description: "Acceso rápido y seguro con código QR dinámico de 30 segundos.",
   },
   {
     id: "members",
     label: "Membresías",
-    icon: UserMultiple02Icon,
+    icon: Users,
     image: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1200",
     description: "Gestiona alumnos, planes y renovaciones automáticas.",
   },
   {
     id: "schedule",
     label: "Calendario",
-    icon: Calendar03Icon,
+    icon: Calendar,
     image: "https://images.unsplash.com/photo-1571731956672-f2b94d7dd0cb?q=80&w=1200",
     description: "Programa clases y gestiona aforo en tiempo real.",
   },
   {
     id: "pos",
     label: "Punto de Venta",
-    icon: Store01Icon,
+    icon: ShoppingBag,
     image: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?q=80&w=1200",
     description: "Vende suplementos, bebidas y paquetes desde recepción.",
   },
   {
     id: "crm",
     label: "CRM de Leads",
-    icon: UserSearch01Icon,
+    icon: Search,
     image: "https://images.unsplash.com/photo-1552664730-d307ca884978?q=80&w=1200",
     description: "Convierte prospectos en socios con seguimiento automático.",
   },
   {
     id: "analytics",
     label: "Reportes",
-    icon: BarChartIcon,
+    icon: BarChart2,
     image: "https://images.unsplash.com/photo-1551288049-bbda38a10ad5?q=80&w=1200",
     description: "KPIs financieros y de operación en un solo vistazo.",
   },
   {
     id: "payments",
     label: "Pagos Online",
-    icon: CreditCardIcon,
+    icon: CreditCard,
     image: "https://images.unsplash.com/photo-1563013544-824ae1b704d3?q=80&w=1200",
     description: "Cobra con Mercado Pago, tarjeta o efectivo sin fricción.",
   },
   {
     id: "app",
     label: "App del Alumno",
-    icon: SmartPhone01Icon,
+    icon: Smartphone,
     image: "https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?q=80&w=1200",
     description: "Portal móvil para reservas, historial y FitCoins.",
   },
   {
     id: "fitcoins",
     label: "FitCoins",
-    icon: Award01Icon,
+    icon: Award,
     image: "https://images.unsplash.com/photo-1571902943202-507ec2618e8f?q=80&w=1200",
     description: "Programa de lealtad que retiene y premia a tus socios.",
   },
   {
     id: "invoicing",
     label: "Facturación",
-    icon: Invoice03Icon,
+    icon: FileText,
     image: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?q=80&w=1200",
     description: "CFDI automático y reportes fiscales sin complicaciones.",
   },
@@ -207,7 +207,7 @@ export function FeatureCarousel() {
                         isActive ? "text-white" : "text-white/35"
                       )}
                     >
-                      <HugeiconsIcon icon={feature.icon} size={18} strokeWidth={2} />
+                      <feature.icon size={18} strokeWidth={2} />
                     </div>
                     <span className="font-normal text-sm md:text-[15px] tracking-tight whitespace-nowrap uppercase">
                       {feature.label}
