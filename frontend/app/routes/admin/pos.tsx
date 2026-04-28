@@ -2,7 +2,7 @@
 // Admin – POS with persistent cart, customer accounts (Supabase).
 import type { Route } from "./+types/pos";
 import { useFetcher } from "react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ShoppingCart, Trash2, Search, User, CreditCard, Banknote, AlertTriangle, X, Plus, Minus, Package, Edit, Save } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -61,16 +61,20 @@ export async function action({ request }: Route.ActionArgs) {
         const subtotal = Math.round(total / 1.16 * 100) / 100;
         const tax = Math.round((total - subtotal) * 100) / 100;
 
-        await createOrder({
-            gymId,
-            userId: profile.id,
-            customerName: null,
-            paymentMethod: method,
-            items,
-            subtotal,
-            tax,
-            total,
-        });
+        try {
+            await createOrder({
+                gymId,
+                userId: profile.id,
+                customerName: null,
+                paymentMethod: method,
+                items,
+                subtotal,
+                tax,
+                total,
+            });
+        } catch (err: any) {
+            return { success: false, message: `Error al procesar la venta: ${err?.message ?? "Error desconocido"}` };
+        }
 
         return { success: true, message: "Venta completada." };
     }
@@ -84,14 +88,18 @@ export async function action({ request }: Route.ActionArgs) {
         const subtotal = Math.round(total / 1.16 * 100) / 100;
         const tax = Math.round((total - subtotal) * 100) / 100;
 
-        await chargeToAccount({
-            gymId,
-            customerId,
-            total,
-            items,
-            subtotal,
-            tax,
-        });
+        try {
+            await chargeToAccount({
+                gymId,
+                customerId,
+                total,
+                items,
+                subtotal,
+                tax,
+            });
+        } catch (err: any) {
+            return { success: false, message: `Error al cargar a cuenta: ${err?.message ?? "Error desconocido"}` };
+        }
 
         return { success: true, message: "Cargo a cuenta registrado." };
     }
@@ -166,6 +174,20 @@ export default function POS({ loaderData }: Route.ComponentProps) {
     const [showCustomerSearch, setShowCustomerSearch] = useState(false);
     const [editingProduct, setEditingProduct] = useState<POSProduct | null>(null);
     const [showAddModal, setShowAddModal] = useState(false);
+    const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+    const actionData = fetcher.data as { success?: boolean; message?: string } | undefined;
+
+    useEffect(() => {
+        if (!actionData?.message) return;
+        setToast({ type: actionData.success ? "success" : "error", message: actionData.message });
+        if (actionData.success && (actionData.message === "Venta completada." || actionData.message === "Cargo a cuenta registrado.")) {
+            setCart([]);
+            setSelectedCustomer(null);
+        }
+        const t = setTimeout(() => setToast(null), 4000);
+        return () => clearTimeout(t);
+    }, [actionData]);
 
     const addToCart = (product: POSProduct) => {
         setCart((prev) => {
@@ -197,6 +219,13 @@ export default function POS({ loaderData }: Route.ComponentProps) {
 
     return (
         <div className="space-y-6">
+            {/* Toast */}
+            {toast && (
+                <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl shadow-xl text-sm font-bold transition-all ${toast.type === "success" ? "bg-green-600 text-white" : "bg-red-600 text-white"}`}>
+                    {toast.type === "success" ? "✓" : "✗"} {toast.message}
+                </div>
+            )}
+
             {/* Header / Tabs */}
             <div className="flex items-center justify-between">
                 <div>
@@ -382,28 +411,28 @@ export default function POS({ loaderData }: Route.ComponentProps) {
 
                             {/* Payment buttons */}
                             <div className="grid grid-cols-2 gap-2">
-                                <fetcher.Form method="post" onSubmit={() => { setCart([]); setSelectedCustomer(null); }}>
+                                <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="checkout" />
                                     <input type="hidden" name="method" value="cash" />
                                     <input type="hidden" name="total" value={total} />
                                     <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
                                     <button
                                         type="submit"
-                                        disabled={cart.length === 0}
+                                        disabled={cart.length === 0 || fetcher.state !== "idle"}
                                         className="w-full flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
                                     >
                                         <Banknote className="w-4 h-4" />
                                         Efectivo
                                     </button>
                                 </fetcher.Form>
-                                <fetcher.Form method="post" onSubmit={() => { setCart([]); setSelectedCustomer(null); }}>
+                                <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="checkout" />
                                     <input type="hidden" name="method" value="card" />
                                     <input type="hidden" name="total" value={total} />
                                     <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
                                     <button
                                         type="submit"
-                                        disabled={cart.length === 0}
+                                        disabled={cart.length === 0 || fetcher.state !== "idle"}
                                         className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
                                     >
                                         <CreditCard className="w-4 h-4" />
@@ -413,14 +442,14 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                             </div>
 
                             {selectedCustomer && (
-                                <fetcher.Form method="post" onSubmit={() => { setCart([]); setSelectedCustomer(null); }}>
+                                <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="charge_account" />
                                     <input type="hidden" name="customerId" value={selectedCustomer.id} />
                                     <input type="hidden" name="total" value={total} />
                                     <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
                                     <button
                                         type="submit"
-                                        disabled={cart.length === 0}
+                                        disabled={cart.length === 0 || fetcher.state !== "idle"}
                                         className="w-full flex items-center justify-center gap-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
                                     >
                                         <User className="w-4 h-4" />
