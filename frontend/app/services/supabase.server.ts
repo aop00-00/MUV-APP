@@ -20,23 +20,28 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 // ── Admin client (service_role) ───────────────────────────────────
-// Lazy singleton — created on first access so the module can load
-// even when env vars are missing (Vercel cold-start safety).
-let _adminClient: SupabaseClient | null = null;
+// NOTE: We intentionally do NOT cache a singleton here. In Vite HMR dev mode,
+// module-level singletons get frozen with the env vars captured at first load,
+// which can mean the wrong key is used after a hot reload. Reading fresh each
+// call is negligible overhead for a server-side client.
+function getAdminClient(): SupabaseClient {
+    const url = process.env.SUPABASE_URL?.trim() || "";
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+    if (!url || !serviceKey) {
+        throw new Error(
+            "Cannot use supabaseAdmin: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars."
+        );
+    }
+    // Diagnostic: log last 8 chars so we can verify service_role key is used
+    console.log("[supabaseAdmin] using key ending:", serviceKey.slice(-8), "url:", url.slice(0, 40));
+    return createClient(url, serviceKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+    });
+}
 
 export const supabaseAdmin: SupabaseClient = new Proxy({} as SupabaseClient, {
     get(_target, prop) {
-        if (!_adminClient) {
-            if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-                throw new Error(
-                    "Cannot use supabaseAdmin: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars."
-                );
-            }
-            _adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-                auth: { persistSession: false, autoRefreshToken: false },
-            });
-        }
-        return (_adminClient as any)[prop];
+        return (getAdminClient() as any)[prop];
     },
 });
 

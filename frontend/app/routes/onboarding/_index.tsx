@@ -178,13 +178,14 @@ export async function action({ request }: Route.ActionArgs) {
                     }
 
                     const isFreePlan = plan === "emprendedor";
+                    const isTrialPlan = plan === "starter";
                     const gymPayload = {
                         name: studioName,
                         slug,
                         owner_id: userId,
                         plan_id: plan,
-                        plan_status: isFreePlan ? "active" : "trial",
-                        trial_ends_at: isFreePlan ? null : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                        plan_status: isFreePlan || !isTrialPlan ? "active" : "trial",
+                        trial_ends_at: isTrialPlan ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : null,
                         tax_region: country as any,
                         country_code: country,
                         city: city || null,
@@ -226,17 +227,27 @@ export async function action({ request }: Route.ActionArgs) {
                     }
 
 
-                    // 4. Actualizar perfil con gym_id
+                    // 4. Vincular perfil con gym_id usando upsert para tolerar race con trigger auth
                     const { error: profileError } = await supabaseAdmin
                         .from("profiles")
-                        .update({ role: "admin", gym_id: gymData.id, full_name: ownerName, phone })
-                        .eq("id", userId);
+                        .upsert({
+                            id: userId,
+                            email,
+                            full_name: ownerName,
+                            phone: phone || null,
+                            role: "admin",
+                            gym_id: gymData.id,
+                            credits: 0,
+                        }, { onConflict: "id" });
 
                     if (profileError) {
-                        console.error("[Onboarding] ❌ Profile Update Error:", profileError);
-                    } else {
-                        console.log("[Onboarding] ✅ Perfil actualizado con gym_id");
+                        console.error("[Onboarding] ❌ Profile Upsert Error:", profileError);
+                        // Roll back: delete gym and user to keep DB consistent
+                        await supabaseAdmin.from("gyms").delete().eq("id", gymData.id);
+                        await supabaseAdmin.auth.admin.deleteUser(userId);
+                        return { error: "Error al vincular tu perfil con el estudio. Por favor intenta de nuevo." };
                     }
+                    console.log("[Onboarding] ✅ Perfil vinculado con gym_id:", gymData.id);
 
                     // 5. Crear sesión (set cookie) y retornar slug para StepSuccess
                     const { getSession: getSess, sessionStorage: ss } = await import("~/services/auth.server");

@@ -10,7 +10,11 @@ interface ParticleBackgroundProps {
     transparent?: boolean;
 }
 
-export default function ParticleBackground({ isAbsolute = false, transparent = false }: ParticleBackgroundProps) {
+export default function ParticleBackground({ isAbsolute = false, transparent = false, variant = "dark" }: ParticleBackgroundProps) {
+    const isLight = variant === "light";
+    const baseBackground = isLight ? "#F5F0E6" : "#050505"; // Soft elegant beige vs dark
+    const bg = transparent ? "transparent" : baseBackground;
+
     return (
         <>
             <style>{`
@@ -49,11 +53,11 @@ export default function ParticleBackground({ isAbsolute = false, transparent = f
                     inset: 0,
                     zIndex: 0,
                     overflow: "hidden",
-                    background: transparent ? "transparent" : "#050505",
+                    background: bg,
                     pointerEvents: "none",
                 }}
             >
-                {/* Orb 1 — warm amber/orange — top-left */}
+                {/* Orb 1 */}
                 <div style={{
                     position: "absolute",
                     top: "-5%",
@@ -61,13 +65,15 @@ export default function ParticleBackground({ isAbsolute = false, transparent = f
                     width: "60vw",
                     height: "60vw",
                     borderRadius: "50%",
-                    background: "radial-gradient(circle, rgba(200,110,20,0.45) 0%, rgba(150,70,10,0.2) 45%, transparent 70%)",
+                    background: isLight 
+                        ? "radial-gradient(circle, rgba(139,90,43,0.55) 0%, rgba(100,60,30,0.25) 45%, transparent 70%)" // Heavy Soft brown
+                        : "radial-gradient(circle, rgba(200,110,20,0.45) 0%, rgba(150,70,10,0.2) 45%, transparent 70%)", // warm amber/orange
                     filter: "blur(35px)",
                     animation: "orbit1 12s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
-                {/* Orb 2 — teal/cyan — top-right */}
+                {/* Orb 2 */}
                 <div style={{
                     position: "absolute",
                     top: "-20%",
@@ -75,13 +81,15 @@ export default function ParticleBackground({ isAbsolute = false, transparent = f
                     width: "65vw",
                     height: "65vw",
                     borderRadius: "50%",
-                    background: "radial-gradient(circle, rgba(15,130,130,0.4) 0%, rgba(10,90,95,0.18) 45%, transparent 70%)",
+                    background: isLight
+                        ? "radial-gradient(circle, rgba(20,20,20,0.6) 0%, rgba(0,0,0,0.15) 45%, transparent 70%)" // Charcoal/black
+                        : "radial-gradient(circle, rgba(15,130,130,0.4) 0%, rgba(10,90,95,0.18) 45%, transparent 70%)", // teal/cyan
                     filter: "blur(40px)",
                     animation: "orbit2 15s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
-                {/* Orb 3 — muted green — bottom-left */}
+                {/* Orb 3 */}
                 <div style={{
                     position: "absolute",
                     bottom: "-15%",
@@ -89,13 +97,15 @@ export default function ParticleBackground({ isAbsolute = false, transparent = f
                     width: "55vw",
                     height: "55vw",
                     borderRadius: "50%",
-                    background: "radial-gradient(circle, rgba(25,110,75,0.38) 0%, rgba(15,75,50,0.16) 45%, transparent 70%)",
+                    background: isLight
+                        ? "radial-gradient(circle, rgba(160,110,70,0.5) 0%, rgba(120,80,50,0.2) 45%, transparent 70%)" // Latte
+                        : "radial-gradient(circle, rgba(25,110,75,0.38) 0%, rgba(15,75,50,0.16) 45%, transparent 70%)", // muted green
                     filter: "blur(45px)",
                     animation: "orbit3 13s ease-in-out infinite",
                     willChange: "transform",
                 }} />
 
-                {/* Orb 4 — deep copper/rust — bottom-right */}
+                {/* Orb 4 */}
                 <div style={{
                     position: "absolute",
                     bottom: "0%",
@@ -103,7 +113,9 @@ export default function ParticleBackground({ isAbsolute = false, transparent = f
                     width: "50vw",
                     height: "50vw",
                     borderRadius: "50%",
-                    background: "radial-gradient(circle, rgba(160,80,20,0.38) 0%, rgba(110,50,10,0.15) 45%, transparent 70%)",
+                    background: isLight
+                        ? "radial-gradient(circle, rgba(100,70,40,0.45) 0%, rgba(60,40,20,0.2) 45%, transparent 70%)" // Coffee
+                        : "radial-gradient(circle, rgba(160,80,20,0.38) 0%, rgba(110,50,10,0.15) 45%, transparent 70%)", // deep copper/rust
                     filter: "blur(42px)",
                     animation: "orbit4 18s ease-in-out infinite",
                     willChange: "transform",

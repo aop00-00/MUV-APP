@@ -20,7 +20,7 @@ export interface GymRoom {
 export async function getGymRooms(gymId: string): Promise<GymRoom[]> {
     const { data, error } = await supabaseAdmin
         .from("rooms")
-        .select("*, location:locations(name)")
+        .select("*, location:locations(name), resources(id, name, resource_type, position_row, position_col, is_active)")
         .eq("gym_id", gymId)
         .order("name", { ascending: true });
 
@@ -28,6 +28,7 @@ export async function getGymRooms(gymId: string): Promise<GymRoom[]> {
     return (data ?? []).map((r: any) => ({
         ...r,
         location_name: r.location?.name ?? null,
+        resources: (r.resources ?? []).filter((res: any) => res.is_active),
     }));
 }
 

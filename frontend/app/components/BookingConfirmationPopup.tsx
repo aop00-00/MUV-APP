@@ -8,7 +8,8 @@ interface BookingConfirmationPopupProps {
     className?: string;
     classTitle: string;
     startTime: string;
-    creditsRemaining: number;
+    creditsRemaining: number | null;
+    planType?: "creditos" | "membresia" | "ilimitado";
 }
 
 export function BookingConfirmationPopup({
@@ -17,6 +18,7 @@ export function BookingConfirmationPopup({
     classTitle,
     startTime,
     creditsRemaining,
+    planType = "creditos",
 }: BookingConfirmationPopupProps) {
     const [isVisible, setIsVisible] = useState(false);
 
@@ -118,12 +120,23 @@ export function BookingConfirmationPopup({
                         </div>
 
                         <div className="flex items-center gap-3 text-left">
-                            <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-400">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${planType === "creditos" ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400"}`}>
                                 <CreditCard className="w-4 h-4" />
                             </div>
                             <div className="flex-1">
-                                <p className="text-[10px] text-white/40 font-bold uppercase tracking-wider">Credits remaining</p>
-                                <p className="text-sm font-semibold text-white">{creditsRemaining} credits</p>
+                                {planType === "creditos" ? (
+                                    <>
+                                        <p className="text-[10px] text-white/40 font-bold uppercase tracking-wider">Créditos restantes</p>
+                                        <p className="text-sm font-semibold text-white">{creditsRemaining ?? 0} créditos</p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-[10px] text-white/40 font-bold uppercase tracking-wider">Acceso</p>
+                                        <p className="text-sm font-semibold text-emerald-400">
+                                            {planType === "ilimitado" ? "Ilimitado ∞" : "Membresía activa ✓"}
+                                        </p>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </div>

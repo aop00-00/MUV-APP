@@ -130,13 +130,13 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     const { data: gym } = await supabaseAdmin
         .from("gyms")
-        .select("name, logo_url, primary_color, brand_color, studio_type, plan_id, plan_status, trial_ends_at")
+        .select("name, logo_url, primary_color, brand_color, studio_type, plan_id, plan_status, trial_ends_at, theme")
         .eq("id", gymId)
         .single();
 
     // Compute trial banner info
     let trialDaysLeft: number | null = null;
-    if (gym?.plan_status === "trial" && gym?.trial_ends_at) {
+    if (gym?.plan_id === "starter" && gym?.plan_status === "trial" && gym?.trial_ends_at) {
         const msLeft = new Date(gym.trial_ends_at).getTime() - Date.now();
         trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
     }
@@ -151,12 +151,13 @@ export async function loader({ request }: Route.LoaderArgs) {
             logo: gym?.logo_url || "",
             primaryColor: gym?.brand_color || gym?.primary_color || "#7c3aed",
             studioType: gym?.studio_type || null,
+            theme: gym?.theme || "dark",
         },
         planInfo: {
             planId: planId as PlanId,
             planStatus: gym?.plan_status || "trial",
             trialDaysLeft,
-            isTrialActive: gym?.plan_status === "trial" && trialDaysLeft !== null && trialDaysLeft > 0,
+            isTrialActive: gym?.plan_id === "starter" && gym?.plan_status === "trial" && trialDaysLeft !== null && trialDaysLeft > 0,
         },
     };
 }
@@ -175,7 +176,14 @@ function useDefaultOpen(nav: NavItem[], pathname: string): Record<string, boolea
 
 // ─── Sidebar content ──────────────────────────────────────────────────────────
 
-function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: string; logo: string; primaryColor: string }; planId: PlanId; onLinkClick?: () => void }) {
+function SidebarContent({ branding, planId, onLinkClick, isLight }: { branding: { name: string; logo: string; primaryColor: string }; planId: PlanId; onLinkClick?: () => void; isLight?: boolean }) {
+    const textBase = isLight ? "text-gray-800" : "text-white/80";
+    const textActive = isLight ? "text-gray-900" : "text-white";
+    const textSub = isLight ? "text-gray-600" : "text-white/75";
+    const bgActive = isLight ? "bg-black/[0.08]" : "bg-white/10";
+    const bgHover = isLight ? "hover:bg-black/[0.05] hover:text-gray-900" : "hover:text-white hover:bg-white/[0.05]";
+    const borderColor = isLight ? "border-black/[0.07]" : "border-white/[0.07]";
+    const subBorder = isLight ? "border-black/[0.07]" : "border-white/[0.07]";
     const location = useLocation();
     const filteredNav = filterNavByPlan(NAV, planId);
     const [open, setOpen] = useState<Record<string, boolean>>(
@@ -192,10 +200,10 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
     return (
         <div className="flex flex-col h-full">
             {/* Logo / Studio name */}
-            <div className="px-5 py-5 border-b border-white/[0.07]">
+            <div className={`px-5 py-5 border-b ${borderColor}`}>
                 <div className="flex items-center gap-3">
                     {branding.logo && (
-                        <div className="w-8 h-8 rounded-lg overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
+                        <div className={`w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center shrink-0 border ${isLight ? 'bg-black/5 border-black/10' : 'bg-white/10 border-white/10'}`}>
                             {branding.logo.startsWith("http") || branding.logo.startsWith("data:") ? (
                                 <img src={branding.logo} alt="Logo" className="w-full h-full object-cover" />
                             ) : (
@@ -204,10 +212,10 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
                         </div>
                     )}
                     <div className="flex flex-col min-w-0">
-                        <span className="text-white font-black text-lg tracking-tight truncate leading-tight">
+                        <span className={`font-black text-lg tracking-tight truncate leading-tight ${textActive}`}>
                             {branding.name}
                         </span>
-                        <p className="text-white/30 text-[10px] uppercase font-bold tracking-widest mt-0.5">Admin</p>
+                        <p className={`text-[10px] uppercase font-bold tracking-widest mt-0.5 ${isLight ? 'text-gray-500' : 'text-white/60'}`}>Admin</p>
                     </div>
                 </div>
             </div>
@@ -223,8 +231,8 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
                                 to={item.href}
                                 onClick={onLinkClick}
                                 className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${active
-                                    ? "bg-white/10 text-white shadow-sm"
-                                    : "text-white/50 hover:text-white hover:bg-white/[0.05]"
+                                    ? `${bgActive} ${textActive} shadow-sm`
+                                    : `${textBase} ${bgHover}`
                                     }`}
                                 style={active ? { borderColor: branding.primaryColor } : {}}
                             >
@@ -243,15 +251,15 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
                             <button
                                 onClick={() => toggle(item.name)}
                                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${hasActive
-                                    ? "text-white bg-white/[0.05]"
-                                    : "text-white/50 hover:text-white hover:bg-white/[0.05]"
+                                    ? `${textActive} bg-white/[0.05]`
+                                    : `${textBase} ${bgHover}`
                                     }`}
                             >
                                 <item.icon className="w-4 h-4 shrink-0" style={hasActive ? { color: branding.primaryColor } : {}} />
                                 <span className="flex-1 text-left">{item.name}</span>
                                 {isOpen
-                                    ? <ChevronDown className="w-3.5 h-3.5 opacity-40" />
-                                    : <ChevronRight className="w-3.5 h-3.5 opacity-40" />
+                                    ? <ChevronDown className="w-3.5 h-3.5 opacity-70" />
+                                    : <ChevronRight className="w-3.5 h-3.5 opacity-70" />
                                 }
                             </button>
 
@@ -260,7 +268,7 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
                                 className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
                                     }`}
                             >
-                                <div className="ml-4 pl-3 border-l border-white/[0.07] mt-0.5 mb-1 space-y-0.5">
+                                <div className={`ml-4 pl-3 border-l ${subBorder} mt-0.5 mb-1 space-y-0.5`}>
                                     {item.children.map((child) => {
                                         const active = isActive(child.href);
                                         return (
@@ -269,8 +277,8 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
                                                 to={child.href}
                                                 onClick={onLinkClick}
                                                 className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 ${active
-                                                    ? "bg-white/10 text-white"
-                                                    : "text-white/40 hover:text-white hover:bg-white/[0.05]"
+                                                    ? `${bgActive} ${textActive}`
+                                                    : `${textSub} ${bgHover}`
                                                     }`}
                                             >
                                                 <child.icon className="w-3.5 h-3.5 shrink-0" style={active ? { color: branding.primaryColor } : {}} />
@@ -286,11 +294,11 @@ function SidebarContent({ branding, planId, onLinkClick }: { branding: { name: s
             </nav>
 
             {/* Bottom section */}
-            <div className="px-3 pb-4 pt-3 border-t border-white/[0.07] space-y-0.5">
+            <div className={`px-3 pb-4 pt-3 border-t ${borderColor} space-y-0.5`}>
                 <form action="/auth/logout" method="post">
                     <button
                         type="submit"
-                        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-red-400/70 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150"
+                        className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${isLight ? 'text-red-600/80 hover:text-red-700 hover:bg-red-500/10' : 'text-red-400/70 hover:text-red-300 hover:bg-red-500/10'}`}
                     >
                         <LogOut className="w-4 h-4 shrink-0" />
                         Cerrar sesión
@@ -307,11 +315,13 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
     const [mobileOpen, setMobileOpen] = useState(false);
     const branding = loaderData.gymBranding;
     const { planId, isTrialActive, trialDaysLeft } = loaderData.planInfo;
+    
+    const isLight = branding.theme === "light";
 
     return (
         <>
-            <ParticleBackground />
-            <div className="relative z-10 min-h-screen flex flex-col">
+            <ParticleBackground variant={isLight ? "light" : "dark"} />
+            <div className={`relative z-10 min-h-screen flex flex-col ${isLight ? 'text-gray-900 dashboard-light-mode' : 'text-white'}`}>
 
                 {/* ── Trial banner ── */}
                 {isTrialActive && trialDaysLeft !== null && (
@@ -320,8 +330,8 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
 
                 <div className="flex-1 flex">
                     {/* ── Desktop sidebar ── */}
-                    <aside className="hidden md:flex flex-col w-60 shrink-0 bg-black/40 border-r border-white/[0.07] backdrop-blur-xl">
-                        <SidebarContent branding={branding} planId={planId} />
+                    <aside className={`hidden md:flex flex-col w-60 shrink-0 border-r backdrop-blur-xl ${isLight ? 'bg-white/40 border-black/5' : 'bg-black/40 border-white/[0.07]'}`}>
+                        <SidebarContent branding={branding} planId={planId} isLight={isLight} />
                     </aside>
 
                     {/* ── Mobile overlay sidebar ── */}
@@ -340,7 +350,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
-                                <SidebarContent branding={branding} planId={planId} onLinkClick={() => setMobileOpen(false)} />
+                                <SidebarContent branding={branding} planId={planId} isLight={isLight} onLinkClick={() => setMobileOpen(false)} />
                             </aside>
                         </div>
                     )}
@@ -348,7 +358,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
                     {/* ── Main content ── */}
                     <div className="flex-1 flex flex-col min-w-0">
                         {/* Mobile top bar */}
-                        <header className="md:hidden flex items-center justify-between p-4 md:px-4 md:py-3 bg-black/40 border-b border-white/[0.07] backdrop-blur-xl">
+                        <header className={`md:hidden flex items-center justify-between p-4 md:px-4 md:py-3 border-b backdrop-blur-xl ${isLight ? 'bg-white/40 border-black/5' : 'bg-black/40 border-white/[0.07]'}`}>
                             <div className="flex items-center gap-2">
                                 {branding.logo && (
                                     <div className="w-6 h-6 rounded-md overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
@@ -371,7 +381,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
                             </button>
                         </header>
 
-                        <main className="flex-1 overflow-y-auto p-6 md:p-8 text-white">
+                        <main className={`flex-1 overflow-y-auto p-6 md:p-8 ${isLight ? 'text-gray-900' : 'text-white'}`}>
                             <Outlet />
                         </main>
                     </div>

@@ -54,8 +54,7 @@ export async function action({ request }: Route.ActionArgs) {
             gymId,
             name: formData.get("name") as string,
             description: formData.get("description") as string || "",
-            date: formData.get("date") as string,
-            time: formData.get("time") as string,
+            startIso: formData.get("start_iso") as string,
             max_capacity: Number(formData.get("capacity") ?? 15),
             price: Number(formData.get("price") ?? 0),
             location: formData.get("location") as string || "",
@@ -89,11 +88,15 @@ export default function Eventos({ loaderData }: Route.ComponentProps) {
     }, [fetcher.state, fetcher.data]);
 
     function save() {
+        const [h, m] = form.time.split(":").map(Number);
+        const [y, mo, d] = form.date.split("-").map(Number);
+        const localDate = new Date(y, mo - 1, d, h, m, 0, 0);
+        const startIso = localDate.toISOString();
+
         const formData = new FormData();
         formData.set("intent", "create");
         formData.set("name", form.name);
-        formData.set("date", form.date);
-        formData.set("time", form.time);
+        formData.set("start_iso", startIso);
         formData.set("capacity", String(form.capacity));
         formData.set("price", String(form.price));
         formData.set("location", form.location);

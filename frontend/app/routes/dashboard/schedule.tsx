@@ -2,7 +2,7 @@
 // Monthly calendar view for class schedule.
 // Auth moved to dynamic import inside loader/action
 import type { Route } from "./+types/schedule";
-import { useFetcher, useRevalidator } from "react-router";
+import { useFetcher, useRevalidator, useSearchParams } from "react-router";
 import { useState, useMemo, useEffect } from "react";
 import {
     Bell,
@@ -15,9 +15,12 @@ import {
     Dumbbell,
     LayoutGrid,
     Calendar as CalendarIcon,
+    Sparkles,
+    Ticket,
 } from "lucide-react";
 import { BookingConfirmationPopup } from "~/components/BookingConfirmationPopup";
 import { ReadOnlySeatMap, type SeatResource } from "~/components/SeatMap";
+import { useDashboardTheme } from "~/hooks/useDashboardTheme";
 
 // ─── Types ────────────────────────────────────────────────────────
 interface ClassWithSocial {
@@ -39,6 +42,19 @@ interface GymClassType {
     id: string;
     name: string;
     color: string;
+}
+
+interface ScheduleEvent {
+    id: string;
+    name: string;
+    date: string;       // YYYY-MM-DD
+    time: string;       // HH:MM
+    start_time: string; // ISO
+    price: number;
+    location: string;
+    description: string;
+    max_capacity: number;
+    current_enrolled: number;
 }
 
 // ─── Color Helper ─────────────────────────────────────────────────
@@ -85,14 +101,27 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { gymId } = await requireGymAuth(request);
     const { getClassesForGym } = await import("~/services/booking.server");
     const { getGymClassTypes } = await import("~/services/room.server");
+    const { getActiveEvents } = await import("~/services/event.server");
 
-    const [rawClasses, classTypes, gymResult] = await Promise.all([
+    const { requireAuth } = await import("~/services/auth.server");
+    const profile = await requireAuth(request);
+
+    const [rawClasses, classTypes, gymResult, rawEvents, membershipResult] = await Promise.all([
         getClassesForGym(gymId),
         getGymClassTypes(gymId),
         supabaseAdmin.from("gyms").select("brand_color, primary_color, studio_type, booking_mode").eq("id", gymId).single(),
+        getActiveEvents(gymId),
+        supabaseAdmin
+            .from("memberships")
+            .select("plan_type, end_date, credits_included")
+            .eq("user_id", profile.id)
+            .eq("gym_id", gymId)
+            .eq("status", "active")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single(),
     ]);
 
-    // Map Supabase rows into the ClassWithSocial shape the UI expects
     const classes: ClassWithSocial[] = rawClasses.map((slot) => ({
         id: slot.id,
         title: slot.title,
@@ -108,14 +137,38 @@ export async function loader({ request }: Route.LoaderArgs) {
         type: inferClassType(slot.title, classTypes),
     }));
 
+    const events: ScheduleEvent[] = rawEvents.map(e => {
+        const d = new Date(e.start_time);
+        return {
+            id: e.id,
+            name: e.name,
+            date: d.toISOString().split("T")[0],
+            time: d.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false }),
+            start_time: e.start_time,
+            price: e.price,
+            location: e.location,
+            description: e.description,
+            max_capacity: e.max_capacity,
+            current_enrolled: e.current_enrolled,
+        };
+    });
+
+    const activeMembership = membershipResult.data ?? null;
+
     return {
         classes,
         classTypes,
+        events,
         gym: {
             brandColor: gymResult.data?.brand_color || gymResult.data?.primary_color || "#7c3aed",
             studioType: gymResult.data?.studio_type || null,
             bookingMode: gymResult.data?.booking_mode || "capacity_only",
         },
+        membership: activeMembership ? {
+            planType: (activeMembership.plan_type ?? "creditos") as "creditos" | "membresia" | "ilimitado",
+            endDate: activeMembership.end_date,
+            creditsIncluded: activeMembership.credits_included,
+        } : null,
     };
 }
 
@@ -135,11 +188,23 @@ export async function action({ request }: Route.ActionArgs) {
 
 // ─── Component ────────────────────────────────────────────────────
 export default function Schedule({ loaderData }: Route.ComponentProps) {
-    const { classes, classTypes, gym } = loaderData as any;
+    const { classes, classTypes, events = [], gym, membership } = loaderData as any;
     const gymContext = gym || { brandColor: "#7c3aed", studioType: null, bookingMode: "capacity_only" };
     const fetcher = useFetcher();
     const revalidator = useRevalidator();
     const today = new Date();
+    const t = useDashboardTheme();
+    const [selectedEvent, setSelectedEvent] = useState<ScheduleEvent | null>(null);
+    const [searchParams] = useSearchParams();
+
+    // Auto-open event from ?event=<id> query param (from packages success redirect)
+    useEffect(() => {
+        const eventId = searchParams.get("event");
+        if (eventId && events.length > 0) {
+            const target = events.find((e: ScheduleEvent) => e.id === eventId);
+            if (target) setSelectedEvent(target);
+        }
+    }, [searchParams, events]);
 
     // Navigation & Filter state
     const [viewYear, setViewYear] = useState(today.getFullYear());
@@ -154,7 +219,8 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
     const [confirmedBooking, setConfirmedBooking] = useState<{
         title: string;
         startTime: string;
-        creditsRemaining: number;
+        creditsRemaining: number | null;
+        planType: "creditos" | "membresia" | "ilimitado";
     } | null>(null);
 
     // Monitor booking success
@@ -165,10 +231,12 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
             const bookedClass = classes.find((c: ClassWithSocial) => c.id === bookedClassId) || selectedClass;
 
             if (bookedClass) {
+                const pt = (fetcher.data as any).plan_type ?? membership?.planType ?? "creditos";
                 setConfirmedBooking({
                     title: bookedClass.title,
                     startTime: bookedClass.start_time,
-                    creditsRemaining: (fetcher.data as any).credits_remaining ?? 0
+                    creditsRemaining: pt === "creditos" ? ((fetcher.data as any).credits_remaining ?? 0) : null,
+                    planType: pt,
                 });
                 setShowConfirmation(true);
                 setSelectedClass(null); // Close detail modal
@@ -235,6 +303,16 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
         return map;
     }, [classes, filterClasses]);
 
+    // Group events by date key "YYYY-MM-DD"
+    const eventsByDate = useMemo(() => {
+        const map = new Map<string, ScheduleEvent[]>();
+        for (const ev of events) {
+            if (!map.has(ev.date)) map.set(ev.date, []);
+            map.get(ev.date)!.push(ev);
+        }
+        return map;
+    }, [events]);
+
     // Calendar grid data
     const daysInMonth = getDaysInMonth(viewYear, viewMonth);
     const startDow = getStartDayOfWeek(viewYear, viewMonth);
@@ -262,8 +340,8 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
             {/* ── Header ── */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-white">Agenda de Clases</h1>
-                    <p className="text-white/60 text-sm mt-0.5">
+                    <h1 className={`text-2xl font-bold ${t.title}`}>Agenda de Clases</h1>
+                    <p className={`${t.muted} text-sm mt-0.5`}>
                         Selecciona una clase para ver detalles y reservar.
                     </p>
                 </div>
@@ -271,17 +349,17 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                 {/* View Controls & Date Nav */}
                 <div className="flex flex-col sm:flex-row items-center gap-4">
                     {/* View Toggle */}
-                    <div className="flex bg-white/10 p-1 rounded-lg">
+                    <div className={`flex ${t.track} p-1 rounded-lg`}>
                         <button
                             onClick={() => setViewMode("week")}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === "week" ? "bg-white/5 text-white shadow-sm" : "text-white/60 hover:text-white/80"}`}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === "week" ? `${t.surface} ${t.title} shadow-sm` : `${t.muted}`}`}
                         >
                             <LayoutGrid className="w-3.5 h-3.5" />
                             Semana
                         </button>
                         <button
                             onClick={() => setViewMode("month")}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === "month" ? "bg-white/5 text-white shadow-sm" : "text-white/60 hover:text-white/80"}`}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === "month" ? `${t.surface} ${t.title} shadow-sm` : `${t.muted}`}`}
                         >
                             <CalendarIcon className="w-3.5 h-3.5" />
                             Mes
@@ -294,18 +372,18 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                             {!isCurrentMonthView && (
                                 <button
                                     onClick={goToday}
-                                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors"
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${t.border} ${t.muted} transition-colors`}
                                 >
                                     Hoy
                                 </button>
                             )}
-                            <button onClick={prevMonth} className="p-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors">
+                            <button onClick={prevMonth} className={`p-2 rounded-lg border ${t.border} ${t.muted} transition-colors`}>
                                 <ChevronLeft className="w-4 h-4" />
                             </button>
-                            <span className="text-sm font-semibold text-white/90 min-w-[140px] text-center">
+                            <span className={`text-sm font-semibold ${t.body} min-w-[140px] text-center`}>
                                 {MONTH_NAMES[viewMonth]} {viewYear}
                             </span>
-                            <button onClick={nextMonth} className="p-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors">
+                            <button onClick={nextMonth} className={`p-2 rounded-lg border ${t.border} ${t.muted} transition-colors`}>
                                 <ChevronRight className="w-4 h-4" />
                             </button>
                         </div>
@@ -314,18 +392,18 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                             {!isCurrentWeek() && (
                                 <button
                                     onClick={goTodayWeek}
-                                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors"
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${t.border} ${t.muted} transition-colors`}
                                 >
                                     Hoy
                                 </button>
                             )}
-                            <button onClick={goPrevWeek} className="p-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors">
+                            <button onClick={goPrevWeek} className={`p-2 rounded-lg border ${t.border} ${t.muted} transition-colors`}>
                                 <ChevronLeft className="w-4 h-4" />
                             </button>
-                            <span className="text-sm font-semibold text-white/90 min-w-[140px] text-center">
+                            <span className={`text-sm font-semibold ${t.body} min-w-[140px] text-center`}>
                                 {viewWeekDate.toLocaleDateString("es-MX", { day: 'numeric', month: 'short' })} - {new Date(viewWeekDate.getFullYear(), viewWeekDate.getMonth(), viewWeekDate.getDate() + 6).toLocaleDateString("es-MX", { day: 'numeric', month: 'short' })}
                             </span>
-                            <button onClick={goNextWeek} className="p-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors">
+                            <button onClick={goNextWeek} className={`p-2 rounded-lg border ${t.border} ${t.muted} transition-colors`}>
                                 <ChevronRight className="w-4 h-4" />
                             </button>
                         </div>
@@ -338,8 +416,8 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                 <button
                     onClick={() => setFilterClasses([])}
                     className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${filterClasses.length === 0
-                        ? "bg-white/20 border-white/20 text-white"
-                        : "bg-white/5 border-white/10 text-white/70 hover:bg-white/5"
+                        ? `${t.surface} ${t.border} ${t.title}`
+                        : `${t.pill} ${t.border}`
                         }`}
                 >
                     Todas
@@ -384,6 +462,7 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                         {cells.map(({ date, isCurrentMonth }, idx) => {
                             const key = dateKey(date);
                             const dayClasses = classesByDate.get(key) ?? [];
+                            const dayEvents = eventsByDate.get(key) ?? [];
                             const isToday = isSameDay(date, today);
                             const isPast = date < today && !isToday;
 
@@ -407,16 +486,18 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                                         >
                                             {date.getDate()}
                                         </span>
-                                        {dayClasses.length > 0 && (
+                                        {(dayClasses.length > 0 || dayEvents.length > 0) && (
                                             <span className="text-[10px] text-white/50 font-medium mr-1">
-                                                {dayClasses.length} {dayClasses.length === 1 ? "clase" : "clases"}
+                                                {dayClasses.length > 0 && `${dayClasses.length} ${dayClasses.length === 1 ? "clase" : "clases"}`}
+                                                {dayClasses.length > 0 && dayEvents.length > 0 && " · "}
+                                                {dayEvents.length > 0 && `${dayEvents.length} ev.`}
                                             </span>
                                         )}
                                     </div>
 
-                                    {/* Class chips */}
+                                    {/* Class chips + Event chips */}
                                     <div className="space-y-0.5">
-                                        {dayClasses.slice(0, 3).map((cls) => {
+                                        {dayClasses.slice(0, 2).map((cls) => {
                                             const typeObj = classTypes.find((t: GymClassType) => t.name === cls.type);
                                             const styles = getClassStyles(typeObj?.color || DEFAULT_COLOR);
                                             const isFull = cls.bookedCount >= cls.capacity;
@@ -442,14 +523,32 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                                                 </button>
                                             );
                                         })}
-                                        {dayClasses.length > 3 && (
+
+                                        {/* Event chips — always visible */}
+                                        {dayEvents.map((ev) => {
+                                            const isFull = ev.current_enrolled >= ev.max_capacity;
+                                            return (
+                                                <button
+                                                    key={ev.id}
+                                                    onClick={() => setSelectedEvent(ev)}
+                                                    className="w-full text-left px-1.5 py-1 rounded-md text-[11px] font-bold truncate border transition-all cursor-pointer bg-violet-500/15 text-violet-300 border-violet-500/30 hover:bg-violet-500/25"
+                                                    title={`★ ${ev.name} — ${ev.time}`}
+                                                >
+                                                    <Sparkles className="inline w-2.5 h-2.5 mr-0.5 mb-0.5" />
+                                                    {ev.time} {ev.name}
+                                                    {isFull && (
+                                                        <span className="ml-1 text-[9px] bg-red-500/20 text-red-400 px-1 rounded">LLENO</span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+
+                                        {dayClasses.length > 2 && (
                                             <button
-                                                onClick={() => {
-                                                    setSelectedDay(date);
-                                                }}
-                                                className="w-full text-left px-1.5 py-0.5 text-[10px] text-blue-600 font-medium hover:underline cursor-pointer"
+                                                onClick={() => setSelectedDay(date)}
+                                                className="w-full text-left px-1.5 py-0.5 text-[10px] text-blue-400 font-medium hover:underline cursor-pointer"
                                             >
-                                                +{dayClasses.length - 3} más
+                                                +{dayClasses.length - 2} clase{dayClasses.length - 2 > 1 ? "s" : ""} más
                                             </button>
                                         )}
                                     </div>
@@ -491,6 +590,11 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                                         const key = dateKey(date);
                                         const dayClasses = classesByDate.get(key) ?? [];
                                         const hourClasses = dayClasses.filter(c => new Date(c.start_time).getHours() === hour);
+                                        const dayEvents = eventsByDate.get(key) ?? [];
+                                        const hourEvents = dayEvents.filter(ev => {
+                                            const h = parseInt(ev.time.split(":")[0], 10);
+                                            return h === hour;
+                                        });
 
                                         return (
                                             <div key={dayIdx} className="p-1 border-r border-white/5 relative">
@@ -504,7 +608,7 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                                                             key={cls.id}
                                                             onClick={() => setSelectedClass(cls)}
                                                             className={`w-full text-left p-1.5 mb-1 rounded-md text-[10px] font-medium transition-all shadow-sm`}
-                                                            style={{ 
+                                                            style={{
                                                                 minHeight: `${Math.max(duration * 0.8, 30)}px`,
                                                                 backgroundColor: styles.bg,
                                                                 color: styles.text,
@@ -522,6 +626,29 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                                                         </button>
                                                     );
                                                 })}
+                                                {hourEvents.map(ev => {
+                                                    const isFull = ev.current_enrolled >= ev.max_capacity;
+                                                    return (
+                                                        <button
+                                                            key={ev.id}
+                                                            onClick={() => setSelectedEvent(ev)}
+                                                            className="w-full text-left p-1.5 mb-1 rounded-md text-[10px] font-bold transition-all shadow-sm bg-violet-500/20 text-violet-300 border border-violet-500/40 hover:bg-violet-500/30"
+                                                            style={{ minHeight: "36px" }}
+                                                        >
+                                                            <div className="flex items-center gap-0.5 justify-between">
+                                                                <div className="flex items-center gap-0.5 truncate">
+                                                                    <Sparkles className="w-2.5 h-2.5 flex-shrink-0" />
+                                                                    <span className="truncate">{ev.name}</span>
+                                                                </div>
+                                                                {isFull && <div className="text-[8px] bg-red-500/20 text-red-400 px-1 rounded flex-shrink-0">LLENO</div>}
+                                                            </div>
+                                                            <div className="opacity-70 mt-0.5 flex justify-between">
+                                                                <span>{ev.time}</span>
+                                                                <span>{ev.current_enrolled}/{ev.max_capacity}</span>
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
                                             </div>
                                         );
                                     })}
@@ -534,79 +661,152 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
 
             {/* ── Mobile Calendar ── */}
             <div className="md:hidden space-y-3">
-                {/* Compact mini-calendar */}
-                <div className="bg-white/5 border border-white/10 rounded-xl shadow-sm p-3">
-                    <div className="grid grid-cols-7 gap-1 mb-2">
-                        {DAY_NAMES.map((d) => (
-                            <div key={d} className="text-center text-[10px] font-semibold text-white/50 uppercase">
-                                {d.charAt(0)}
-                            </div>
-                        ))}
-                    </div>
-                    <div className="grid grid-cols-7 gap-1">
-                        {cells.map(({ date, isCurrentMonth }, idx) => {
-                            const key = dateKey(date);
-                            const dayClasses = classesByDate.get(key) ?? [];
-                            const isToday = isSameDay(date, today);
-                            const isSelected = selectedDay && isSameDay(date, selectedDay);
 
-                            return (
-                                <button
-                                    key={idx}
-                                    onClick={() => setSelectedDay(date)}
-                                    className={`relative flex flex-col items-center justify-center p-1.5 rounded-lg text-xs transition-all ${isSelected
-                                        ? "bg-blue-600 text-white"
-                                        : isToday
-                                            ? "bg-blue-100 text-blue-700 font-bold"
-                                            : !isCurrentMonth
-                                                ? "text-white/40"
-                                                : "text-white/80 hover:bg-white/10"
-                                        }`}
-                                >
-                                    {date.getDate()}
-                                    {dayClasses.length > 0 && (
-                                        <div className="flex gap-0.5 mt-0.5">
-                                            {dayClasses.slice(0, 3).map((cls) => {
-                                                const typeObj = classTypes.find((t: GymClassType) => t.name === cls.type);
-                                                const styles = getClassStyles(typeObj?.color || DEFAULT_COLOR);
-                                                return (
-                                                    <span
-                                                        key={cls.id}
-                                                        className={`w-1 h-1 rounded-full`}
-                                                        style={{ backgroundColor: isSelected ? "rgba(255,255,255,0.2)" : styles.dot }}
-                                                    />
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
-
-                {/* Selected day list */}
-                {selectedDay && (
-                    <div className="space-y-2">
-                        <h3 className="text-sm font-semibold text-white/80">
-                            {selectedDay.toLocaleDateString("es-MX", {
-                                weekday: "long",
-                                day: "numeric",
-                                month: "long",
+                {/* ── Mobile: WEEK view ── */}
+                {viewMode === "week" && (
+                    <div className={`${t.card} rounded-xl shadow-sm overflow-hidden`}>
+                        {/* Week day headers */}
+                        <div className="grid grid-cols-7 border-b border-white/10">
+                            {Array.from({ length: 7 }).map((_, i) => {
+                                const d = new Date(viewWeekDate.getFullYear(), viewWeekDate.getMonth(), viewWeekDate.getDate() + i);
+                                const isToday = isSameDay(d, today);
+                                const isSelected = selectedDay && isSameDay(d, selectedDay);
+                                return (
+                                    <button
+                                        key={i}
+                                        onClick={() => setSelectedDay(d)}
+                                        className={`flex flex-col items-center py-2 gap-0.5 transition-colors ${isSelected ? "bg-blue-600" : isToday ? "bg-blue-500/20" : ""}`}
+                                    >
+                                        <span className={`text-[10px] font-semibold uppercase ${isSelected ? "text-white" : t.faint}`}>{DAY_NAMES[i]}</span>
+                                        <span className={`w-7 h-7 flex items-center justify-center rounded-full text-sm font-bold ${isSelected ? "text-white" : isToday ? "text-blue-400" : t.title}`}>
+                                            {d.getDate()}
+                                        </span>
+                                        {/* Dot indicators for classes and events */}
+                                        {(() => {
+                                            const key = dateKey(d);
+                                            const classCount = classesByDate.get(key)?.length ?? 0;
+                                            const eventCount = eventsByDate.get(key)?.length ?? 0;
+                                            return (
+                                                <div className="flex gap-0.5 justify-center">
+                                                    {classCount > 0 && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white/70" : "bg-lime-400"}`} />}
+                                                    {eventCount > 0 && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white/70" : "bg-violet-400"}`} />}
+                                                    {classCount === 0 && eventCount === 0 && <span className="w-1.5 h-1.5" />}
+                                                </div>
+                                            );
+                                        })()}
+                                    </button>
+                                );
                             })}
-                        </h3>
-                        {selectedDayClasses.length === 0 ? (
-                            <p className="text-sm text-white/50 py-6 text-center">No hay clases este día.</p>
-                        ) : (
-                            selectedDayClasses.map((cls) => (
-                                <MobileClassCard key={cls.id} cls={cls} onSelect={() => setSelectedClass(cls)} classTypes={classTypes} />
-                            ))
-                        )}
+                        </div>
+
+                        {/* Classes + Events for selected day in week view */}
+                        <div className="p-3 space-y-2">
+                            {selectedDay ? (
+                                <>
+                                    <h3 className={`text-xs font-semibold ${t.muted} uppercase tracking-wider`}>
+                                        {selectedDay.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })}
+                                    </h3>
+                                    {/* Events first */}
+                                    {(eventsByDate.get(dateKey(selectedDay)) ?? []).map((ev) => (
+                                        <MobileEventCard key={ev.id} event={ev} onSelect={() => setSelectedEvent(ev)} t={t} />
+                                    ))}
+                                    {selectedDayClasses.length === 0 && (eventsByDate.get(dateKey(selectedDay)) ?? []).length === 0 ? (
+                                        <p className={`text-sm ${t.muted} py-4 text-center`}>No hay clases ni eventos este día.</p>
+                                    ) : (
+                                        selectedDayClasses.map((cls) => (
+                                            <MobileClassCard key={cls.id} cls={cls} onSelect={() => setSelectedClass(cls)} classTypes={classTypes} t={t} />
+                                        ))
+                                    )}
+                                </>
+                            ) : (
+                                <p className={`text-center text-sm ${t.muted} py-4`}>Toca un día para ver clases.</p>
+                            )}
+                        </div>
                     </div>
                 )}
 
-                {!selectedDay && (
-                    <p className="text-center text-sm text-white/50 py-4">Toca un día para ver clases.</p>
+                {/* ── Mobile: MONTH view ── */}
+                {viewMode === "month" && (
+                    <>
+                        {/* Compact mini-calendar */}
+                        <div className={`${t.card} rounded-xl shadow-sm p-3`}>
+                            <div className="grid grid-cols-7 gap-1 mb-2">
+                                {DAY_NAMES.map((d) => (
+                                    <div key={d} className={`text-center text-[10px] font-semibold ${t.label} uppercase`}>
+                                        {d.charAt(0)}
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-7 gap-1">
+                                {cells.map(({ date, isCurrentMonth }, idx) => {
+                                    const key = dateKey(date);
+                                    const dayClasses = classesByDate.get(key) ?? [];
+                                    const isToday = isSameDay(date, today);
+                                    const isSelected = selectedDay && isSameDay(date, selectedDay);
+
+                                    return (
+                                        <button
+                                            key={idx}
+                                            onClick={() => setSelectedDay(date)}
+                                            className={`relative flex flex-col items-center justify-center p-1.5 rounded-lg text-xs transition-all ${isSelected
+                                                ? "bg-blue-600 text-white"
+                                                : isToday
+                                                    ? "bg-blue-100 text-blue-700 font-bold"
+                                                    : !isCurrentMonth
+                                                        ? t.faint
+                                                        : `${t.dayText} hover:bg-black/5`
+                                                }`}
+                                        >
+                                            {date.getDate()}
+                                            {dayClasses.length > 0 && (
+                                                <div className="flex gap-0.5 mt-0.5">
+                                                    {dayClasses.slice(0, 3).map((cls) => {
+                                                        const typeObj = classTypes.find((tp: GymClassType) => tp.name === cls.type);
+                                                        const styles = getClassStyles(typeObj?.color || DEFAULT_COLOR);
+                                                        return (
+                                                            <span
+                                                                key={cls.id}
+                                                                className="w-1 h-1 rounded-full"
+                                                                style={{ backgroundColor: isSelected ? "rgba(255,255,255,0.7)" : styles.dot }}
+                                                            />
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Selected day list */}
+                        {selectedDay && (
+                            <div className="space-y-2">
+                                <h3 className={`text-sm font-semibold ${t.body}`}>
+                                    {selectedDay.toLocaleDateString("es-MX", {
+                                        weekday: "long",
+                                        day: "numeric",
+                                        month: "long",
+                                    })}
+                                </h3>
+                                {/* Events first */}
+                                {(eventsByDate.get(dateKey(selectedDay)) ?? []).map((ev) => (
+                                    <MobileEventCard key={ev.id} event={ev} onSelect={() => setSelectedEvent(ev)} t={t} />
+                                ))}
+                                {selectedDayClasses.length === 0 && (eventsByDate.get(dateKey(selectedDay)) ?? []).length === 0 ? (
+                                    <p className={`text-sm ${t.muted} py-6 text-center`}>No hay clases ni eventos este día.</p>
+                                ) : (
+                                    selectedDayClasses.map((cls) => (
+                                        <MobileClassCard key={cls.id} cls={cls} onSelect={() => setSelectedClass(cls)} classTypes={classTypes} t={t} />
+                                    ))
+                                )}
+                            </div>
+                        )}
+
+                        {!selectedDay && (
+                            <p className={`text-center text-sm ${t.muted} py-4`}>Toca un día para ver clases.</p>
+                        )}
+                    </>
                 )}
             </div>
 
@@ -641,6 +841,16 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                     classTitle={confirmedBooking.title}
                     startTime={confirmedBooking.startTime}
                     creditsRemaining={confirmedBooking.creditsRemaining}
+                    planType={confirmedBooking.planType}
+                />
+            )}
+
+            {/* ── Event Detail Modal ── */}
+            {selectedEvent && (
+                <EventDetailModal
+                    event={selectedEvent}
+                    onClose={() => setSelectedEvent(null)}
+                    brandColor={gymContext.brandColor}
                 />
             )}
         </div>
@@ -648,8 +858,8 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
 }
 
 // ─── Mobile Class Card ────────────────────────────────────────────
-function MobileClassCard({ cls, onSelect, classTypes }: { cls: ClassWithSocial; onSelect: () => void; classTypes: GymClassType[] }) {
-    const typeObj = classTypes?.find((t: GymClassType) => t.name === cls.type);
+function MobileClassCard({ cls, onSelect, classTypes, t }: { cls: ClassWithSocial; onSelect: () => void; classTypes: GymClassType[]; t: import("~/hooks/useDashboardTheme").ThemeTokens }) {
+    const typeObj = classTypes?.find((tp: GymClassType) => tp.name === cls.type);
     const styles = getClassStyles(typeObj?.color || DEFAULT_COLOR);
     const isFull = cls.bookedCount >= cls.capacity;
     const spotsLeft = cls.capacity - cls.bookedCount;
@@ -659,22 +869,21 @@ function MobileClassCard({ cls, onSelect, classTypes }: { cls: ClassWithSocial; 
     return (
         <button
             onClick={onSelect}
-            className={`w-full text-left bg-white/5 border rounded-xl p-4 shadow-sm transition-all active:scale-[0.98] ${isFull ? "border-red-500/50 opacity-70" : `hover:shadow-md`
-                }`}
+            className={`w-full text-left ${t.card} rounded-xl p-4 shadow-sm transition-all active:scale-[0.98] ${isFull ? "border-red-500/50 opacity-70" : "hover:shadow-md"}`}
             style={!isFull ? { borderColor: styles.border } : {}}
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                        <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0`} style={{ backgroundColor: styles.dot }} />
-                        <p className="font-semibold text-white text-sm truncate">{cls.title}</p>
+                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: styles.dot }} />
+                        <p className={`font-semibold ${t.title} text-sm truncate`}>{cls.title}</p>
                         {isFull && (
                             <span className="text-[10px] bg-red-100/10 text-red-500 px-1.5 py-0.5 rounded-full font-medium flex-shrink-0">
                                 LLENO
                             </span>
                         )}
                     </div>
-                    <div className="flex items-center gap-3 mt-1.5 text-xs text-white/60">
+                    <div className={`flex items-center gap-3 mt-1.5 text-xs ${t.muted}`}>
                         <span className="flex items-center gap-1">
                             <Clock className="w-3 h-3" /> {time} – {endTime}
                         </span>
@@ -684,7 +893,7 @@ function MobileClassCard({ cls, onSelect, classTypes }: { cls: ClassWithSocial; 
                     </div>
                 </div>
                 <div className="text-right flex-shrink-0">
-                    <span className={`text-xs font-medium ${isFull ? "text-red-500" : spotsLeft <= 5 ? "text-amber-500" : "text-white/60"}`}>
+                    <span className={`text-xs font-medium ${isFull ? "text-red-500" : spotsLeft <= 5 ? "text-amber-500" : t.muted}`}>
                         {cls.bookedCount}/{cls.capacity}
                     </span>
                 </div>
@@ -755,43 +964,46 @@ function ClassDetailModal({
     }, [cls.id, needsSeatMap]);
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" onClick={onClose}>
+        <div
+            className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-4 pb-20 md:pb-0"
+            onClick={onClose}
+        >
             {/* Backdrop */}
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
-            {/* Panel */}
+            {/* Panel — flex column so footer stays visible and body scrolls */}
             <div
-                className="relative w-full md:max-w-md bg-gray-950 md:rounded-2xl rounded-t-2xl shadow-2xl overflow-hidden animate-slide-up border border-white/10"
+                className="relative w-full md:max-w-md bg-gray-950 md:rounded-2xl rounded-t-2xl shadow-2xl border border-white/10 animate-slide-up flex flex-col"
+                style={{ maxHeight: "min(88dvh, 88vh)" }}
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* Header band */}
-                <div className={`h-2`} style={{ backgroundColor: styles.dot }} />
-
-                <div className="p-6">
-                    {/* Close button */}
-                    <button
-                        onClick={onClose}
-                        className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-white/10 text-white/50 transition-colors"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
-
-                    {/* Title & Badge */}
-                    <div className="flex items-start gap-3 mb-4">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0`} style={{ backgroundColor: styles.bg }}>
-                            <Dumbbell className={`w-5 h-5`} style={{ color: styles.text }} />
+                {/* Header band + sticky header */}
+                <div className="shrink-0">
+                    <div className="h-1.5 rounded-t-2xl" style={{ backgroundColor: styles.dot }} />
+                    <div className="flex items-start gap-3 px-4 pt-4 pb-3 border-b border-white/[0.06]">
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: styles.bg }}>
+                            <Dumbbell className="w-5 h-5" style={{ color: styles.text }} />
                         </div>
-                        <div>
-                            <h2 className="text-lg font-bold text-white">{cls.title}</h2>
-                            <span className={`inline-flex items-center gap-1 text-xs font-medium mt-0.5`} style={{ color: styles.text }}>
-                                <span className={`w-2 h-2 rounded-full`} style={{ backgroundColor: styles.dot }} />
+                        <div className="flex-1 min-w-0">
+                            <h2 className="text-lg font-bold text-white leading-tight">{cls.title}</h2>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium mt-0.5" style={{ color: styles.text }}>
+                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: styles.dot }} />
                                 {cls.type}
                             </span>
                         </div>
+                        <button
+                            onClick={onClose}
+                            className="p-1.5 rounded-full hover:bg-white/10 text-white/50 transition-colors shrink-0"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
                     </div>
+                </div>
 
+                {/* Scrollable body */}
+                <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-3">
                     {/* Info grid */}
-                    <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="grid grid-cols-2 gap-2">
                         <InfoBlock
                             icon={<Clock className="w-4 h-4 text-white/50" />}
                             label="Horario"
@@ -827,12 +1039,12 @@ function ClassDetailModal({
 
                     {/* Description */}
                     {cls.description && (
-                        <p className="text-sm text-white/60 mb-4 leading-relaxed">{cls.description}</p>
+                        <p className="text-sm text-white/60 leading-relaxed">{cls.description}</p>
                     )}
 
                     {/* Buddies */}
                     {cls.buddies.length > 0 && (
-                        <div className="flex items-center gap-2 mb-5 py-3 px-3 bg-blue-50/60 rounded-xl">
+                        <div className="flex items-center gap-2 py-3 px-3 bg-blue-50/60 rounded-xl">
                             <div className="flex -space-x-1.5">
                                 {cls.buddies.slice(0, 4).map((b, i) => (
                                     <div
@@ -856,7 +1068,7 @@ function ClassDetailModal({
 
                     {/* Seat map — shown for equipment-limited studios */}
                     {needsSeatMap && (
-                        <div className="mb-4">
+                        <div>
                             {loadingSeats ? (
                                 <p className="text-xs text-white/50 text-center py-4">Cargando mapa de lugares...</p>
                             ) : resources.length > 0 ? (
@@ -873,8 +1085,10 @@ function ClassDetailModal({
                             )}
                         </div>
                     )}
+                </div>
 
-                    {/* Action */}
+                {/* Sticky footer — action button always visible */}
+                <div className="shrink-0 px-4 pb-4 pt-3 border-t border-white/[0.06] bg-gray-950">
                     <fetcher.Form method="post">
                         <input type="hidden" name="classId" value={cls.id} />
                         {needsSeatMap && selectedResourceId && (
@@ -886,7 +1100,7 @@ function ClassDetailModal({
                                 <button
                                     type="submit"
                                     disabled={fetcher.state !== "idle"}
-                                    className="w-full px-5 py-3 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                    className="w-full px-5 py-3.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                                 >
                                     <Bell className="w-4 h-4" />
                                     {fetcher.state !== "idle" ? "Registrando…" : "Avisarme cuando haya cupo"}
@@ -898,7 +1112,7 @@ function ClassDetailModal({
                                 <button
                                     type="submit"
                                     disabled={fetcher.state !== "idle" || (needsSeatMap && resources.length > 0 && !selectedResourceId)}
-                                    className="w-full px-5 py-3 text-white text-sm font-semibold rounded-xl transition-all disabled:opacity-50 hover:opacity-90"
+                                    className="w-full px-5 py-3.5 text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50 active:scale-[0.98]"
                                     style={{ backgroundColor: gym.brandColor }}
                                 >
                                     {fetcher.state !== "idle"
@@ -913,15 +1127,12 @@ function ClassDetailModal({
                 </div>
             </div>
 
-            {/* Slide-up animation */}
             <style>{`
                 @keyframes slideUp {
                     from { transform: translateY(100%); opacity: 0; }
                     to { transform: translateY(0); opacity: 1; }
                 }
-                .animate-slide-up {
-                    animation: slideUp 0.3s ease-out;
-                }
+                .animate-slide-up { animation: slideUp 0.3s ease-out; }
             `}</style>
         </div>
     );
@@ -941,11 +1152,11 @@ function Calendar({ className }: { className?: string }) {
 // ─── Info Block ───────────────────────────────────────────────────
 function InfoBlock({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
     return (
-        <div className="flex items-start gap-2 bg-white/5 rounded-lg p-2.5">
-            <div className="mt-0.5">{icon}</div>
-            <div>
-                <p className="text-[10px] text-white/50 uppercase tracking-wide font-medium">{label}</p>
-                <p className="text-xs text-white/80 font-medium mt-0.5">{value}</p>
+        <div className="flex items-start gap-1.5 bg-white/5 rounded-lg p-2">
+            <div className="mt-0.5 shrink-0">{icon}</div>
+            <div className="min-w-0">
+                <p className="text-[9px] text-white/50 uppercase tracking-wide font-medium">{label}</p>
+                <p className="text-[11px] text-white/80 font-medium mt-0.5 leading-tight">{value}</p>
             </div>
         </div>
     );
@@ -1035,6 +1246,144 @@ function DayDetailModal({
                 .animate-slide-up {
                     animation: slideUp 0.25s ease-out;
                 }
+            `}</style>
+        </div>
+    );
+}
+
+// ─── Mobile Event Card ────────────────────────────────────────────
+function MobileEventCard({ event: ev, onSelect, t }: { event: ScheduleEvent; onSelect: () => void; t: import("~/hooks/useDashboardTheme").ThemeTokens }) {
+    const isFull = ev.current_enrolled >= ev.max_capacity;
+    const spots = ev.max_capacity - ev.current_enrolled;
+    return (
+        <button
+            onClick={onSelect}
+            className="w-full text-left rounded-xl p-4 border border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/20 transition-all active:scale-[0.98]"
+        >
+            <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                        <Sparkles className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+                        <p className="font-bold text-violet-200 text-sm truncate">{ev.name}</p>
+                        {isFull && (
+                            <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded-full font-medium flex-shrink-0">LLENO</span>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-violet-300/70">
+                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {ev.time} hrs</span>
+                        {ev.location && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" /> {ev.location}</span>}
+                    </div>
+                </div>
+                <div className="text-right flex-shrink-0">
+                    <p className="text-sm font-black text-white">{ev.price === 0 ? "Gratis" : `$${ev.price.toLocaleString("es-MX")}`}</p>
+                    {!isFull && <p className="text-[10px] text-violet-300/60">{spots} lugar{spots !== 1 ? "es" : ""}</p>}
+                </div>
+            </div>
+        </button>
+    );
+}
+
+// ─── Event Detail Modal ───────────────────────────────────────────
+function EventDetailModal({ event: ev, onClose, brandColor }: { event: ScheduleEvent; onClose: () => void; brandColor: string }) {
+    const isFull = ev.current_enrolled >= ev.max_capacity;
+    const spots = ev.max_capacity - ev.current_enrolled;
+    const pct = Math.min(100, Math.round((ev.current_enrolled / ev.max_capacity) * 100));
+    const dateLabel = new Date(ev.start_time).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-4 pb-20 md:pb-0" onClick={onClose}>
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+            <div
+                className="relative w-full md:max-w-md bg-gray-950 md:rounded-2xl rounded-t-2xl shadow-2xl border border-white/10 animate-slide-up overflow-hidden"
+                onClick={e => e.stopPropagation()}
+            >
+                {/* Header */}
+                <div className="p-5 border-b border-white/10" style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.15), rgba(109,40,217,0.05))" }}>
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                                <Sparkles className="w-4 h-4 text-violet-400" />
+                                <span className="text-xs font-bold text-violet-400 uppercase tracking-wider">Evento Exclusivo</span>
+                            </div>
+                            <h2 className="text-xl font-black text-white leading-tight">{ev.name}</h2>
+                        </div>
+                        <button onClick={onClose} className="p-1.5 rounded-full hover:bg-white/10 text-white/40 flex-shrink-0">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Body */}
+                <div className="p-5 space-y-4">
+                    {ev.description && (
+                        <p className="text-sm text-white/70 leading-relaxed">{ev.description}</p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="flex items-center gap-2 text-white/60">
+                            <CalendarIcon className="w-4 h-4 text-violet-400" />
+                            <span className="capitalize">{dateLabel}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-white/60">
+                            <Clock className="w-4 h-4 text-violet-400" />
+                            <span>{ev.time} hrs</span>
+                        </div>
+                        {ev.location && (
+                            <div className="flex items-center gap-2 text-white/60 col-span-2">
+                                <MapPin className="w-4 h-4 text-violet-400" />
+                                <span>{ev.location}</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Occupancy */}
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between text-xs text-white/50">
+                            <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> {ev.current_enrolled}/{ev.max_capacity} inscritos</span>
+                            {isFull ? (
+                                <span className="text-red-400 font-semibold">¡Lleno!</span>
+                            ) : (
+                                <span className="text-violet-300">{spots} lugar{spots !== 1 ? "es" : ""} disponible{spots !== 1 ? "s" : ""}</span>
+                            )}
+                        </div>
+                        <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                            <div
+                                className={`h-full rounded-full transition-all ${isFull ? "bg-red-500" : pct > 70 ? "bg-amber-400" : "bg-violet-500"}`}
+                                style={{ width: `${pct}%` }}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Price */}
+                    <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                        <div>
+                            <p className="text-2xl font-black text-white">
+                                {ev.price === 0 ? "Gratis" : `$${ev.price.toLocaleString("es-MX")}`}
+                                {ev.price > 0 && <span className="text-sm font-normal text-white/40 ml-1">MXN</span>}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Footer CTA */}
+                <div className="px-5 pb-5">
+                    <a
+                        href="/dashboard/packages"
+                        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90 active:scale-95"
+                        style={{ backgroundColor: "#7c3aed" }}
+                        onClick={onClose}
+                    >
+                        <Ticket className="w-4 h-4" />
+                        {isFull ? "Ver otros eventos" : "Inscribirme a este evento"}
+                    </a>
+                </div>
+            </div>
+            <style>{`
+                @keyframes slideUp {
+                    from { transform: translateY(20px); opacity: 0; }
+                    to { transform: translateY(0); opacity: 1; }
+                }
+                .animate-slide-up { animation: slideUp 0.25s ease-out; }
             `}</style>
         </div>
     );

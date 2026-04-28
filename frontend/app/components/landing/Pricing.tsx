@@ -52,7 +52,7 @@ const PLANS: Plan[] = [
                     "Check-in con código QR",
                     "POS básico (hasta 5 productos)",
                     "Gestión de planes y membresías",
-                    "Pagos con Mercado Pago",
+                    "Pagos con Mercado Pago / Kueski Pay",
                     "Acceso vía projectstudio.com/tu-studio",
                     "Powered by Project Studio",
                 ]

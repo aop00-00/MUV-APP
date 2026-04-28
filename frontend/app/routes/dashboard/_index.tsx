@@ -1,10 +1,11 @@
 import type { Route } from "./+types/_index";
 import { Link, useFetcher } from "react-router";
+import { useDashboardTheme as useDashboardThemeHook, type ThemeTokens } from "~/hooks/useDashboardTheme";
 import { useState, useMemo, useEffect } from "react";
 import {
-        Calendar, CreditCard, TrendingUp, ArrowRight, Flame, Coffee,
+    Calendar, CreditCard, TrendingUp, ArrowRight, Flame, Coffee,
     Dumbbell, Timer, Smile, Frown, Meh, Zap, Activity, Plus, History, Trash2, Check, X, Scale, Ruler,
-    Droplet, Heart, Moon, Award, ChevronLeft, ChevronRight, Clock, MapPin, Users, Sparkles, Rocket, Crown, Star
+    Droplet, Heart, Moon, Award, ChevronLeft, ChevronRight, Clock, MapPin, Users, Sparkles, Rocket, Crown, Star, Ticket
 } from "lucide-react";
 import { BookingConfirmationPopup } from "~/components/BookingConfirmationPopup";
 
@@ -49,6 +50,18 @@ interface ClassEvent {
     end_time: string;
     location: string | null;
     bookedCount: number;
+    isEvent?: boolean; // flag para diferenciar eventos exclusivos
+}
+
+interface DashEvent {
+    id: string;
+    name: string;
+    start_time: string;
+    location: string;
+    description: string;
+    price: number;
+    max_capacity: number;
+    current_enrolled: number;
 }
 
 type ClassType = "hyrox" | "fullMuv" | "upperBody" | "lowerBody" | "openGym";
@@ -60,6 +73,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { profile, gymId } = await requireGymAuth(request);
 
     // Parallel queries
+    const { getActiveEvents } = await import("~/services/event.server");
+
     const [
         { data: gym },
         { data: userStats },
@@ -71,9 +86,11 @@ export async function loader({ request }: Route.LoaderArgs) {
         { data: topProduct },
         { data: nextBooking },
         { data: upcomingClasses },
+        rawEvents,
+        { data: userEventRegs },
     ] = await Promise.all([
         // Gym basics
-        supabaseAdmin.from("gyms").select("brand_color, primary_color, studio_type").eq("id", gymId).single(),
+        supabaseAdmin.from("gyms").select("brand_color, primary_color, studio_type, plan_id").eq("id", gymId).single(),
         // User stats snapshot
         supabaseAdmin
             .from("user_stats")
@@ -132,7 +149,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         // Next upcoming booking
         supabaseAdmin
             .from("bookings")
-            .select("id, class:classes!class_id(title, start_time, location, coach:coaches!coach_id(name))")
+            .select("id, class:classes!class_id(title, start_time, location)")
             .eq("user_id", profile.id)
             .eq("gym_id", gymId)
             .eq("status", "confirmed")
@@ -145,6 +162,14 @@ export async function loader({ request }: Route.LoaderArgs) {
             .gte("start_time", new Date().toISOString())
             .lte("start_time", new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
             .order("start_time", { ascending: true }),
+        // Active upcoming events for this gym
+        getActiveEvents(gymId),
+        // Events this user has registered for (via event_registrations table if exists, fallback to orders)
+        supabaseAdmin
+            .from("event_registrations")
+            .select("event_id")
+            .eq("user_id", profile.id)
+            .eq("gym_id", gymId),
     ]);
 
     const gymContext = {
@@ -260,7 +285,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             id: nextBookingItem.id,
             name: nextClassData.title ?? "Sin reserva",
             startTime: nextClassData.start_time ?? new Date().toISOString(),
-            instructor: nextClassData.coach?.name ?? "Coach",
+            instructor: (nextClassData as any).coach_name ?? "Coach",
             location: nextClassData.location ?? "Gimnasio",
         }
         : {
@@ -284,11 +309,101 @@ export async function loader({ request }: Route.LoaderArgs) {
         bookedCount: c.current_enrolled ?? 0,
     }));
 
+    // Map active events as calendar entries (always visible)
+    const registeredEventIds = new Set((userEventRegs ?? []).map((r: any) => r.event_id));
+    const eventItems: ClassEvent[] = (rawEvents ?? []).map((e: any) => ({
+        id: e.id,
+        title: e.name,
+        description: e.description || null,
+        coach_id: "",
+        capacity: e.max_capacity,
+        start_time: e.start_time,
+        end_time: new Date(new Date(e.start_time).getTime() + 60 * 60 * 1000).toISOString(), // default 1h duration
+        location: e.location || null,
+        bookedCount: e.current_enrolled,
+        isEvent: true,
+    }));
+
+    const allCalendarItems = [...classes, ...eventItems].sort(
+        (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+    );
+
+    // Build upcoming items list: all booked classes + registered events, sorted by date
+    const bookedClassItems = upcomingBookings.map((b: any) => ({
+        id: b.id,
+        name: b.class.title ?? "Clase",
+        startTime: b.class.start_time,
+        instructor: (b.class as any).coach_name ?? "Coach",
+        location: b.class.location ?? "Gimnasio",
+        isEvent: false as const,
+    }));
+    const registeredEventItems = (rawEvents ?? [])
+        .filter((e: any) => registeredEventIds.has(e.id) && new Date(e.start_time).getTime() > nowTime)
+        .map((e: any) => ({
+            id: e.id,
+            name: e.name,
+            startTime: e.start_time,
+            instructor: "",
+            location: e.location || "Studio",
+            isEvent: true as const,
+        }));
+    const upcomingItems = [...bookedClassItems, ...registeredEventItems].sort(
+        (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+    );
+
+    // Determine nextClass: first item of upcomingItems
+    let finalNextClass: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent?: boolean } =
+        upcomingItems[0] ?? nextClass;
+
+    // Strava: check connection + load stored activities
+    const { getStravaConnection, getStoredActivities } = await import("~/services/strava.server");
+    const { PLAN_FEATURES } = await import("~/config/plan-features");
+
+    const gymPlan = (gym as any)?.plan_id as string ?? "emprendedor";
+    const planFeatures = PLAN_FEATURES[gymPlan as keyof typeof PLAN_FEATURES] ?? PLAN_FEATURES.emprendedor;
+    const stravaEnabled = planFeatures.stravaEnabled ?? false;
+
+    let stravaConnected = false;
+    let stravaActivities: any[] = [];
+    let stravaStats = { weeklyMinutes: 0, totalMinutes: 0, avgHR: 0 };
+
+    if (stravaEnabled) {
+        const conn = await getStravaConnection(profile.id, gymId);
+        stravaConnected = !!conn;
+        if (conn) {
+            // Load last 20 to compute stats, show 5 in widget
+            const allActivities = await getStoredActivities(profile.id, gymId, 20);
+            stravaActivities = allActivities.slice(0, 5);
+
+            // Weekly: activities in the last 7 days
+            const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const weeklyActs = allActivities.filter(
+                (a: any) => new Date(a.start_date).getTime() >= weekAgo
+            );
+            const weeklyMinutes = weeklyActs.reduce((s: number, a: any) => s + Math.round(a.moving_time / 60), 0);
+
+            // Total minutes from all stored activities
+            const totalMinutes = allActivities.reduce((s: number, a: any) => s + Math.round(a.moving_time / 60), 0);
+
+            // Average HR from activities that have it
+            const hrActs = allActivities.filter((a: any) => a.has_heartrate && a.average_heartrate);
+            const avgHR = hrActs.length > 0
+                ? Math.round(hrActs.reduce((s: number, a: any) => s + Number(a.average_heartrate), 0) / hrActs.length)
+                : 0;
+
+            stravaStats = { weeklyMinutes, totalMinutes, avgHR };
+        }
+    }
+
+    // Strava toast from OAuth redirect
+    const url = new URL(request.url);
+    const stravaParam = url.searchParams.get("strava");
+
     return {
         gymContext,
         profile,
         userState,
-        nextClass,
+        nextClass: finalNextClass,
         streak,
         classesMonth: userStats?.classes_this_month || 0,
         gymOccupancy,
@@ -297,7 +412,24 @@ export async function loader({ request }: Route.LoaderArgs) {
         initialBodyStats,
         quickBuy,
         recentActivity: activity,
-        classes,
+        classes: allCalendarItems,
+        events: (rawEvents ?? []).map((e: any) => ({
+            id: e.id,
+            name: e.name,
+            start_time: e.start_time,
+            location: e.location || "",
+            description: e.description || "",
+            price: e.price,
+            max_capacity: e.max_capacity,
+            current_enrolled: e.current_enrolled,
+        })),
+        registeredEventIds: Array.from(registeredEventIds),
+        upcomingItems,
+        stravaEnabled,
+        stravaConnected,
+        stravaActivities,
+        stravaStats,
+        stravaParam,
     };
 }
 
@@ -364,6 +496,46 @@ export async function action({ request }: Route.ActionArgs) {
             booking_id: booking.id,
             class_id: classId,
             credits_remaining: (profile.credits ?? 0) - 1
+        };
+    }
+
+    if (intent === "register_event") {
+        const eventId = formData.get("eventId") as string;
+
+        // Check event exists and has capacity
+        const { data: eventData } = await supabaseAdmin
+            .from("events")
+            .select("id, max_capacity, current_enrolled, title, name, start_time, location")
+            .eq("id", eventId)
+            .eq("gym_id", gymId)
+            .single();
+
+        if (!eventData) return { success: false, error: "Evento no encontrado" };
+        if ((eventData.current_enrolled ?? 0) >= (eventData.max_capacity ?? 0)) {
+            return { success: false, error: "El evento está lleno" };
+        }
+
+        // Upsert registration (idempotent)
+        const { error: regError } = await supabaseAdmin
+            .from("event_registrations")
+            .upsert({ user_id: profile.id, event_id: eventId, gym_id: gymId, status: "confirmed" },
+                { onConflict: "user_id,event_id" });
+
+        if (regError) return { success: false, error: regError.message };
+
+        // Decrement available spots
+        await supabaseAdmin
+            .from("events")
+            .update({ current_enrolled: (eventData.current_enrolled ?? 0) + 1 })
+            .eq("id", eventId)
+            .eq("gym_id", gymId);
+
+        return {
+            success: true,
+            intent: "register_event",
+            event_id: eventId,
+            event_name: (eventData as any).name ?? (eventData as any).title ?? "Evento",
+            event_start: eventData.start_time,
         };
     }
 
@@ -543,6 +715,183 @@ function RadarChart({ stats }: { stats: Record<string, number> }) {
     );
 }
 
+// ─── Upcoming Item Card ──────────────────────────────────────────
+function UpcomingItemCard({ item, index }: {
+    item: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent: boolean };
+    index: number;
+    th: ThemeTokens;
+}) {
+    const [open, setOpen] = useState(false);
+    const isEv = item.isEvent;
+
+    const dateStr = new Date(item.startTime).toLocaleString("es-MX", {
+        weekday: "long", day: "numeric", month: "long",
+        hour: "2-digit", minute: "2-digit",
+    });
+
+    return (
+        <>
+            <div className={`
+            flex-shrink-0 snap-start
+            w-[85vw] md:w-full
+            backdrop-blur-md border rounded-2xl p-5 relative overflow-hidden group transition-all text-white
+            ${isEv ? "bg-violet-500/10 border-violet-500/30 hover:bg-violet-500/15" : "bg-white/5 border-white/10 hover:bg-white/10"}
+        `}>
+                {/* Decorative icon */}
+                <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-all pointer-events-none">
+                    {isEv
+                        ? <Sparkles className="w-16 h-16 text-violet-400 -rotate-12" />
+                        : <Rocket className="w-16 h-16 text-lime-400 -rotate-12" />
+                    }
+                </div>
+
+                <div className="relative z-10 flex items-center justify-between gap-4">
+                    <div className="space-y-1.5 min-w-0">
+                        {/* Badge */}
+                        {isEv ? (
+                            <div className="flex items-center gap-1.5 text-violet-300 font-bold text-[10px] uppercase tracking-tighter bg-violet-500/20 w-fit px-2 py-0.5 rounded-lg">
+                                <Sparkles className="w-2.5 h-2.5" />
+                                {index === 0 ? "Próximo evento inscrito" : "Evento inscrito"}
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-1.5 text-lime-400 font-bold text-[10px] uppercase tracking-tighter bg-lime-400/10 w-fit px-2 py-0.5 rounded-lg">
+                                <Star className="w-2.5 h-2.5 fill-lime-400" />
+                                {index === 0 ? "Próxima clase reservada" : "Clase reservada"}
+                            </div>
+                        )}
+
+                        {/* Name */}
+                        <p className="text-xl font-black text-white leading-tight truncate">{item.name}</p>
+
+                        {/* Meta */}
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-white/60">
+                            <div className="flex items-center gap-1.5">
+                                <Clock className={`w-3.5 h-3.5 flex-shrink-0 ${isEv ? "text-violet-400" : "text-lime-400"}`} />
+                                <span className="text-xs font-medium">{dateStr}</span>
+                            </div>
+                            {item.location && (
+                                <div className="flex items-center gap-1.5">
+                                    <MapPin className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                                    <span className="text-xs">{item.location}</span>
+                                </div>
+                            )}
+                            {item.instructor && (
+                                <div className="flex items-center gap-1.5">
+                                    <Users className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+                                    <span className="text-xs">con {item.instructor}</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* CTA */}
+                    <button
+                        onClick={() => setOpen(true)}
+                        className={`flex-shrink-0 px-4 py-2.5 rounded-xl font-bold text-sm transition-all hover:scale-105 active:scale-95 flex items-center gap-1.5 shadow-lg ${isEv ? "bg-violet-500 hover:bg-violet-600 text-white shadow-violet-500/20" : "bg-lime-400 hover:bg-lime-500 text-slate-900 shadow-lime-400/20"}`}
+                    >
+                        {isEv
+                            ? <><Ticket className="w-3.5 h-3.5" /> Ver</>
+                            : <>Ver <ArrowRight className="w-3.5 h-3.5" /></>
+                        }
+                    </button>
+                </div>
+            </div>
+
+            {/* Detail Modal */}
+            {open && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+                    onClick={() => setOpen(false)}
+                >
+                    <div
+                        className={`relative w-full max-w-md bg-slate-900 rounded-2xl border shadow-2xl flex flex-col text-white ${isEv ? "border-violet-500/30" : "border-white/10"}`}
+                        style={{ maxHeight: "min(88dvh, 88vh)", marginBottom: "env(safe-area-inset-bottom, 0px)" }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className={`shrink-0 flex items-start justify-between p-6 pb-4 border-b ${isEv ? "border-violet-500/20" : "border-white/[0.06]"}`}>
+                            <div className="flex-1 min-w-0 pr-3">
+                                {isEv && (
+                                    <div className="flex items-center gap-1.5 mb-2">
+                                        <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                                        <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Evento exclusivo · Inscrito</span>
+                                    </div>
+                                )}
+                                <h3 className="text-xl font-black text-white leading-tight">{item.name}</h3>
+                            </div>
+                            <button
+                                onClick={() => setOpen(false)}
+                                className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {/* Body */}
+                        <div className="flex-1 overflow-y-auto overscroll-contain px-6 py-5 space-y-4">
+                            <div className="flex items-start gap-3">
+                                <Clock className={`w-5 h-5 shrink-0 mt-0.5 ${isEv ? "text-violet-400" : "text-lime-400"}`} />
+                                <div>
+                                    <p className="text-xs text-white/50 mb-0.5">Horario</p>
+                                    <p className="font-semibold text-sm text-white capitalize">{dateStr}</p>
+                                </div>
+                            </div>
+
+                            {item.location && (
+                                <div className="flex items-start gap-3">
+                                    <MapPin className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                                    <div>
+                                        <p className="text-xs text-white/50 mb-0.5">Ubicación</p>
+                                        <p className="font-semibold text-sm text-white">{item.location}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {item.instructor && (
+                                <div className="flex items-start gap-3">
+                                    <Users className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
+                                    <div>
+                                        <p className="text-xs text-white/50 mb-0.5">Instructor</p>
+                                        <p className="font-semibold text-sm text-white">{item.instructor}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Countdown */}
+                            {(() => {
+                                const diff = new Date(item.startTime).getTime() - Date.now();
+                                const hoursLeft = Math.floor(diff / (1000 * 60 * 60));
+                                const daysLeft = Math.floor(diff / (1000 * 60 * 60 * 24));
+                                if (diff <= 0) return null;
+                                const label = daysLeft >= 1
+                                    ? `En ${daysLeft} día${daysLeft > 1 ? "s" : ""}`
+                                    : `En ${hoursLeft} hora${hoursLeft !== 1 ? "s" : ""}`;
+                                return (
+                                    <div className={`rounded-xl px-4 py-3 flex items-center gap-3 ${isEv ? "bg-violet-500/10 border border-violet-500/20" : "bg-lime-400/10 border border-lime-400/20"}`}>
+                                        <Clock className={`w-4 h-4 shrink-0 ${isEv ? "text-violet-400" : "text-lime-400"}`} />
+                                        <p className={`text-sm font-bold ${isEv ? "text-violet-300" : "text-lime-400"}`}>{label}</p>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+
+                        {/* Footer */}
+                        <div className={`shrink-0 px-6 pb-6 pt-4 border-t bg-slate-900 ${isEv ? "border-violet-500/20" : "border-white/[0.06]"}`}>
+                            <Link
+                                to={isEv ? "/dashboard/packages" : "/dashboard/schedule"}
+                                onClick={() => setOpen(false)}
+                                className={`block w-full text-center py-3.5 rounded-xl font-bold text-sm transition-all hover:opacity-90 active:scale-95 ${isEv ? "bg-violet-500 hover:bg-violet-600 text-white" : "bg-lime-400 hover:bg-lime-500 text-slate-900"}`}
+                            >
+                                {isEv ? "Ver evento completo" : "Ver agenda completa"}
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
+
 // ─── Weekly Calendar Component ───────────────────────────────────
 interface WeeklyCalendarProps {
     classes: ClassEvent[];
@@ -555,6 +904,8 @@ interface WeeklyCalendarProps {
     selectedClass: ClassEvent | null;
     onBook: (classId: string) => void;
     userCredits: number;
+    th: ThemeTokens;
+    registeredEventIds?: string[];
 }
 
 function WeeklyCalendar({
@@ -568,7 +919,10 @@ function WeeklyCalendar({
     selectedClass,
     onBook,
     userCredits,
+    th,
+    registeredEventIds = [],
 }: WeeklyCalendarProps) {
+    const [dayModalItems, setDayModalItems] = useState<ClassEvent[] | null>(null);
     const today = new Date();
 
     // Get current week days
@@ -630,33 +984,31 @@ function WeeklyCalendar({
     };
 
     return (
-        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6">
+        <div className={`backdrop-blur-md rounded-2xl p-6 ${th.card}`}>
             {/* Header */}
             <div className="flex items-center justify-between mb-6">
                 <div>
-                    <h2 className="text-xl font-bold text-white mb-1">Class Schedule</h2>
-                    <p className="text-white/60 text-sm">Book your upcoming classes</p>
+                    <h2 className={`text-xl font-bold ${th.title} mb-1`}>Agenda de Clases</h2>
+                    <p className={`${th.muted} text-sm`}>Reserva tus próximas clases</p>
                 </div>
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => onViewChange("week")}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                            calendarView === "week"
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${calendarView === "week"
                                 ? "bg-lime-400 text-slate-900"
                                 : "bg-white/5 text-white/60 hover:bg-white/10"
-                        }`}
+                            }`}
                     >
-                        Week
+                        Semana
                     </button>
                     <button
                         onClick={() => onViewChange("month")}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                            calendarView === "month"
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${calendarView === "month"
                                 ? "bg-lime-400 text-slate-900"
                                 : "bg-white/5 text-white/60 hover:bg-white/10"
-                        }`}
+                            }`}
                     >
-                        Month
+                        Mes
                     </button>
                 </div>
             </div>
@@ -684,8 +1036,8 @@ function WeeklyCalendar({
 
             {/* Week View */}
             {calendarView === "week" && (
-                <div className="overflow-x-auto pb-4 hide-scrollbar">
-                    <div className="grid grid-cols-7 gap-2 min-w-[700px]">
+                <div className="overflow-x-auto pb-2 -mx-6 px-6">
+                    <div className="grid grid-cols-7 gap-2 min-w-[560px]">
                         {weekDays.map((day, idx) => {
                             const dayClasses = getClassesForDate(day);
                             const isToday = isSameDay(day, today);
@@ -693,30 +1045,46 @@ function WeeklyCalendar({
                             return (
                                 <div
                                     key={idx}
-                                    className={`p-3 rounded-xl border ${
-                                        isToday
+                                    className={`p-3 rounded-xl border ${isToday
                                             ? "bg-lime-400/10 border-lime-400/30"
                                             : "bg-white/5 border-white/10"
-                                    } min-h-[120px]`}
+                                        } min-h-[120px]`}
                                 >
                                     <div className="text-center mb-2">
-                                        <p className="text-xs text-white/40 font-medium">{DAY_NAMES[idx]}</p>
+                                        <p className={`text-xs ${th.faint} font-medium`}>{DAY_NAMES[idx]}</p>
                                         <p
-                                            className={`text-lg font-bold ${
-                                                isToday ? "text-lime-400" : "text-white"
-                                            }`}
+                                            className={`text-lg font-bold ${isToday ? "text-lime-400" : th.title
+                                                }`}
                                         >
                                             {day.getDate()}
                                         </p>
                                     </div>
                                     <div className="space-y-1">
                                         {dayClasses.slice(0, 2).map((classEvent) => {
+                                            const isEv = (classEvent as any).isEvent;
                                             const classType = inferClassType(classEvent.title);
                                             const colors = CLASS_COLORS[classType];
                                             const startTime = new Date(classEvent.start_time).toLocaleTimeString("es-MX", {
                                                 hour: "2-digit",
                                                 minute: "2-digit",
                                             });
+
+                                            if (isEv) {
+                                                return (
+                                                    <button
+                                                        key={classEvent.id}
+                                                        onClick={() => onClassSelect(classEvent)}
+                                                        className="w-full text-left p-2 rounded-lg bg-violet-500/20 border border-violet-500/30 hover:scale-105 transition-all"
+                                                    >
+                                                        <p className="text-[10px] font-bold text-violet-300 flex items-center gap-1">
+                                                            <Sparkles className="w-2.5 h-2.5 inline" />{startTime}
+                                                        </p>
+                                                        <p className={`text-[9px] ${th.body} truncate opacity-80`}>
+                                                            {classEvent.title}
+                                                        </p>
+                                                    </button>
+                                                );
+                                            }
 
                                             return (
                                                 <button
@@ -727,16 +1095,19 @@ function WeeklyCalendar({
                                                     <p className={`text-[10px] font-bold ${colors.text}`}>
                                                         {startTime}
                                                     </p>
-                                                    <p className="text-[9px] text-white/80 truncate">
+                                                    <p className={`text-[9px] ${th.body} truncate opacity-80`}>
                                                         {classEvent.title}
                                                     </p>
                                                 </button>
                                             );
                                         })}
                                         {dayClasses.length > 2 && (
-                                            <p className="text-[9px] text-white/40 text-center">
-                                                +{dayClasses.length - 2} more
-                                            </p>
+                                            <button
+                                                onClick={() => setDayModalItems(dayClasses)}
+                                                className="text-[9px] text-lime-400/80 hover:text-lime-400 text-center w-full transition-colors font-medium"
+                                            >
+                                                +{dayClasses.length - 2} más
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -748,11 +1119,11 @@ function WeeklyCalendar({
 
             {/* Month View */}
             {calendarView === "month" && (
-                <div className="overflow-x-auto pb-4 hide-scrollbar">
-                    <div className="min-w-[500px]">
+                <div className="overflow-x-auto pb-2 -mx-6 px-6">
+                    <div className="min-w-[360px]">
                         <div className="grid grid-cols-7 gap-1 mb-2">
                             {DAY_NAMES.map((name) => (
-                                <div key={name} className="text-center text-xs text-white/40 font-medium py-2">
+                                <div key={name} className={`text-center text-xs ${th.faint} font-medium py-2`}>
                                     {name}
                                 </div>
                             ))}
@@ -769,21 +1140,20 @@ function WeeklyCalendar({
                                 return (
                                     <div
                                         key={idx}
-                                        className={`aspect-square p-1 rounded-lg border ${
-                                            isToday
+                                        className={`aspect-square p-1 rounded-lg border ${isToday
                                                 ? "bg-lime-400/10 border-lime-400/30"
                                                 : "bg-white/5 border-white/10"
-                                        } hover:bg-white/10 transition-all`}
+                                            } hover:bg-white/10 transition-all`}
                                     >
                                         <p
-                                            className={`text-xs font-bold mb-0.5 ${
-                                                isToday ? "text-lime-400" : "text-white"
-                                            }`}
+                                            className={`text-xs font-bold mb-0.5 ${isToday ? "text-lime-400" : th.title
+                                                }`}
                                         >
                                             {day.getDate()}
                                         </p>
                                         <div className="space-y-0.5">
                                             {dayClasses.slice(0, 2).map((classEvent) => {
+                                                const isEv = (classEvent as any).isEvent;
                                                 const classType = inferClassType(classEvent.title);
                                                 const colors = CLASS_COLORS[classType];
 
@@ -791,11 +1161,18 @@ function WeeklyCalendar({
                                                     <button
                                                         key={classEvent.id}
                                                         onClick={() => onClassSelect(classEvent)}
-                                                        className={`w-full h-1 rounded-full ${colors.dot}`}
+                                                        className={`w-full h-1 rounded-full ${isEv ? "bg-violet-400" : colors.dot}`}
                                                         title={classEvent.title}
                                                     />
                                                 );
                                             })}
+                                            {dayClasses.length > 2 && (
+                                                <button
+                                                    onClick={() => setDayModalItems(dayClasses)}
+                                                    className="w-full h-1 rounded-full bg-white/30"
+                                                    title={`+${dayClasses.length - 2} más`}
+                                                />
+                                            )}
                                         </div>
                                     </div>
                                 );
@@ -805,88 +1182,188 @@ function WeeklyCalendar({
                 </div>
             )}
 
-            {/* Class Detail Modal */}
-            {selectedClass && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-                    <div className="relative w-full max-w-md bg-slate-900 rounded-2xl border border-white/10 p-6 shadow-2xl">
-                        <button
-                            onClick={() => onClassSelect(null)}
-                            className="absolute top-4 right-4 p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors"
-                        >
-                            <X className="w-5 h-5" />
-                        </button>
-
-                        <div className="mb-6">
-                            <h3 className="text-2xl font-bold text-white mb-2">{selectedClass.title}</h3>
-                            {selectedClass.description && (
-                                <p className="text-white/60 text-sm">{selectedClass.description}</p>
-                            )}
+            {/* Day All-Items Modal — shows when "+X más" is clicked */}
+            {dayModalItems && (
+                <div
+                    className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/60 backdrop-blur-md"
+                    onClick={() => setDayModalItems(null)}
+                >
+                    <div
+                        className="relative w-full sm:max-w-sm bg-slate-900 sm:rounded-2xl rounded-t-2xl border border-white/10 shadow-2xl flex flex-col text-white"
+                        style={{ maxHeight: "min(80dvh, 80vh)" }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="shrink-0 flex items-center justify-between p-5 pb-4 border-b border-white/[0.06]">
+                            <h3 className="text-lg font-bold text-white">
+                                {dayModalItems[0] && new Date(dayModalItems[0].start_time).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })}
+                            </h3>
+                            <button
+                                onClick={() => setDayModalItems(null)}
+                                className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
                         </div>
-
-                        <div className="space-y-3 mb-6">
-                            <div className="flex items-center gap-3 text-white">
-                                <Clock className="w-5 h-5 text-lime-400" />
-                                <div>
-                                    <p className="text-xs text-white/40">Horario</p>
-                                    <p className="font-semibold">
-                                        {new Date(selectedClass.start_time).toLocaleString("es-MX", {
-                                            weekday: "long",
-                                            day: "numeric",
-                                            month: "long",
-                                            hour: "2-digit",
-                                            minute: "2-digit",
-                                        })}
-                                    </p>
-                                </div>
-                            </div>
-
-                            {selectedClass.location && (
-                                <div className="flex items-center gap-3 text-white">
-                                    <MapPin className="w-5 h-5 text-blue-400" />
-                                    <div>
-                                        <p className="text-xs text-white/40">Ubicación</p>
-                                        <p className="font-semibold">{selectedClass.location}</p>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="flex items-center gap-3 text-white">
-                                <Users className="w-5 h-5 text-purple-400" />
-                                <div>
-                                    <p className="text-xs text-white/40">Disponibilidad</p>
-                                    <p className="font-semibold">
-                                        {selectedClass.bookedCount} / {selectedClass.capacity} reservados
-                                    </p>
-                                </div>
-                            </div>
+                        <div className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-2">
+                            {dayModalItems.map((item) => {
+                                const isEv = (item as any).isEvent;
+                                const classType = inferClassType(item.title);
+                                const colors = CLASS_COLORS[classType];
+                                const startTime = new Date(item.start_time).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+                                return (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => { setDayModalItems(null); onClassSelect(item); }}
+                                        className={`w-full text-left p-3 rounded-xl border transition-all hover:scale-[1.02] ${isEv ? "bg-violet-500/15 border-violet-500/30" : `${colors.bg} border-white/10`}`}
+                                    >
+                                        <div className="flex items-center gap-2 mb-1">
+                                            {isEv && <Sparkles className="w-3.5 h-3.5 text-violet-300 shrink-0" />}
+                                            <p className={`text-xs font-bold ${isEv ? "text-violet-300" : colors.text}`}>{startTime}</p>
+                                            {isEv && <span className="text-[9px] bg-violet-500/30 text-violet-200 px-1.5 py-0.5 rounded-full font-medium">Evento</span>}
+                                        </div>
+                                        <p className="text-sm text-white font-medium truncate">{item.title}</p>
+                                        {item.location && <p className="text-xs text-white/50 mt-0.5">{item.location}</p>}
+                                    </button>
+                                );
+                            })}
                         </div>
-
-                        <button
-                            onClick={() => {
-                                onBook(selectedClass.id);
-                                onClassSelect(null);
-                            }}
-                            disabled={
-                                userCredits < 1 ||
-                                selectedClass.bookedCount >= selectedClass.capacity
-                            }
-                            className="w-full py-4 bg-lime-400 hover:bg-lime-500 disabled:bg-white/10 disabled:text-white/40 text-slate-900 rounded-xl font-bold shadow-xl shadow-lime-400/20 transition-all active:scale-95"
-                        >
-                            {userCredits < 1
-                                ? "Sin créditos"
-                                : selectedClass.bookedCount >= selectedClass.capacity
-                                ? "Clase llena"
-                                : "Reservar clase"}
-                        </button>
-
-                        {userCredits < 1 && (
-                            <p className="text-xs text-red-400 text-center mt-2">
-                                Necesitas comprar más créditos
-                            </p>
-                        )}
                     </div>
                 </div>
             )}
+
+            {/* Class Detail Modal — flex-col so button never gets clipped */}
+            {selectedClass && (() => {
+                const isSelEv = (selectedClass as any).isEvent;
+                const isRegistered = isSelEv && registeredEventIds.includes(selectedClass.id);
+                return (
+                    <div
+                        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/60 backdrop-blur-md"
+                        onClick={() => onClassSelect(null)}
+                    >
+                        <div
+                            className={`relative w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl border shadow-2xl flex flex-col text-white ${isSelEv ? "bg-slate-900 border-violet-500/30" : "bg-slate-900 border-white/10"}`}
+                            style={{ maxHeight: "min(92dvh, 92vh)", color: "white" }}
+                            onClick={e => e.stopPropagation()}
+                        >
+                            {/* Sticky header */}
+                            <div className={`shrink-0 flex items-start justify-between p-6 pb-4 border-b ${isSelEv ? "border-violet-500/20" : "border-white/[0.06]"}`}>
+                                <div className="flex-1 min-w-0 pr-3">
+                                    {isSelEv && (
+                                        <div className="flex items-center gap-1.5 mb-2">
+                                            <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                                            <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Evento Exclusivo</span>
+                                        </div>
+                                    )}
+                                    <h3 className="text-xl font-bold !text-white leading-tight">{selectedClass.title}</h3>
+                                    {selectedClass.description && (
+                                        <p className="text-white/60 text-sm mt-1 line-clamp-2">{selectedClass.description}</p>
+                                    )}
+                                </div>
+                                <button
+                                    onClick={() => onClassSelect(null)}
+                                    className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            <div
+                                className="flex-1 overflow-y-auto overscroll-contain px-6 py-4 space-y-3"
+                                style={{ color: "white" }}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <Clock className={`w-5 h-5 shrink-0 ${isSelEv ? "text-violet-400" : "text-lime-400"}`} />
+                                    <div>
+                                        <p className="text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>Horario</p>
+                                        <p className="font-semibold text-sm" style={{ color: "white" }}>
+                                            {new Date(selectedClass.start_time).toLocaleString("es-MX", {
+                                                weekday: "long",
+                                                day: "numeric",
+                                                month: "long",
+                                                hour: "2-digit",
+                                                minute: "2-digit",
+                                            })}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {selectedClass.location && (
+                                    <div className="flex items-center gap-3">
+                                        <MapPin className="w-5 h-5 text-blue-400 shrink-0" />
+                                        <div>
+                                            <p className="text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>Ubicación</p>
+                                            <p className="font-semibold text-sm" style={{ color: "white" }}>{selectedClass.location}</p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex items-center gap-3">
+                                    <Users className="w-5 h-5 text-purple-400 shrink-0" />
+                                    <div>
+                                        <p className="text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>Disponibilidad</p>
+                                        <p className="font-semibold text-sm" style={{ color: "white" }}>
+                                            {selectedClass.bookedCount} / {selectedClass.capacity} {isSelEv ? "inscritos" : "reservados"}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {isSelEv && (selectedClass as any).price !== undefined && (
+                                    <div className="flex items-center gap-3">
+                                        <Ticket className="w-5 h-5 text-amber-400 shrink-0" />
+                                        <div>
+                                            <p className="text-xs" style={{ color: "rgba(255,255,255,0.55)" }}>Precio</p>
+                                            <p className="font-semibold text-sm" style={{ color: "white" }}>
+                                                {(selectedClass as any).price === 0 ? "Gratis" : `$${(selectedClass as any).price} MXN`}
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Sticky footer — always visible */}
+                            <div className={`shrink-0 px-6 pb-6 pt-3 border-t bg-slate-900 ${isSelEv ? "border-violet-500/20" : "border-white/[0.06]"}`} style={{ color: "white" }}>
+                                {isSelEv ? (
+                                    isRegistered ? (
+                                        <div className="w-full py-3.5 bg-violet-500/20 border border-violet-500/30 text-violet-300 rounded-xl font-bold text-center min-h-[48px] flex items-center justify-center gap-2">
+                                            <Sparkles className="w-4 h-4" /> Ya estás inscrito
+                                        </div>
+                                    ) : (
+                                        <Link
+                                            to="/dashboard/packages"
+                                            onClick={() => onClassSelect(null)}
+                                            className="block w-full py-3.5 bg-violet-500 hover:bg-violet-600 text-white rounded-xl font-bold shadow-xl shadow-violet-500/20 transition-all active:scale-95 min-h-[48px] text-center"
+                                        >
+                                            Ver evento e inscribirme
+                                        </Link>
+                                    )
+                                ) : (
+                                    <>
+                                        <button
+                                            onClick={() => {
+                                                onBook(selectedClass.id);
+                                                onClassSelect(null);
+                                            }}
+                                            disabled={userCredits < 1 || selectedClass.bookedCount >= selectedClass.capacity}
+                                            className="w-full py-3.5 bg-lime-400 hover:bg-lime-500 disabled:bg-white/10 disabled:text-white/40 text-slate-900 rounded-xl font-bold shadow-xl shadow-lime-400/20 transition-all active:scale-95 min-h-[48px]"
+                                        >
+                                            {userCredits < 1
+                                                ? "Sin créditos suficientes"
+                                                : selectedClass.bookedCount >= selectedClass.capacity
+                                                    ? "Clase llena"
+                                                    : "Reservar clase (1 crédito)"}
+                                        </button>
+                                        {userCredits < 1 && (
+                                            <p className="text-xs text-red-400 text-center mt-2">
+                                                <Link to="/dashboard/packages" className="underline">Comprar más créditos →</Link>
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }
@@ -909,26 +1386,26 @@ function SmartHero({
         const minsLeft = Math.max(0, Math.floor(((startMs - Date.now()) % (1000 * 60 * 60)) / (1000 * 60)));
 
         return (
-            <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-700 rounded-2xl p-8 text-white shadow-xl relative overflow-hidden">
+            <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-700 rounded-2xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/3" />
                 <div className="relative z-10">
                     <p className="text-blue-200 text-sm font-medium uppercase tracking-wider">Tu próxima clase</p>
-                    <h2 className="text-3xl font-black mt-2">{nextClass.name}</h2>
-                    <p className="text-blue-100 mt-1">con {nextClass.instructor} • {nextClass.location}</p>
-                    <div className="flex items-center gap-6 mt-6">
-                        <div className="bg-white/10 backdrop-blur-sm rounded-xl px-5 py-3 text-center">
+                    <h2 className="text-2xl md:text-3xl font-black mt-2 leading-tight">{nextClass.name}</h2>
+                    <p className="text-blue-100 mt-1 text-sm">con {nextClass.instructor} • {nextClass.location}</p>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-4 mt-6">
+                        <div className="bg-white/10 backdrop-blur-sm rounded-xl px-5 py-3 text-center w-fit">
                             <p className="text-3xl font-black">{hoursLeft}h {minsLeft}m</p>
                             <p className="text-blue-200 text-xs mt-1">para tu clase</p>
                         </div>
-                        <div className="flex gap-3">
+                        <div className="flex flex-col sm:flex-row gap-3">
                             <Link to="/dashboard/schedule"
-                                className="bg-white text-blue-600 px-5 py-3 rounded-xl font-bold text-sm hover:bg-blue-50 transition-all hover:scale-105 active:scale-95">
+                                className="flex items-center justify-center bg-white text-blue-600 px-5 py-3 rounded-xl font-bold text-sm active:scale-95 transition-all min-h-[44px]">
                                 Ver detalles
                             </Link>
                             <fetcher.Form method="post">
                                 <input type="hidden" name="intent" value="quick_buy" />
                                 <button type="submit"
-                                    className="bg-amber-400 text-amber-900 px-5 py-3 rounded-xl font-bold text-sm hover:bg-amber-300 transition-all hover:scale-105 active:scale-95 flex items-center gap-2">
+                                    className="w-full sm:w-auto bg-amber-400 text-amber-900 px-5 py-3 rounded-xl font-bold text-sm active:scale-95 transition-all flex items-center justify-center gap-2 min-h-[44px]">
                                     <Coffee className="w-4 h-4" />
                                     Pre-ordenar batido
                                 </button>
@@ -1043,8 +1520,9 @@ const CLASS_COLORS: Record<ClassType, { bg: string; text: string; dot: string }>
 
 // ─── Main Component ──────────────────────────────────────────────
 export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
-    const { gymContext, profile, userState, nextClass, streak, classesMonth, gymOccupancy, radarStats, initialPrs, initialBodyStats, quickBuy, recentActivity, classes } = loaderData;
+    const { gymContext, profile, userState, nextClass, streak, classesMonth, gymOccupancy, radarStats, initialPrs, initialBodyStats, quickBuy, recentActivity, classes, registeredEventIds = [], upcomingItems = [], stravaEnabled = false, stravaConnected = false, stravaActivities = [], stravaStats = { weeklyMinutes: 0, totalMinutes: 0, avgHR: 0 }, stravaParam } = loaderData;
     const brandColor = gymContext?.brandColor || "#7c3aed";
+    const th = useDashboardThemeHook();
     const fetcher = useFetcher();
     const [prs, setPrs] = useState(initialPrs);
     const [selectedExercise, setSelectedExercise] = useState("");
@@ -1179,7 +1657,14 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
     };
     const occ = occupancyConfig[gymOccupancy];
 
-    const weakest = Object.entries(radarStats).sort((a, b) => a[1] - b[1])[0];
+    // Boost Cardio + Resistencia radar axes when Strava activities exist outside gym
+    const enrichedRadar = { ...radarStats };
+    if (stravaConnected && stravaStats.totalMinutes > 0) {
+        const cardioBoost = Math.min(20, Math.round((stravaStats.totalMinutes / 60) * 2));
+        enrichedRadar.Cardio     = Math.min(100, enrichedRadar.Cardio + cardioBoost);
+        enrichedRadar.Resistencia = Math.min(100, enrichedRadar.Resistencia + Math.round(cardioBoost * 0.6));
+    }
+    const weakest = Object.entries(enrichedRadar).sort((a, b) => a[1] - b[1])[0];
     const classSuggestions: Record<string, string> = {
         Cardio: "Spinning", Fuerza: "CrossFit Fundamentals", Flexibilidad: "Yoga Flow",
         Mente: "Yoga Flow", Resistencia: "HIIT Morning",
@@ -1193,45 +1678,45 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="text-2xl md:text-3xl font-bold flex flex-wrap gap-x-2 gap-y-0">
-                        <span style={{ color: brandColor }}>Good Morning,</span>
-                        <span className="text-white break-all">{firstName}</span>
+                        <span className={th.title}>¡Hola,</span>
+                        <span className={`${th.title} break-all`}>{firstName}</span>
                     </h1>
-                    <p className="text-white/60 mt-1 text-sm md:text-base">Let's do some workout today...</p>
+                    <p className={`${th.muted} mt-1 text-sm md:text-base`}>¡Hoy es un gran día para entrenar!</p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <Link to="/dashboard/schedule" className="relative p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 transition-all" title="View class schedule">
-                        <Calendar className="w-5 h-5 text-white" />
+                    <Link to="/dashboard/schedule" className={`relative p-3 ${th.surface} ${th.cardHover} rounded-xl border ${th.border} transition-all`} title="Ver agenda de clases">
+                        <Calendar className={`w-5 h-5 ${th.title}`} />
                         <div className="absolute -top-1 -right-1 w-2 h-2 bg-lime-400 rounded-full animate-pulse" />
                     </Link>
                 </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-3 gap-4">
-                {/* Water Intake */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 hover:bg-white/10 transition-all">
+                {/* Clases este mes */}
+                <div className={`${th.card} backdrop-blur-md rounded-2xl p-5 ${th.cardHover} transition-all`}>
                     <div className="flex items-center gap-2 mb-3">
                         <Droplet className="w-5 h-5 text-blue-400" />
                     </div>
-                    <div className="text-3xl font-bold text-white mb-1">{classesMonth}</div>
-                    <div className="text-white/60 text-sm">Classes this month</div>
+                    <div className={`text-3xl font-bold ${th.title} mb-1`}>{classesMonth}</div>
+                    <div className={`${th.muted} text-sm`}>Clases este mes</div>
                 </div>
 
-                {/* Calories */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 hover:bg-white/10 transition-all">
+                {/* Racha */}
+                <div className={`${th.card} backdrop-blur-md rounded-2xl p-5 ${th.cardHover} transition-all`}>
                     <div className="flex items-center gap-2 mb-3">
                         <Flame className="w-5 h-5 text-orange-400" />
                     </div>
-                    <div className="text-3xl font-bold text-white mb-1">{streak}</div>
-                    <div className="text-white/60 text-sm">Day Streak</div>
+                    <div className={`text-3xl font-bold ${th.title} mb-1`}>{streak}</div>
+                    <div className={`${th.muted} text-sm`}>Racha de días</div>
                 </div>
 
-                {/* Heart Rate */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-5 hover:bg-white/10 transition-all">
+                {/* Créditos */}
+                <div className={`${th.card} backdrop-blur-md rounded-2xl p-5 ${th.cardHover} transition-all`}>
                     <div className="flex items-center gap-2 mb-3">
                         <Heart className="w-5 h-5 text-red-400" />
                     </div>
-                    <div className="text-3xl font-bold text-white mb-1">{profile.credits}</div>
-                    <div className="text-white/60 text-sm">Credits available</div>
+                    <div className={`text-3xl font-bold ${th.title} mb-1`}>{profile.credits}</div>
+                    <div className={`${th.muted} text-sm`}>Créditos disponibles</div>
                 </div>
             </div>
 
@@ -1240,8 +1725,8 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                 <div className="flex items-center gap-3">
                     <div className={`w-3 h-3 rounded-full ${occ.color} animate-pulse`} />
                     <div>
-                        <p className={`text-sm font-semibold ${occ.text}`}>Gym Traffic: {occ.label}</p>
-                        <p className="text-xs text-white/40">Connected to access turnstiles</p>
+                        <p className={`text-sm font-semibold ${occ.text}`}>Tráfico en el gym: {occ.label}</p>
+                        <p className={`text-xs ${th.faint}`}>Conectado a torniquetes de acceso</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1251,49 +1736,24 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                 </div>
             </div>
 
-            {/* Next Class Block (Dedicated Section) */}
-            {nextClass.id !== "none" && (
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 relative overflow-hidden group hover:bg-white/10 transition-all">
-                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-all">
-                        <Rocket className="w-24 h-24 text-lime-400 -rotate-12" />
-                    </div>
-                    <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                        <div className="space-y-2">
-                            <div className="flex items-center gap-2 text-lime-400 font-bold text-xs uppercase tracking-tighter bg-lime-400/10 w-fit px-2 py-1 rounded-lg">
-                                <Star className="w-3 h-3 fill-lime-400" />
-                                Próxima Clase Reservada
-                            </div>
-                            <h2 className="text-3xl font-black text-white">{nextClass.name}</h2>
-                            <div className="flex flex-wrap gap-4 text-white/60">
-                                <div className="flex items-center gap-2">
-                                    <Clock className="w-4 h-4 text-lime-400" />
-                                    <span className="text-sm font-medium">
-                                        {new Date(nextClass.startTime).toLocaleString("es-MX", {
-                                            weekday: "long",
-                                            day: "numeric",
-                                            month: "long",
-                                            hour: "2-digit",
-                                            minute: "2-digit",
-                                        })}
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <MapPin className="w-4 h-4 text-blue-400" />
-                                    <span className="text-sm">{nextClass.location}</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Users className="w-4 h-4 text-purple-400" />
-                                    <span className="text-sm">con {nextClass.instructor}</span>
-                                </div>
-                            </div>
+            {/* Próximas reservas — carrusel en móvil, stack en desktop */}
+            {(upcomingItems as any[]).length > 0 && (
+                <>
+                    {/* Mobile: scroll horizontal */}
+                    <div className="md:hidden -mx-4 px-4">
+                        <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none">
+                            {(upcomingItems as any[]).map((item, i) => (
+                                <UpcomingItemCard key={item.id + i} item={item} index={i} th={th} />
+                            ))}
                         </div>
-                        <Link to="/dashboard/schedule" 
-                            className="bg-lime-400 text-slate-900 px-6 py-3 rounded-xl font-bold hover:bg-lime-500 transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-lime-400/20">
-                            Ver detalles de la clase
-                            <ArrowRight className="w-4 h-4" />
-                        </Link>
                     </div>
-                </div>
+                    {/* Desktop: stack vertical */}
+                    <div className="hidden md:flex flex-col gap-3">
+                        {(upcomingItems as any[]).map((item, i) => (
+                            <UpcomingItemCard key={item.id + i} item={item} index={i} th={th} />
+                        ))}
+                    </div>
+                </>
             )}
 
             {/* Next Class / Smart Hero */}
@@ -1319,6 +1779,8 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                     fetcher.submit(fd, { method: "post" });
                 }}
                 userCredits={profile.credits ?? 0}
+                th={th}
+                registeredEventIds={registeredEventIds as string[]}
             />
 
             {/* Booking Confirmation Popup */}
@@ -1335,15 +1797,15 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
             {/* Progress Section */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Workout Progress Card */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6">
+                <div className={`${th.card} backdrop-blur-md rounded-2xl p-6`}>
                     <div className="flex items-center justify-between mb-6">
                         <div>
-                            <h2 className="text-xl font-bold text-white mb-1">Progress</h2>
-                            <p className="text-white/60 text-sm">Your fitness journey</p>
+                            <h2 className={`text-xl font-bold ${th.title} mb-1`}>Progreso</h2>
+                            <p className={`${th.muted} text-sm`}>Tu trayectoria fitness</p>
                         </div>
-                        <Link to="/dashboard/schedule"
-                            className="text-lime-400 hover:text-lime-300 text-sm font-medium flex items-center gap-1">
-                            View All <ArrowRight className="w-4 h-4" />
+                        <Link to={stravaConnected ? "/dashboard/progreso" : "/dashboard/schedule"}
+                            className="text-lime-500 hover:text-lime-400 text-sm font-medium flex items-center gap-1">
+                            {stravaConnected ? "Ver progreso" : "Ver agenda"} <ArrowRight className="w-4 h-4" />
                         </Link>
                     </div>
 
@@ -1351,57 +1813,125 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                     <div className="space-y-4">
                         <div>
                             <div className="flex items-center justify-between mb-2">
-                                <span className="text-white/80 text-sm font-medium">Weekly distance</span>
-                                <span className="text-white font-semibold">{classesMonth} kms</span>
+                                <span className={`${th.body} text-sm font-medium`}>Actividad semanal</span>
+                                <span className={`${th.title} font-semibold`}>
+                                    {stravaConnected ? `${stravaStats.weeklyMinutes} min` : `${classesMonth} clases`}
+                                </span>
                             </div>
-                            <div className="w-full bg-white/10 rounded-full h-2">
-                                <div className="bg-gradient-to-r from-lime-400 to-emerald-500 h-2 rounded-full" style={{ width: '56%' }} />
-                            </div>
-                        </div>
-
-                        <div>
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-white/80 text-sm font-medium">Total distance covered</span>
-                                <span className="text-white font-semibold">{streak * 10} kms</span>
-                            </div>
-                            <div className="w-full bg-white/10 rounded-full h-2">
-                                <div className="bg-gradient-to-r from-blue-400 to-indigo-500 h-2 rounded-full" style={{ width: '73%' }} />
+                            <div className={`w-full ${th.track} rounded-full h-2`}>
+                                <div className="bg-gradient-to-r from-lime-400 to-emerald-500 h-2 rounded-full transition-all duration-700"
+                                    style={{ width: stravaConnected ? `${Math.min(100, (stravaStats.weeklyMinutes / 300) * 100)}%` : `${Math.min(100, (classesMonth / 20) * 100)}%` }} />
                             </div>
                         </div>
 
                         <div>
                             <div className="flex items-center justify-between mb-2">
-                                <span className="text-white/80 text-sm font-medium">Cardio offline</span>
-                                <span className="text-white font-semibold">10 hrs</span>
+                                <span className={`${th.body} text-sm font-medium`}>Tiempo total acumulado</span>
+                                <span className={`${th.title} font-semibold`}>
+                                    {stravaConnected ? `${Math.round(stravaStats.totalMinutes / 60)} hrs` : `${streak} días`}
+                                </span>
                             </div>
-                            <div className="w-full bg-white/10 rounded-full h-2">
-                                <div className="bg-gradient-to-r from-orange-400 to-rose-500 h-2 rounded-full" style={{ width: '33%' }} />
+                            <div className={`w-full ${th.track} rounded-full h-2`}>
+                                <div className="bg-gradient-to-r from-blue-400 to-indigo-500 h-2 rounded-full transition-all duration-700"
+                                    style={{ width: stravaConnected ? `${Math.min(100, (stravaStats.totalMinutes / 600) * 100)}%` : `${Math.min(100, (streak / 30) * 100)}%` }} />
+                            </div>
+                        </div>
+
+                        <div>
+                            <div className="flex items-center justify-between mb-2">
+                                <span className={`${th.body} text-sm font-medium`}>
+                                    {stravaConnected && stravaStats.avgHR > 0 ? "Frec. cardíaca promedio" : "Cardio fuera del gym"}
+                                </span>
+                                <span className={`${th.title} font-semibold`}>
+                                    {stravaConnected && stravaStats.avgHR > 0
+                                        ? `${stravaStats.avgHR} bpm`
+                                        : stravaConnected
+                                            ? `${Math.round(stravaStats.totalMinutes / 60)} hrs`
+                                            : "—"}
+                                </span>
+                            </div>
+                            <div className={`w-full ${th.track} rounded-full h-2`}>
+                                <div className="bg-gradient-to-r from-orange-400 to-rose-500 h-2 rounded-full transition-all duration-700"
+                                    style={{ width: stravaConnected && stravaStats.avgHR > 0 ? `${Math.min(100, ((stravaStats.avgHR - 60) / 120) * 100)}%` : stravaConnected ? `${Math.min(100, (stravaStats.totalMinutes / 300) * 100)}%` : '0%' }} />
                             </div>
                         </div>
                     </div>
 
-                    {/* Character Illustration Placeholder */}
-                    <div className="mt-6 flex items-center justify-between p-4 bg-[#FC4C02]/10 border border-[#FC4C02]/20 rounded-xl group hover:bg-[#FC4C02]/20 transition-all pointer-events-auto">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-[#FC4C02] p-2 rounded-lg group-hover:scale-110 transition-transform">
-                                <Activity className="w-5 h-5 text-white" />
-                            </div>
-                            <div>
-                                <p className="text-white font-bold text-sm">Strava Sync</p>
-                                <p className="text-white/40 text-[10px] uppercase font-bold tracking-wider">Conectar cuenta</p>
-                            </div>
+                    {/* Strava Widget */}
+                    {stravaEnabled && (
+                        <div className="mt-6 pointer-events-auto">
+                            {!stravaConnected ? (
+                                /* ── Not connected: CTA ── */
+                                <div className="flex items-center justify-between p-4 bg-[#FC4C02]/10 border border-[#FC4C02]/20 rounded-xl group hover:bg-[#FC4C02]/20 transition-all">
+                                    <div className="flex items-center gap-3">
+                                        <div className="bg-[#FC4C02] p-2 rounded-lg group-hover:scale-110 transition-transform">
+                                            <Activity className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <p className={`${th.title} font-bold text-sm`}>Strava Sync</p>
+                                            <p className={`${th.faint} text-[10px] uppercase font-bold tracking-wider`}>Conectar cuenta</p>
+                                        </div>
+                                    </div>
+                                    <Link
+                                        to="/dashboard/strava/connect"
+                                        className="bg-[#FC4C02] text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-[#FC4C02]/90 transition-all shadow-lg shadow-[#FC4C02]/20"
+                                    >
+                                        Conectar
+                                    </Link>
+                                </div>
+                            ) : (
+                                /* ── Connected: activity list ── */
+                                <div className="p-4 bg-[#FC4C02]/10 border border-[#FC4C02]/20 rounded-xl space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <div className="bg-[#FC4C02] p-1.5 rounded-lg">
+                                                <Activity className="w-4 h-4 text-white" />
+                                            </div>
+                                            <p className={`${th.title} font-bold text-sm`}>Strava Sync</p>
+                                        </div>
+                                        <span className="text-[10px] text-[#FC4C02] font-bold uppercase tracking-wider">Conectado</span>
+                                    </div>
+
+                                    {stravaActivities.length === 0 ? (
+                                        <p className={`${th.muted} text-xs text-center py-2`}>Sin actividades recientes</p>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {stravaActivities.map((act: any) => (
+                                                <div key={act.strava_activity_id} className="flex items-center justify-between py-2 border-b border-[#FC4C02]/10 last:border-0">
+                                                    <div className="min-w-0">
+                                                        <p className={`${th.title} text-xs font-semibold truncate max-w-[130px]`}>{act.name}</p>
+                                                        <p className={`${th.muted} text-[10px]`}>
+                                                            {new Date(act.start_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
+                                                            {" · "}
+                                                            {Math.round(act.moving_time / 60)} min
+                                                        </p>
+                                                    </div>
+                                                    <div className="text-right shrink-0 ml-2 space-y-0.5">
+                                                        {act.calories != null && (
+                                                            <p className="text-[10px] text-[#FC4C02] font-bold">{Math.round(act.calories)} kcal</p>
+                                                        )}
+                                                        {act.has_heartrate && act.average_heartrate != null && (
+                                                            <p className={`${th.muted} text-[10px] flex items-center gap-0.5 justify-end`}>
+                                                                <Heart className="w-2.5 h-2.5 text-red-400" />
+                                                                {Math.round(act.average_heartrate)} bpm
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
-                        <button className="bg-[#FC4C02] text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-[#FC4C02]/90 transition-all shadow-lg shadow-[#FC4C02]/20">
-                            Conectar
-                        </button>
-                    </div>
+                    )}
                 </div>
 
                 {/* Attributes Radar Chart */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6">
-                    <h2 className="text-xl font-bold text-white mb-1">Your Attributes</h2>
-                    <p className="text-white/60 text-sm mb-4">Based on recent classes</p>
-                    <RadarChart stats={radarStats} />
+                <div className={`${th.card} backdrop-blur-md rounded-2xl p-6`}>
+                    <h2 className={`text-xl font-bold ${th.title} mb-1`}>Tus Atributos</h2>
+                    <p className={`${th.muted} text-sm mb-4`}>Basado en tus clases recientes</p>
+                    <RadarChart stats={enrichedRadar} />
                 </div>
             </div>
 
@@ -1411,13 +1941,13 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                 <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 flex flex-col">
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6">
                         <div>
-                            <h2 className="text-xl font-bold text-white mb-1">Personal Records</h2>
-                            <p className="text-white/60 text-sm">Your best registered marks</p>
+                            <h2 className="text-xl font-bold text-white mb-1">Récords Personales</h2>
+                            <p className="text-white/60 text-sm">Tus mejores marcas registradas</p>
                         </div>
                         <div className="flex items-center gap-2 w-full sm:w-auto">
                             <select value={selectedExercise} onChange={(e) => setSelectedExercise(e.target.value)}
                                 className="flex-1 sm:flex-initial bg-white/5 border border-white/10 text-white text-sm rounded-xl focus:ring-lime-400 focus:border-lime-400 block p-2 backdrop-blur-md">
-                                <option value="" className="bg-slate-800">Select exercise...</option>
+                                <option value="" className="bg-slate-800">Seleccionar ejercicio...</option>
                                 {PREDEFINED_EXERCISES.filter(opt => !prs.find(p => p.exercise === opt)).map(opt => (
                                     <option key={opt} value={opt} className="bg-slate-800">{opt}</option>
                                 ))}
@@ -1436,9 +1966,9 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                 <thead>
                                     <tr className="border-b border-white/10 text-white/60">
                                         <th className="font-semibold py-3 px-2">Exercise</th>
-                                        <th className="font-semibold py-3 px-2 text-right">Current PR</th>
-                                        <th className="font-semibold py-3 px-2 text-right">Previous PR</th>
-                                        <th className="font-semibold py-3 px-4">Recent History</th>
+                                        <th className="font-semibold py-3 px-2 text-right">PR Actual</th>
+                                        <th className="font-semibold py-3 px-2 text-right">PR Anterior</th>
+                                        <th className="font-semibold py-3 px-4">Historial</th>
                                         <th className="font-semibold py-3 px-2 text-right"></th>
                                     </tr>
                                 </thead>
@@ -1493,7 +2023,7 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                                                     <span key={i} className="bg-white/5 text-white/80 px-2 py-1 rounded-lg border border-white/10">
                                                                         {h.val}{pr.unit} <span className="text-white/40 ml-1 block text-[10px] uppercase text-center">{h.date}</span>
                                                                     </span>
-                                                                )) : <span className="text-white/40 italic">No records</span>}
+                                                                )) : <span className="text-white/40 italic">Sin registros</span>}
                                                             </div>
                                                         </td>
                                                         <td className="py-4 px-2 text-right">
@@ -1564,7 +2094,7 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                         ) : (
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div>
-                                                    <p className="text-[10px] text-white/40 uppercase font-bold tracking-wider mb-1">Current PR</p>
+                                                    <p className="text-[10px] text-white/40 uppercase font-bold tracking-wider mb-1">PR Actual</p>
                                                     <p className="text-xl font-black text-white">{pr.value} <span className="text-xs font-normal text-white/60">{pr.unit}</span></p>
                                                 </div>
                                                 <div className="text-right">
@@ -1575,13 +2105,13 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                                     </p>
                                                 </div>
                                                 <div className="col-span-2 pt-2 border-t border-white/5">
-                                                    <p className="text-[10px] text-white/40 uppercase font-bold tracking-wider mb-2">Recent History</p>
+                                                    <p className="text-[10px] text-white/40 uppercase font-bold tracking-wider mb-2">Historial</p>
                                                     <div className="flex flex-wrap gap-2">
                                                         {pr.history.length > 0 ? pr.history.map((h, i) => (
                                                             <span key={i} className="text-[11px] bg-white/5 text-white/60 px-2 py-1 rounded-md border border-white/5">
                                                                 {h.val}{pr.unit} <span className="text-[9px] ml-1">{h.date}</span>
                                                             </span>
-                                                        )) : <span className="text-white/20 italic text-xs">No records</span>}
+                                                        )) : <span className="text-white/20 italic text-xs">Sin registros</span>}
                                                     </div>
                                                 </div>
                                             </div>
@@ -1592,7 +2122,7 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                         </div>
                         {prs.length === 0 && (
                             <div className="text-center py-8 text-white/40 border-2 border-dashed border-white/10 rounded-xl mt-4">
-                                No exercises registered yet.
+                                Sin ejercicios registrados aún.
                             </div>
                         )}
                     </div>
@@ -1605,8 +2135,8 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                 <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 flex flex-col">
                     <div className="flex justify-between items-start mb-6">
                         <div>
-                            <h2 className="text-xl font-bold text-white mb-1">Body Measurements</h2>
-                            <p className="text-white/60 text-sm">Your physical progress history</p>
+                            <h2 className="text-xl font-bold text-white mb-1">Medidas Corporales</h2>
+                            <p className="text-white/60 text-sm">Tu historial de progreso físico</p>
                         </div>
                         <button onClick={() => setIsAddingBodyStat(!isAddingBodyStat)}
                             className={`p-2 rounded-xl transition-all flex items-center justify-center ${isAddingBodyStat ? "bg-white/10 text-white" : "bg-lime-400 hover:bg-lime-500 text-slate-900"}`}
@@ -1618,10 +2148,10 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                     <div className="flex-1">
                         {isAddingBodyStat && (
                             <div className="bg-white/5 border border-white/10 p-4 rounded-xl mb-6">
-                                <h3 className="text-sm font-semibold text-white mb-3">Register new measurements</h3>
+                                <h3 className="text-sm font-semibold text-white mb-3">Registrar nuevas medidas</h3>
                                 <div className="grid grid-cols-2 gap-4 mb-4">
                                     <div>
-                                        <label className="text-xs text-white/60 block mb-1">Weight (kg)</label>
+                                        <label className="text-xs text-white/60 block mb-1">Peso (kg)</label>
                                         <div className="relative">
                                             <Scale className="w-4 h-4 text-white/40 absolute left-2.5 top-2" />
                                             <input type="number" value={newWeight} onChange={(e) => setNewWeight(e.target.value)}
@@ -1630,7 +2160,7 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                         </div>
                                     </div>
                                     <div>
-                                        <label className="text-xs text-white/60 block mb-1">Height (m)</label>
+                                        <label className="text-xs text-white/60 block mb-1">Altura (m)</label>
                                         <div className="relative">
                                             <Ruler className="w-4 h-4 text-white/40 absolute left-2.5 top-2" />
                                             <input type="number" value={newHeight} step="0.01" onChange={(e) => setNewHeight(e.target.value)}
@@ -1641,12 +2171,12 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                 </div>
                                 <div className="flex justify-end gap-2">
                                     <button onClick={() => { setIsAddingBodyStat(false); setNewWeight(""); setNewHeight(""); }}
-                                        className="px-3 py-1.5 text-sm bg-white/10 text-white border border-white/20 rounded-lg hover:bg-white/20">
-                                        Cancel
+                                        className="px-3 py-1.5 text-sm bg-white/10 text-white border border-white/20 rounded-lg hover:bg-white/20 min-h-[44px]">
+                                        Cancelar
                                     </button>
                                     <button onClick={handleAddBodyStat} disabled={!newWeight && !newHeight}
-                                        className="px-3 py-1.5 text-sm bg-lime-400 text-slate-900 font-medium rounded-lg hover:bg-lime-500 disabled:opacity-50">
-                                        Save
+                                        className="px-3 py-1.5 text-sm bg-lime-400 text-slate-900 font-medium rounded-lg hover:bg-lime-500 disabled:opacity-50 min-h-[44px]">
+                                        Guardar
                                     </button>
                                 </div>
                             </div>
@@ -1658,17 +2188,17 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                                     <div className="p-4 bg-white/5 rounded-xl border border-white/10 flex flex-col items-center justify-center">
                                         <Scale className="w-6 h-6 text-lime-400 mb-2" />
                                         <span className="text-2xl font-black text-white">{bodyStats[0].weight} <span className="text-sm font-medium text-white/60">kg</span></span>
-                                        <span className="text-xs text-white/40 mt-1">Last weight</span>
+                                        <span className="text-xs text-white/40 mt-1">Último peso</span>
                                     </div>
                                     <div className="p-4 bg-white/5 rounded-xl border border-white/10 flex flex-col items-center justify-center">
                                         <Ruler className="w-6 h-6 text-lime-400 mb-2" />
                                         <span className="text-2xl font-black text-white">{bodyStats[0].height} <span className="text-sm font-medium text-white/60">m</span></span>
-                                        <span className="text-xs text-white/40 mt-1">Height</span>
+                                        <span className="text-xs text-white/40 mt-1">Altura</span>
                                     </div>
                                 </div>
 
                                 <div className="space-y-3">
-                                    <h3 className="text-sm font-semibold text-white">History</h3>
+                                    <h3 className="text-sm font-semibold text-white">Historial</h3>
                                     <div className="divide-y divide-white/5 border border-white/10 bg-white/5 rounded-xl">
                                         {bodyStats.map((stat, i) => {
                                             const prevStat = bodyStats[i + 1];
@@ -1694,18 +2224,18 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                             </>
                         ) : (
                             <div className="text-center py-8 text-white/40 border-2 border-dashed border-white/10 rounded-xl">
-                                No measurements registered. Add your first one.
+                                Sin medidas registradas. Agrega la primera.
                             </div>
                         )}
                     </div>
                 </div>
 
                 {/* Recent Activity */}
-                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden h-fit">
+                <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden h-fit text-white">
                     <div className="p-6 border-b border-white/10 flex justify-between items-center">
-                        <h2 className="text-xl font-bold text-white">Recent Activity</h2>
+                        <h2 className="text-xl font-bold text-white">Actividad Reciente</h2>
                         <Link to="/dashboard/schedule" className="text-sm text-lime-400 hover:text-lime-300 font-medium flex items-center gap-1">
-                            View schedule <ArrowRight className="w-4 h-4" />
+                            Ver agenda <ArrowRight className="w-4 h-4" />
                         </Link>
                     </div>
                     {recentActivity.length > 0 ? (

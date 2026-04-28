@@ -1,7 +1,13 @@
 // app/routes/dashboard/profile.tsx
 // Member profile – personal info, wallet, membership, history (REAL DATA from Supabase).
 import type { Route } from "./+types/profile";
-import { Wallet, Plus, CreditCard, Shield } from "lucide-react";
+import { Wallet, Plus, CreditCard, Shield, LogOut } from "lucide-react";
+import { lazy, Suspense } from "react";
+
+// Lazy load QR component — avoids SSR issues with canvas
+const QRCodeSVG = lazy(() =>
+    import("qrcode.react").then(m => ({ default: m.QRCodeSVG }))
+);
 
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAuth } = await import("~/services/gym.server");
@@ -48,15 +54,25 @@ export default function Profile({ loaderData }: Route.ComponentProps) {
 
             {/* QR Access Code */}
             <div className="bg-white/5 border border-white/10 rounded-xl p-6 text-center shadow-sm">
-                <h2 className="text-lg font-semibold text-white mb-4">Código de acceso</h2>
-                <div className="inline-flex items-center justify-center w-48 h-48 bg-white/5 rounded-xl border-2 border-dashed border-white/10">
-                    <p className="text-white/60 text-xs break-all p-4 font-mono">
-                        {qrData}
-                    </p>
+                <h2 className="text-lg font-semibold text-white mb-4">Código de acceso QR</h2>
+                <div className="inline-flex items-center justify-center p-3 bg-white rounded-2xl">
+                    <Suspense fallback={
+                        <div className="w-48 h-48 flex items-center justify-center text-gray-400 text-xs">
+                            Cargando QR…
+                        </div>
+                    }>
+                        <QRCodeSVG
+                            value={qrData}
+                            size={192}
+                            level="M"
+                            marginSize={1}
+                        />
+                    </Suspense>
                 </div>
                 <p className="text-sm text-white/40 mt-3">
                     Muestra este código al entrar al gym
                 </p>
+                <p className="text-xs text-white/20 mt-1 font-mono">{qrData}</p>
             </div>
 
             {/* Personal Info */}
@@ -162,6 +178,19 @@ export default function Profile({ loaderData }: Route.ComponentProps) {
                         Sin historial de pagos.
                     </div>
                 )}
+            </div>
+        {/* Account Settings */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-white mb-4">Ajustes de cuenta</h2>
+                <form action="/auth/logout" method="post">
+                    <button
+                        type="submit"
+                        className="w-full sm:w-auto px-6 py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                    >
+                        <LogOut className="w-5 h-5" />
+                        Cerrar sesión
+                    </button>
+                </form>
             </div>
         </div>
     );

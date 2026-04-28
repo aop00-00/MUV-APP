@@ -42,6 +42,10 @@ interface ReadOnlySeatMapProps {
     studioType?: string | null;
 }
 
+function displayName(raw: string) {
+    return raw.replace(/__[a-f0-9]{6}$/i, "");
+}
+
 export function ReadOnlySeatMap({
     resources,
     bookedIds,
@@ -62,94 +66,96 @@ export function ReadOnlySeatMap({
     const byPos = new Map<string, SeatResource>();
     for (const r of active) byPos.set(`${r.position_row},${r.position_col}`, r);
 
+    // Seat size: 36px on mobile, 40px on larger screens (via CSS var)
+    const cols = maxCol + 1;
+
     return (
         <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            {/* Legend — wrap on tiny screens */}
+            <div className="flex flex-wrap items-center justify-between gap-y-2">
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
                     Selecciona tu {config.label}
                 </p>
-                <div className="flex items-center gap-3 text-[10px] text-gray-400 font-medium">
+                <div className="flex items-center gap-2 text-[10px] text-gray-400 font-medium flex-wrap">
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded border-2 inline-block" style={{ borderColor: brandColor, backgroundColor: `${brandColor}20` }} /> Disponible
+                        <span className="w-3 h-3 rounded border-2 inline-block shrink-0" style={{ borderColor: brandColor, backgroundColor: `${brandColor}20` }} /> Disponible
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded bg-gray-200 border border-gray-300 inline-block" /> Ocupado
+                        <span className="w-3 h-3 rounded bg-gray-200 border border-gray-300 inline-block shrink-0" /> Ocupado
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded inline-block" style={{ backgroundColor: brandColor }} /> Tu lugar
+                        <span className="w-3 h-3 rounded inline-block shrink-0" style={{ backgroundColor: brandColor }} /> Tu lugar
                     </span>
                 </div>
             </div>
 
-            {/* Instructor area */}
-            <div className="w-full flex justify-center mb-2">
-                <div className="bg-gray-100 text-gray-400 text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 rounded-lg">
+            {/* Instructor bar */}
+            <div className="w-full flex justify-center">
+                <div className="bg-gray-100 text-gray-400 text-[10px] font-bold uppercase tracking-widest px-6 py-1 rounded-lg">
                     FRENTE / INSTRUCTOR
                 </div>
             </div>
 
-            {/* Grid */}
-            <div
-                className="grid gap-2 mx-auto"
-                style={{
-                    gridTemplateColumns: `repeat(${maxCol + 1}, minmax(0, 1fr))`,
-                    maxWidth: `${(maxCol + 1) * 56}px`,
-                }}
-            >
-                {Array.from({ length: maxRow + 1 }).map((_, row) =>
-                    Array.from({ length: maxCol + 1 }).map((_, col) => {
-                        const seat = byPos.get(`${row},${col}`);
-                        if (!seat) {
-                            return <div key={`${row}-${col}`} className="w-10 h-10" />;
-                        }
+            {/* Scrollable wrapper — prevents overflow on narrow screens */}
+            <div className="overflow-x-auto -mx-1 px-1 pb-1">
+                <div
+                    className="grid gap-1.5 mx-auto"
+                    style={{
+                        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                        width: `${cols * 44}px`,
+                        maxWidth: "100%",
+                    }}
+                >
+                    {Array.from({ length: maxRow + 1 }).map((_, row) =>
+                        Array.from({ length: cols }).map((_, col) => {
+                            const seat = byPos.get(`${row},${col}`);
+                            if (!seat) {
+                                return <div key={`${row}-${col}`} style={{ width: 40, height: 40 }} />;
+                            }
 
-                        const isBooked = bookedIds.includes(seat.id);
-                        const isSelected = seat.id === selectedId;
+                            const isBooked = bookedIds.includes(seat.id);
+                            const isSelected = seat.id === selectedId;
+                            const seatLabel = displayName(seat.name);
 
-                        return (
-                            <button
-                                key={seat.id}
-                                disabled={isBooked}
-                                onClick={() => onSelect(seat.id)}
-                                title={seat.name}
-                                className={`
-                                    w-10 h-10 rounded-lg flex flex-col items-center justify-center text-base
-                                    border-2 transition-all duration-150 relative group
-                                    ${isBooked
-                                        ? "bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed"
-                                        : isSelected
-                                            ? "scale-110 shadow-lg cursor-pointer text-white"
-                                            : "cursor-pointer hover:scale-105"
+                            return (
+                                <button
+                                    key={seat.id}
+                                    disabled={isBooked}
+                                    onClick={() => onSelect(seat.id)}
+                                    aria-label={seatLabel}
+                                    className={`
+                                        rounded-lg flex flex-col items-center justify-center
+                                        border-2 transition-all duration-150 touch-manipulation
+                                        min-w-[40px] min-h-[44px]
+                                        ${isBooked
+                                            ? "bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed"
+                                            : isSelected
+                                                ? "scale-105 shadow-lg cursor-pointer text-white"
+                                                : "cursor-pointer active:scale-95"
+                                        }
+                                    `}
+                                    style={
+                                        isSelected
+                                            ? { backgroundColor: brandColor, borderColor: brandColor }
+                                            : !isBooked
+                                                ? { borderColor: brandColor, backgroundColor: `${brandColor}15`, color: brandColor }
+                                                : {}
                                     }
-                                `}
-                                style={
-                                    isSelected
-                                        ? { backgroundColor: brandColor, borderColor: brandColor }
-                                        : !isBooked
-                                            ? { borderColor: brandColor, backgroundColor: `${brandColor}15`, color: brandColor }
-                                            : {}
-                                }
-                            >
-                                <span className="text-lg leading-none">{config.emoji}</span>
-                                <span className="text-[7px] font-bold leading-none mt-0.5 opacity-70">
-                                    {seat.name.replace(/\D/g, "")}
-                                </span>
-
-                                {/* Tooltip on hover */}
-                                {!isBooked && (
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-gray-900 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                                        {seat.name}
-                                    </div>
-                                )}
-                            </button>
-                        );
-                    })
-                )}
+                                >
+                                    <span className="text-base leading-none">{config.emoji}</span>
+                                    <span className="text-[7px] font-bold leading-none mt-0.5 opacity-70">
+                                        {seatLabel.replace(/\D/g, "")}
+                                    </span>
+                                </button>
+                            );
+                        })
+                    )}
+                </div>
             </div>
 
             {selectedId && (
                 <p className="text-center text-xs font-medium text-gray-600">
-                    Seleccionaste: <strong>{active.find(r => r.id === selectedId)?.name}</strong>
+                    Seleccionaste: <strong>{displayName(active.find(r => r.id === selectedId)?.name ?? "")}</strong>
                 </p>
             )}
         </div>
@@ -206,9 +212,9 @@ export function EditableSeatMap({
         const next = { ...g };
         const active = getActiveCells(next);
         active.forEach(([key], i) => {
-            // Only auto-name if still has default pattern or empty
             const cur = next[key].name;
-            const isDefault = !cur || /^(Bike|Reformer|Barra|Mat|Lugar) \d+$/.test(cur);
+            // Auto-name if empty or matches any label pattern (any language) followed by a number
+            const isDefault = !cur || /^.+ \d+$/.test(cur);
             if (isDefault) {
                 next[key] = { ...next[key], name: `${config.label} ${i + 1}` };
             }

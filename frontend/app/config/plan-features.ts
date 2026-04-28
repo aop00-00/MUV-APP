@@ -23,6 +23,7 @@ export interface PlanDefinition {
     crmEnabled?:       boolean;
     fitcoinsEnabled?:  boolean;
     cfdiEnabled?:      boolean;
+    stravaEnabled?:    boolean;
     reportHistoryDays?: number | null; // null = unlimited
 }
 
@@ -37,6 +38,7 @@ const EMPRENDEDOR_ROUTES = new Set([
     "/admin/planes",
     "/admin/pos",
     "/admin/studio",
+    "/admin/ubicaciones",
     "/admin/coaches",
     "/admin/pagos",
 ]);
@@ -89,6 +91,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         crmEnabled:       false,
         fitcoinsEnabled:  false,
         cfdiEnabled:      false,
+        stravaEnabled:    false,
     },
     starter: {
         label:          "Starter",
@@ -104,6 +107,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         crmEnabled:     false,
         fitcoinsEnabled: false,
         cfdiEnabled:    false,
+        stravaEnabled:  false,
     },
     pro: {
         label:          "Pro",
@@ -119,6 +123,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         crmEnabled:     true,
         fitcoinsEnabled: true,
         cfdiEnabled:    false,
+        stravaEnabled:  true,
     },
     elite: {
         label:          "Elite",
@@ -135,6 +140,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         crmEnabled:     true,
         fitcoinsEnabled: true,
         cfdiEnabled:    true,
+        stravaEnabled:  true,
     },
 };
 

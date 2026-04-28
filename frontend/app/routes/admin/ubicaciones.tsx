@@ -19,21 +19,46 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { createLocation, updateLocation, toggleLocation, deleteLocation } = await import("~/services/location.server");
+    const { createLocation, updateLocation, toggleLocation, deleteLocation, getGymLocations } = await import("~/services/location.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { PLAN_FEATURES } = await import("~/config/plan-features");
     const { gymId } = await requireGymAdmin(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
 
     if (intent === "create") {
-        await createLocation({
-            gymId,
-            name: formData.get("name") as string,
-            address: formData.get("address") as string,
-            city: formData.get("city") as string,
-            country: formData.get("country") as string,
-            phone: formData.get("phone") as string || null,
-            mapsUrl: formData.get("mapsUrl") as string || null,
-        });
+        // Enforce maxLocations plan limit before INSERT
+        const { data: gym } = await supabaseAdmin
+            .from("gyms")
+            .select("plan_id")
+            .eq("id", gymId)
+            .single();
+        const planId = (gym?.plan_id || "starter") as keyof typeof PLAN_FEATURES;
+        const planDef = PLAN_FEATURES[planId];
+        if (planDef?.maxLocations !== null && planDef?.maxLocations !== undefined) {
+            const existingLocations = await getGymLocations(gymId);
+            if (existingLocations.length >= planDef.maxLocations) {
+                return {
+                    success: false,
+                    intent,
+                    error: `Tu plan ${planDef.label} permite máximo ${planDef.maxLocations} sede${planDef.maxLocations === 1 ? "" : "s"}. Actualiza tu plan para agregar más.`,
+                };
+            }
+        }
+
+        try {
+            await createLocation({
+                gymId,
+                name: formData.get("name") as string,
+                address: formData.get("address") as string,
+                city: formData.get("city") as string,
+                country: formData.get("country") as string,
+                phone: formData.get("phone") as string || null,
+                mapsUrl: formData.get("mapsUrl") as string || null,
+            });
+        } catch (err: any) {
+            return { success: false, intent, error: err.message ?? "Error al crear la sede." };
+        }
         return { success: true, intent };
     }
 
@@ -75,9 +100,9 @@ export default function Ubicaciones({ loaderData }: Route.ComponentProps) {
     const [editId, setEditId] = useState<string | null>(null);
     const [form, setForm] = useState(EMPTY_FORM);
 
-    // Close modal after successful submission
+    // Close modal only on explicit success; keep open on error so user sees the message
     useEffect(() => {
-        if (fetcher.data?.success && fetcher.state === "idle") {
+        if (fetcher.state === "idle" && fetcher.data?.success === true) {
             setShowModal(false);
         }
     }, [fetcher.data, fetcher.state]);
@@ -219,9 +244,18 @@ export default function Ubicaciones({ loaderData }: Route.ComponentProps) {
                                 <input value={form.mapsUrl} onChange={e => setForm(f => ({ ...f, mapsUrl: e.target.value }))} placeholder="https://maps.google.com/..." className="w-full border border-white/[0.08] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-amber-400" />
                             </div>
                         </div>
+                        {fetcher.data?.error && (
+                            <div className="px-6 pb-2">
+                                <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-xl px-4 py-3">
+                                    {fetcher.data.error}
+                                </p>
+                            </div>
+                        )}
                         <div className="p-6 border-t border-white/5 flex gap-3">
                             <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 border border-white/[0.08] rounded-xl text-sm font-medium text-white/60 hover:bg-white/5">Cancelar</button>
-                            <button onClick={save} disabled={!form.name || !form.address} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">Guardar</button>
+                            <button onClick={save} disabled={!form.name || !form.address || fetcher.state !== "idle"} className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-white/20 disabled:text-white/40 text-black font-bold px-4 py-2.5 rounded-xl text-sm">
+                                {fetcher.state !== "idle" ? "Guardando…" : "Guardar"}
+                            </button>
                         </div>
                     </div>
                 </div>

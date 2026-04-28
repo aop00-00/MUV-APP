@@ -1,7 +1,7 @@
 // app/routes/admin/schedule.tsx
 // Admin – Weekly Calendar Grid + Live Class Attendance (Supabase).
 import type { Route } from "./+types/schedule";
-import { useFetcher, useRevalidator } from "react-router";
+import { useFetcher } from "react-router";
 import { useState, useMemo, useEffect } from "react";
 import { Plus, X, Check, UserMinus, UserPlus, Clock, Filter, ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid } from "lucide-react";
 import type { ClassSlot } from "~/services/booking.server";
@@ -34,17 +34,19 @@ function slotToCalendar(slot: ClassSlot): CalendarClass {
     const day = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon ... 6=Sun
     const durationHours = Math.max(1, (end.getTime() - start.getTime()) / 3600000);
 
+    const hexColor: string | null = (slot as any).color ?? null;
+
     return {
         id: slot.id,
         title: slot.title,
         day,
         hour: start.getHours(),
         duration: durationHours,
-        coach: (slot.coach as any)?.name ?? "Staff",
+        coach: (slot as any).coach_name ?? (slot.coach as any)?.full_name ?? (slot.coach as any)?.name ?? "Staff",
         capacity: slot.capacity,
         enrolled: slot.current_enrolled ?? 0,
         location: slot.location ?? "",
-        color: "bg-purple-600",
+        color: hexColor ?? "#7c3aed",
         isLive: false,
         type: "class",
         attendees: [],
@@ -57,13 +59,38 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { profile, gymId } = await requireGymAdmin(request);
     const { getClassesForGym } = await import("~/services/booking.server");
     const { getGymCoaches } = await import("~/services/coach.server");
-    const { getGymRooms } = await import("~/services/room.server");
-    const [classes, coaches, rooms] = await Promise.all([
+    const { getGymRooms, getGymClassTypes } = await import("~/services/room.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+
+    const [classes, coaches, rooms, classTypes] = await Promise.all([
         getClassesForGym(gymId),
         getGymCoaches(gymId),
         getGymRooms(gymId),
+        getGymClassTypes(gymId),
     ]);
-    return { classes, coaches, rooms };
+
+    // Fetch all confirmed bookings for these classes with member names
+    const classIds = classes.map((c: any) => c.id);
+    let bookingsByClass: Record<string, { id: string; name: string; checkedIn: boolean }[]> = {};
+    if (classIds.length > 0) {
+        const { data: bookings } = await supabaseAdmin
+            .from("bookings")
+            .select("id, user_id, class_id, status, profiles(full_name)")
+            .in("class_id", classIds)
+            .in("status", ["confirmed", "completed"]);
+
+        for (const b of bookings ?? []) {
+            const name = (b as any).profiles?.full_name ?? "Usuario";
+            if (!bookingsByClass[b.class_id]) bookingsByClass[b.class_id] = [];
+            bookingsByClass[b.class_id].push({
+                id: b.user_id,
+                name,
+                checkedIn: b.status === "completed",
+            });
+        }
+    }
+
+    return { classes, coaches, rooms, classTypes, bookingsByClass };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -74,35 +101,33 @@ export async function action({ request }: Route.ActionArgs) {
 
     if (intent === "create_class") {
         const { createClass } = await import("~/services/booking.server");
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const { checkResourceLimit, getUpgradeMessage } = await import("~/services/plan-limits.server");
+
+        const { data: gymData } = await supabaseAdmin.from("gyms").select("plan_id").eq("id", gymId).single();
+        const planId = (gymData?.plan_id || "emprendedor") as any;
+        const check = await checkResourceLimit(gymId, planId, "max_class_types");
+        if (!check.allowed) {
+            return {
+                success: false,
+                intent,
+                error: getUpgradeMessage("max_class_types", check.limit!, planId),
+            };
+        }
 
         const title = formData.get("title") as string;
+        const color = formData.get("color") as string || null;
         const coach_id = formData.get("coach_id") as string;
         const capacity = Number(formData.get("capacity") ?? 20);
         const location = formData.get("location") as string;
         const room_id = formData.get("room_id") as string;
-        const day = Number(formData.get("day")); // 0=Lun...5=Sáb
-        const startTimeStr = formData.get("start_time") as string; // "HH:MM"
-        const tzOffset = Number(formData.get("tz_offset") || 0); // Minutes
-        const currentWeekStart = new Date(formData.get("current_week_start") as string);
-
-        // Calculate the exact date for this class in the current visible week
-        // day 0 = Monday, day 5 = Saturday
-        const [hours, minutes] = startTimeStr.split(":").map(Number);
-        const targetDate = new Date(currentWeekStart);
-        targetDate.setDate(currentWeekStart.getDate() + day);
-        targetDate.setHours(hours, minutes, 0, 0);
-
-        // Apply TZ correction: If user is at UTC-6 (offset 360), 
-        // they want Local 10:00 AM, which is UTC 16:00 PM.
-        // targetDate is currently UTC 10:00 AM. We add 360 mins.
-        const correctedDate = new Date(targetDate.getTime() + (tzOffset * 60000));
-
-        const startDate = correctedDate.toISOString();
-        const endDate = new Date(correctedDate.getTime() + 3600000).toISOString(); // 1 hour duration
+        const startDate = formData.get("start_iso") as string;
+        const endDate = new Date(new Date(startDate).getTime() + 3600000).toISOString();
 
         await createClass({
             gymId,
             title,
+            color,
             coach_id,
             start_time: startDate,
             end_time: endDate,
@@ -151,14 +176,13 @@ export async function action({ request }: Route.ActionArgs) {
 
 // ─── Main Component ──────────────────────────────────────────────
 export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
-    const { classes: rawClasses, coaches, rooms } = loaderData;
+    const { classes: rawClasses, coaches, rooms, classTypes, bookingsByClass } = loaderData;
     const fetcher = useFetcher();
-    const revalidator = useRevalidator();
 
     // ── Navigation & Date State ──
     const [viewMode, setViewMode] = useState<"week" | "month">("week");
     const [weekOffset, setWeekOffset] = useState(0); // Offset in weeks from today
-    
+
     const today = new Date();
     const [viewYear, setViewYear] = useState(today.getFullYear());
     const [viewMonth, setViewMonth] = useState(today.getMonth());
@@ -184,15 +208,26 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
         return { weekDays: days, weekStart: start, weekEnd: end };
     }, [weekOffset]);
 
-    // Map Supabase rows to the grid shape
-    const events = useMemo(() => rawClasses.map(slotToCalendar), [rawClasses]);
+    // Map Supabase rows to the grid shape, injecting real attendees
+    const events = useMemo(() => rawClasses.map(slot => {
+        const cal = slotToCalendar(slot);
+        cal.attendees = bookingsByClass[slot.id] ?? [];
+        return cal;
+    }), [rawClasses, bookingsByClass]);
 
     const [selectedClass, setSelectedClass] = useState<CalendarClass | null>(null);
     const [showCreateForm, setShowCreateForm] = useState(false);
 
+    // Keep modal attendees in sync after loader revalidates
+    useEffect(() => {
+        if (!selectedClass) return;
+        const fresh = events.find(e => e.id === selectedClass.id);
+        if (fresh) setSelectedClass(fresh);
+    }, [events]);
+
     // Local form state for creation
     const [form, setForm] = useState({
-        title: "",
+        classTypeId: "",
         coach_id: "",
         capacity: 20,
         day: 0,
@@ -200,6 +235,7 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
         location: "",
         room_id: ""
     });
+    const [createError, setCreateError] = useState<string | null>(null);
 
     // Filters
     const [timeFilter, setTimeFilter] = useState<"all" | "am" | "pm">("all");
@@ -230,31 +266,42 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
         return list;
     }, [events, categoryFilter, viewMode, weekStart, weekEnd, rawClasses]);
 
-    // Close create form after successful submission and revalidate data
+    // Handle create result
     useEffect(() => {
-        if (fetcher.state === "idle" && fetcher.data?.success) {
-            if (fetcher.data?.intent === "create_class") {
-                setShowCreateForm(false);
-                setForm({ title: "", coach_id: "", capacity: 20, day: 0, start_time: "08:00", location: "", room_id: "" });
-            }
-            // Revalidate to fetch updated class list
-            revalidator.revalidate();
+        if (fetcher.state !== "idle" || fetcher.data?.intent !== "create_class") return;
+        if (fetcher.data?.success) {
+            setShowCreateForm(false);
+            setCreateError(null);
+            setForm({ classTypeId: "", coach_id: "", capacity: 20, day: 0, start_time: "08:00", location: "", room_id: "" });
+        } else if (fetcher.data?.error) {
+            setCreateError(fetcher.data.error as string);
         }
-    }, [fetcher.state, fetcher.data, revalidator]);
+    }, [fetcher.state, fetcher.data]);
 
     function handleCreate(e: React.FormEvent) {
         e.preventDefault();
+        setCreateError(null);
+
+        const selectedType = classTypes.find((ct: any) => ct.id === form.classTypeId);
+
+        const [h, m] = form.start_time.split(":").map(Number);
+        const targetDate = new Date(
+            weekStart.getFullYear(),
+            weekStart.getMonth(),
+            weekStart.getDate() + form.day,
+            h, m, 0, 0
+        );
+        const utcIso = targetDate.toISOString();
+
         const formData = new FormData();
         formData.set("intent", "create_class");
-        formData.set("title", form.title);
+        formData.set("title", selectedType?.name ?? form.classTypeId);
+        formData.set("color", selectedType?.color ?? "#7c3aed");
         formData.set("coach_id", form.coach_id);
         formData.set("capacity", String(form.capacity));
-        formData.set("day", String(form.day));
-        formData.set("start_time", form.start_time);
         formData.set("location", form.location);
         formData.set("room_id", form.room_id);
-        formData.set("tz_offset", String(new Date().getTimezoneOffset())); // Send client TZ
-        formData.set("current_week_start", weekStart.toISOString()); // Create in the visible week
+        formData.set("start_iso", utcIso);
         fetcher.submit(formData, { method: "post" });
     }
 
@@ -357,16 +404,38 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
             {showCreateForm && (
                 <div className="bg-white/5 border border-white/[0.08] rounded-xl p-6 shadow-sm animate-in fade-in slide-in-from-top-4 duration-200">
                     <h2 className="text-lg font-black text-white mb-4">Crear nueva clase</h2>
+
+                    {/* Plan limit error banner */}
+                    {createError && (
+                        <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/20 border border-red-500/40 text-red-300 text-sm flex items-start gap-2">
+                            <span className="mt-0.5 text-base">⚠</span>
+                            <div>
+                                <p className="font-semibold">Límite de plan alcanzado</p>
+                                <p className="text-xs mt-0.5 text-red-300/80">{createError} Para agregar más tipos, actualiza tu plan.</p>
+                            </div>
+                        </div>
+                    )}
+
                     <form onSubmit={handleCreate} className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1">Título</label>
-                            <input
-                                value={form.title}
-                                onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                            <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1">Tipo de sesión</label>
+                            <select
+                                value={form.classTypeId}
+                                onChange={e => {
+                                    const ct = classTypes.find((x: any) => x.id === e.target.value);
+                                    setForm(f => ({ ...f, classTypeId: e.target.value, capacity: ct ? f.capacity : f.capacity }));
+                                }}
                                 required
-                                className="w-full bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-400"
-                                placeholder="CrossFit, Yoga…"
-                            />
+                                className="w-full bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-400 text-white"
+                                style={{ backgroundColor: "#1e1e30", color: "#ffffff", colorScheme: "dark" }}
+                            >
+                                <option value="">Seleccionar tipo…</option>
+                                {classTypes.map((ct: any) => (
+                                    <option key={ct.id} value={ct.id}>
+                                        {ct.name} ({ct.duration}min)
+                                    </option>
+                                ))}
+                            </select>
                         </div>
                         <div>
                             <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1">Coach</label>
@@ -500,8 +569,8 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                                 {cls && (
                                                     <button
                                                         onClick={() => setSelectedClass(cls)}
-                                                        className={`w-full text-left text-[11px] rounded-lg p-2 ${cls.color} ${cls.color.includes('text') ? '' : 'text-white'} hover:opacity-90 transition-opacity relative shadow-sm`}
-                                                        style={{ minHeight: `${Math.max(cls.duration * 44, 40)}px` }}
+                                                        className="w-full text-left text-[11px] rounded-lg p-2 text-white hover:opacity-90 transition-opacity relative shadow-sm"
+                                                        style={{ backgroundColor: cls.color, minHeight: `${Math.max(cls.duration * 44, 40)}px` }}
                                                     >
                                                         <p className="font-bold leading-tight flex items-center gap-1">
                                                             {cls.type === 'event' && <span className="text-[10px] bg-black/20 px-1 py-0.5 rounded uppercase tracking-wider">Evento</span>}
@@ -572,7 +641,8 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                             <button
                                                 key={i}
                                                 onClick={() => setSelectedClass(cls)}
-                                                className={`w-full text-left text-[10px] rounded p-1 truncate cursor-pointer transition-opacity hover:opacity-80 ${cls.color} ${cls.color.includes('text') ? '' : 'text-white'} shadow-sm`}
+                                                className="w-full text-left text-[10px] rounded p-1 truncate cursor-pointer transition-opacity hover:opacity-80 text-white shadow-sm"
+                                                style={{ backgroundColor: cls.color }}
                                                 title={`${cls.title} a las ${cls.hour}:00`}
                                             >
                                                 <span className="font-semibold">{cls.hour}:00</span> {cls.title}
@@ -589,9 +659,9 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
             {/* ── Attendance Modal ─────────────────────────── */}
             {selectedClass && (
                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedClass(null)}>
-                    <div className="bg-white/5 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-[#f5f0e8] rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
                         {/* Modal Header */}
-                        <div className={`${selectedClass.color} ${selectedClass.color.includes('text') ? '' : 'text-white'} p-6 rounded-t-2xl`}>
+                        <div className="text-white p-6 rounded-t-2xl" style={{ backgroundColor: selectedClass.color }}>
                             <div className="flex items-center justify-between">
                                 <div>
                                     <div className="flex items-center gap-2">
@@ -611,7 +681,7 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                     <p className="text-white/80 text-sm mt-1">{selectedClass.coach} • {selectedClass.location}</p>
                                     <p className="text-white/80 text-sm">{DAYS[selectedClass.day]} {selectedClass.hour}:00 • {selectedClass.enrolled}/{selectedClass.capacity} inscritos</p>
                                 </div>
-                                <button onClick={() => setSelectedClass(null)} className="p-2 hover:bg-white/5/20 rounded-lg transition-colors">
+                                <button onClick={() => setSelectedClass(null)} className="p-2 hover:bg-black/10 rounded-lg transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
@@ -619,19 +689,18 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
 
                         {/* Attendee List */}
                         <div className="p-6">
-                            <h3 className="font-semibold text-white mb-4">Pase de lista</h3>
+                            <h3 className="font-semibold text-stone-800 mb-4">Pase de lista</h3>
                             {selectedClass.attendees.length > 0 ? (
                                 <div className="space-y-2">
                                     {selectedClass.attendees.map((a) => (
-                                        <div key={a.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                                        <div key={a.id} className="flex items-center justify-between p-3 bg-[#ebe5d8] rounded-lg">
                                             <div className="flex items-center gap-3">
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${a.checkedIn ? "bg-green-100 text-green-700" : "bg-white/5/20 text-white/50"
-                                                    }`}>
+                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${a.checkedIn ? "bg-green-600 text-white" : "bg-stone-300 text-stone-700"}`}>
                                                     {a.checkedIn ? <Check className="w-4 h-4" /> : a.name[0]}
                                                 </div>
                                                 <div>
-                                                    <p className="text-sm font-medium text-white">{a.name}</p>
-                                                    <p className="text-xs text-white/40">{a.checkedIn ? "✓ Check-in" : "Pendiente"}</p>
+                                                    <p className="text-sm font-medium text-stone-900">{a.name}</p>
+                                                    <p className="text-xs text-stone-500">{a.checkedIn ? "✓ Check-in" : "Pendiente"}</p>
                                                 </div>
                                             </div>
                                             {!a.checkedIn && (
@@ -648,7 +717,7 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                                         <input type="hidden" name="intent" value="no_show" />
                                                         <input type="hidden" name="userId" value={a.id} />
                                                         <input type="hidden" name="classId" value={selectedClass.id} />
-                                                        <button type="submit" className="text-xs bg-red-100 hover:bg-red-200 text-red-600 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1">
+                                                        <button type="submit" className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1">
                                                             <UserMinus className="w-3 h-3" />
                                                             No Show
                                                         </button>
@@ -659,18 +728,18 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                     ))}
                                 </div>
                             ) : (
-                                <p className="text-sm text-white/40 text-center py-4">No hay inscritos para mostrar.</p>
+                                <p className="text-sm text-stone-500 text-center py-4">No hay inscritos para mostrar.</p>
                             )}
 
                             {/* Drop-in Button */}
-                            <div className="mt-6 pt-4 border-t border-white/5">
+                            <div className="mt-6 pt-4 border-t border-stone-300">
                                 <fetcher.Form method="post" className="flex items-center gap-2">
                                     <input type="hidden" name="intent" value="drop_in" />
                                     <input type="hidden" name="classId" value={selectedClass.id} />
                                     <input
                                         name="userName"
                                         placeholder="Nombre del drop-in…"
-                                        className="flex-1 bg-white/5 border border-white/[0.08] rounded-lg px-3 py-2 text-sm"
+                                        className="flex-1 bg-[#ebe5d8] border border-stone-300 rounded-lg px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:border-stone-500"
                                     />
                                     <button
                                         type="submit"
@@ -680,18 +749,18 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                         Drop-in
                                     </button>
                                 </fetcher.Form>
-                                <p className="text-xs text-white/40 mt-2 flex items-center gap-1">
+                                <p className="text-xs text-stone-500 mt-2 flex items-center gap-1">
                                     <Clock className="w-3 h-3" />
                                     Cobra $150 automáticamente al agregar.
                                 </p>
                             </div>
 
                             {/* Delete class */}
-                            <div className="mt-4 pt-4 border-t border-white/5">
+                            <div className="mt-4 pt-4 border-t border-stone-300">
                                 <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="delete" />
                                     <input type="hidden" name="classId" value={selectedClass.id} />
-                                    <button type="submit" className="text-xs text-red-500 hover:text-red-700 font-medium">
+                                    <button type="submit" className="text-xs text-red-600 hover:text-red-800 font-medium">
                                         Eliminar esta clase
                                     </button>
                                 </fetcher.Form>

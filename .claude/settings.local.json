@@ -5,7 +5,10 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(cd:*)",
+      "Bash(npx vercel env ls:*)",
+      "Bash(claude mcp add magic --scope user --env API_KEY=\"a8e633790967bc3dd3aa0e72eb667dbffcb21f4c5699fb990c8e81c74a7c0f92\" -- npx -y @21st-dev/magic@latest)"
     ]
   }
 }

@@ -118,16 +118,22 @@ export async function createMembership({
     planName,
     price,
     credits,
+    planType = "creditos",
     validityDays,
     months,
+    paymentMethod = "cash",
+    customerName,
 }: {
     userId: string;
     gymId: string;
     planName: string;
     price: number;
     credits: number;
+    planType?: "creditos" | "membresia" | "ilimitado";
     validityDays?: number;
     months?: number;
+    paymentMethod?: "cash" | "card" | "mercado_pago" | "transfer";
+    customerName?: string | null;
 }): Promise<Subscription> {
     const startDate = new Date();
     const endDate = new Date();
@@ -145,7 +151,8 @@ export async function createMembership({
             plan_name: planName,
             status: "active",
             price: price,
-            credits_included: credits,
+            credits_included: planType === "creditos" ? credits : 0,
+            plan_type: planType,
             start_date: startDate.toISOString().split("T")[0],
             end_date: endDate.toISOString().split("T")[0],
         })
@@ -153,6 +160,23 @@ export async function createMembership({
         .single();
 
     if (error) throw new Error(`Error creating membership: ${error.message}`);
+
+    // Register income in orders so it appears in finance/ingresos reports
+    if (price > 0) {
+        const { createOrder } = await import("./order.server");
+        await createOrder({
+            gymId,
+            userId,
+            customerName: customerName ?? null,
+            paymentMethod: paymentMethod as any,
+            type: "membership",
+            items: [{ productId: data.id, name: planName, quantity: 1, unitPrice: price }],
+            subtotal: price,
+            tax: 0,
+            total: price,
+        }).catch(err => console.error("[createMembership] order insert failed:", err.message));
+    }
+
     return data as Subscription;
 }
 

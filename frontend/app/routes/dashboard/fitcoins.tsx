@@ -158,6 +158,7 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
 
     return (
         <div className="space-y-6">
+            <h1 className="text-2xl font-bold text-white">Mis FitCoins</h1>
             {/* ── Hero Balance ─────────────────────────── */}
             <div className="relative bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-700 rounded-2xl p-8 text-white overflow-hidden shadow-xl">
                 {/* Background decorations */}

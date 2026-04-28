@@ -8,11 +8,13 @@ import {
 } from "lucide-react";
 import { useFetcher, Link, useRouteLoaderData } from "react-router";
 import { useState, useMemo } from "react";
-import { 
-    ChevronLeft, ChevronRight, LayoutGrid, Calendar as CalendarIcon, 
-    Clock, MapPin, User
+import {
+    ChevronLeft, ChevronRight, LayoutGrid, Calendar as CalendarIcon,
+    Clock, MapPin, User, X, Trash2
 } from "lucide-react";
 import { AdminOnboardingWidget } from "~/components/admin/AdminOnboardingWidget";
+import { RoomLayoutWidget } from "~/components/admin/RoomLayoutWidget";
+import type { GymRoom } from "~/services/room.server";
 
 // ─── Types ──────────────────────────────────────────────────────
 type SetupStep = { name: string; description: string; path: string; completed: boolean };
@@ -25,9 +27,15 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { profile, gymId } = await requireGymAdmin(request);
 
     // ── Parallel data fetches ──
+    // Use ISO date string for today so Supabase filters by calendar day in UTC,
+    // which matches how created_at is stored (Supabase always stores in UTC).
+    // For MX gyms this is close enough; a per-gym timezone offset can be added later.
+    const todayIso = new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
+    const todayStart = `${todayIso}T00:00:00.000Z`;
+    const todayEnd   = `${todayIso}T23:59:59.999Z`;
+
     const [
         { data: gym },
-        { data: stats },
         { data: churnUsers },
         { count: locationCount },
         { count: roomCount },
@@ -36,16 +44,13 @@ export async function loader({ request }: Route.LoaderArgs) {
         { count: scheduleCount },
         { count: planCount },
         { count: productCount },
-        { data: recentLeads },
-        { count: leadsNew },
-        { count: leadsContacted },
-        { count: leadsTrial },
-        { count: leadsConverted },
+        { data: todayOrders },
+        { data: activeMemberships },
+        { count: totalMembers },
+        { count: activeMembers },
     ] = await Promise.all([
-        // Gym branding
-        supabaseAdmin.from("gyms").select("name, primary_color, brand_color, studio_type").eq("id", gymId).single(),
-        // Dashboard stats
-        supabaseAdmin.from("admin_dashboard_view").select("*").eq("gym_id", gymId).single(),
+        // Gym branding & layout
+        supabaseAdmin.from("gyms").select("name, primary_color, brand_color, studio_type, booking_mode, layout_config, default_capacity").eq("id", gymId).single(),
         // Churn risk
         supabaseAdmin.rpc("get_churn_risk_users", { days_threshold: 7 }),
         // Setup step counts
@@ -56,18 +61,65 @@ export async function loader({ request }: Route.LoaderArgs) {
         supabaseAdmin.from("schedules").select("id", { count: "exact", head: true }).eq("gym_id", gymId),
         supabaseAdmin.from("products").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("category", "plan"),
         supabaseAdmin.from("products").select("id", { count: "exact", head: true }).eq("gym_id", gymId),
-        // Recent leads
-        supabaseAdmin.from("leads").select("id, full_name, stage, source, created_at").eq("gym_id", gymId).order("created_at", { ascending: false }).limit(4),
-        // Lead stage counts
-        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("stage", "new"),
-        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("stage", "contacted"),
-        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("stage", "trial"),
-        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("stage", "converted"),
+        // Today revenue from orders — all paid orders in the current calendar day (UTC)
+        supabaseAdmin.from("orders").select("total").eq("gym_id", gymId).eq("status", "paid").gte("created_at", todayStart).lte("created_at", todayEnd),
+        // MRR from active memberships
+        supabaseAdmin.from("memberships").select("price").eq("gym_id", gymId).eq("status", "active"),
+        // Member counts
+        supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("role", "member"),
+        supabaseAdmin.from("memberships").select("id", { count: "exact", head: true }).eq("gym_id", gymId).eq("status", "active"),
     ]);
 
-    // Fetch classes for schedule dashboard
+    const todayRevenue = (todayOrders ?? []).reduce((s, o) => s + Number(o.total), 0);
+    const mrr = (activeMemberships ?? []).reduce((s, m) => s + Number(m.price), 0);
+
+    const stats = {
+        today_revenue: todayRevenue,
+        mrr,
+        active_members: activeMembers ?? 0,
+        expired_members: Math.max(0, (totalMembers ?? 0) - (activeMembers ?? 0)),
+        current_occupancy: 0,
+        max_capacity: 0,
+    };
+
     const { getClassesForGym } = await import("~/services/booking.server");
-    const classes = await getClassesForGym(gymId);
+    const { getGymRooms } = await import("~/services/room.server");
+    const { getGymEvents } = await import("~/services/event.server");
+    const [classes, rooms, rawEvents] = await Promise.all([
+        getClassesForGym(gymId),
+        getGymRooms(gymId),
+        getGymEvents(gymId),
+    ]);
+
+    const eventItems = rawEvents.map(e => ({
+        id: e.id,
+        title: e.name,
+        start_time: e.start_time,
+        capacity: e.max_capacity,
+        current_enrolled: e.current_enrolled,
+        coach_name: "Evento Exclusivo",
+        isEvent: true,
+    }));
+    const allScheduleItems = [...classes, ...eventItems];
+
+    // Fetch Active Clients (recent members)
+    const { data: recentClientsData } = await supabaseAdmin.from("profiles")
+        .select("id, full_name, email, created_at, memberships(status, plan_name)")
+        .eq("gym_id", gymId)
+        .eq("role", "member")
+        .order("created_at", { ascending: false })
+        .limit(6);
+        
+    // Fetch Gym Plans for Create form
+    const { getGymPlans } = await import("~/services/plan.server");
+    const gymPlans = await getGymPlans(gymId);
+
+    // Identificar la próxima clase inminente (a partir de ahora)
+    const now = new Date();
+    const upcomingClasses = allScheduleItems
+        .filter(c => new Date(c.start_time) >= now)
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+    const nextClass = upcomingClasses.length > 0 ? upcomingClasses[0] : null;
 
     const filteredChurn = churnUsers?.filter((u: any) => u.gym_id === gymId) || [];
 
@@ -79,7 +131,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         { name: "Planes de Membresía", description: "Define el costo y los créditos de tus paquetes o planes.", path: "/admin/planes", completed: (planCount ?? 0) > 0 },
         { name: "Métodos de Cobro", description: "Conecta Stripe o Mercado Pago para procesar pagos en línea.", path: "/admin/pagos", completed: true }, // As payments might be optional/different, defaulting or checking differently, ideally checking keys but we will let it just be present.
         { name: "Punto de Venta", description: "Configura productos físicos para vender en mostrador.", path: "/admin/pos", completed: (productCount ?? 0) > 0 },
-        { name: "Usuarios", description: "Agrega a tus primeros clientes o importa tu base de datos.", path: "/admin/users", completed: (stats?.active_members || 0) > 0 },
+        { name: "Usuarios", description: "Agrega a tus primeros clientes o importa tu base de datos.", path: "/admin/users", completed: (totalMembers ?? 0) > 0 },
         { name: "Clases y Horarios", description: "Crea los formatos de clase y programa tu calendario semanal.", path: "/admin/horarios", completed: (classTypeCount ?? 0) > 0 && (scheduleCount ?? 0) > 0 },
     ];
 
@@ -87,24 +139,22 @@ export async function loader({ request }: Route.LoaderArgs) {
         gymId,
         primaryColor: gym?.brand_color || gym?.primary_color || "#7c3aed",
         studioType: gym?.studio_type || null,
+        gym: gym || null,
+        nextClass,
         setupSteps,
         live: {
-            currentOccupancy: stats?.current_occupancy || 0,
-            maxCapacity: stats?.max_capacity || 0,
-            activeMembers: stats?.active_members || 0,
-            totalUsers: (stats?.active_members || 0) + (stats?.expired_members || 0),
-            todayRevenue: stats?.today_revenue || 0,
-            mrr: stats?.mrr || 0,
+            currentOccupancy: stats.current_occupancy,
+            maxCapacity: stats.max_capacity,
+            activeMembers: stats.active_members,
+            totalUsers: totalMembers ?? 0,
+            todayRevenue: stats.today_revenue,
+            mrr: stats.mrr,
             churnRiskUsers: filteredChurn,
         },
-        leads: (recentLeads ?? []) as LeadRow[],
-        leadStats: {
-            new: leadsNew ?? 0,
-            contacted: leadsContacted ?? 0,
-            trial: leadsTrial ?? 0,
-            converted: leadsConverted ?? 0,
-        },
-        classes,
+        activeClients: recentClientsData || [],
+        gymPlans: gymPlans.filter(p => p.is_active) || [],
+        classes: allScheduleItems,
+        rooms,
     };
 }
 
@@ -115,9 +165,73 @@ export async function action({ request }: Route.ActionArgs) {
     const intent = formData.get("intent") as string;
 
     if (intent === "refresh_stats") {
-        const { triggerAdminStatsUpdate } = await import("~/services/n8n.server");
-        await triggerAdminStatsUpdate(gymId);
-        return { success: true, message: "Estadísticas en proceso de actualización." };
+        // Stats now computed live on page load — just return success to trigger a reload
+        return { success: true, message: "Estadísticas actualizadas." };
+    }
+
+    if (intent === "save_room_layout") {
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const roomId = formData.get("roomId") as string;
+        const layoutConfigRaw = formData.get("layoutConfig") as string;
+        const resourcesRaw = formData.get("resources") as string;
+        const layoutConfig = JSON.parse(layoutConfigRaw);
+        const resources: Array<{ row: number; col: number; name: string; resourceType: string }> = JSON.parse(resourcesRaw);
+
+        const { error: err1 } = await supabaseAdmin.from("rooms").update({ layout_config: layoutConfig }).eq("id", roomId).eq("gym_id", gymId);
+        if (err1) {
+            console.error("Error updating layout_config:", err1);
+            return { success: false, error: err1.message };
+        }
+
+        // Replace resources for this room
+        const { error: err2 } = await supabaseAdmin.from("resources").delete().eq("room_id", roomId).eq("gym_id", gymId);
+        if (err2) {
+            console.error("Error deleting old resources:", err2);
+            return { success: false, error: err2.message };
+        }
+
+        if (resources.length > 0) {
+            // Make names unique per room by appending a room-scoped suffix.
+            // This avoids the UNIQUE(gym_id, name) constraint until migration 014
+            // (which drops that constraint) is applied in Supabase.
+            const roomSuffix = roomId.replace(/-/g, "").slice(-6);
+            const rows = resources.map(r => ({
+                gym_id: gymId,
+                room_id: roomId,
+                name: `${r.name}__${roomSuffix}`,
+                resource_type: r.resourceType,
+                position_row: r.row,
+                position_col: r.col,
+                is_active: true,
+            }));
+
+            const { error: err3 } = await supabaseAdmin.from("resources").insert(rows);
+            if (err3) {
+                console.error("Error inserting resources:", err3);
+                return { success: false, error: err3.message };
+            }
+        }
+        return { success: true, intent };
+    }
+
+    if (intent === "create_room") {
+        const { createRoom } = await import("~/services/room.server");
+        const name = formData.get("name") as string;
+        const capacity = parseInt(formData.get("capacity") as string) || 10;
+        try {
+            await createRoom({ gymId, name, locationId: null, capacity, equipment: null });
+            return { success: true, intent };
+        } catch (error: any) {
+            console.error("Error creating room:", error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    if (intent === "delete_room") {
+        const { deleteRoom } = await import("~/services/room.server");
+        const roomId = formData.get("roomId") as string;
+        await deleteRoom(roomId, gymId);
+        return { success: true, intent };
     }
 
     return { success: true, intent };
@@ -157,23 +271,23 @@ function OccupancyGauge({ current, max }: { current: number; max: number }) {
     );
 }
 
-// ─── CRM Leads Component ─────────────────────────────────────────
-function CRMLeadsOverview({ leads, stats }: { leads: LeadRow[]; stats: { new: number; contacted: number; trial: number; converted: number } }) {
-    const stageLabels: Record<string, string> = { new: "Nuevo", contacted: "Contactado", trial: "Clase de Prueba", converted: "Inscrito" };
-    const stageColors: Record<string, string> = {
-        new: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-        contacted: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-        trial: "bg-purple-500/10 text-purple-400 border-purple-500/20",
-        converted: "bg-green-500/10 text-green-400 border-green-500/20",
-    };
+// ─── Active Clients Component (Replaces CRM Leads) ──────────────────
+function ActiveClientsOverview({ clients, plans }: { clients: any[]; plans: any[] }) {
+    const [showAdd, setShowAdd] = useState(false);
+    const fetcher = useFetcher();
+
+    // Reset form and close on successful creation
+    useMemo(() => {
+        if (fetcher.state === "idle" && fetcher.data?.success && showAdd) {
+            setShowAdd(false);
+        }
+    }, [fetcher.state, fetcher.data, showAdd]);
 
     function timeAgo(dateStr: string) {
         const diff = Date.now() - new Date(dateStr).getTime();
-        const mins = Math.floor(diff / 60000);
-        if (mins < 60) return `Hace ${mins} min`;
-        const hrs = Math.floor(mins / 60);
-        if (hrs < 24) return `Hace ${hrs}h`;
-        const days = Math.floor(hrs / 24);
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        if (days === 0) return "Hoy";
+        if (days === 1) return "Ayer";
         return `Hace ${days}d`;
     }
 
@@ -181,54 +295,130 @@ function CRMLeadsOverview({ leads, stats }: { leads: LeadRow[]; stats: { new: nu
         <div className="bg-white/[0.03] backdrop-blur-2xl rounded-2xl shadow-2xl border border-white/[0.08] p-6 mb-6">
             <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-2">
-                    <UserPlus className="w-5 h-5 text-amber-400" />
-                    <h2 className="text-sm font-bold text-white uppercase tracking-wider">CRM — Leads Recientes</h2>
+                    <User className="w-5 h-5 text-indigo-400" />
+                    <h2 className="text-sm font-bold text-white uppercase tracking-wider">Clientes Recientes</h2>
                 </div>
-                <Link to="/admin/crm" className="text-xs font-bold text-amber-500 hover:text-amber-400 flex items-center gap-1">
-                    Ver pipeline completo <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
+                <div className="flex gap-4 items-center">
+                    <Link to="/admin/users" className="text-xs font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors">
+                        Ver todos <ArrowRight className="w-3.5 h-3.5" />
+                    </Link>
+                    <button 
+                        onClick={() => setShowAdd(!showAdd)}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded-lg transition-colors"
+                    >
+                        {showAdd ? <X className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
+                        {showAdd ? "Cancelar" : "Nuevo Cliente"}
+                    </button>
+                </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                {[
-                    { label: "Nuevos", value: stats.new, color: "text-blue-400" },
-                    { label: "Contactados", value: stats.contacted, color: "text-amber-400" },
-                    { label: "Pruebas Agendadas", value: stats.trial, color: "text-purple-400" },
-                    { label: "Convertidos", value: stats.converted, color: "text-green-400" },
-                ].map((stat, i) => (
-                    <div key={i} className="bg-white/5 rounded-xl p-4 flex flex-col justify-center border border-white/[0.04]">
-                        <span className="text-[10px] text-white/40 font-bold uppercase tracking-wider mb-1">{stat.label}</span>
-                        <span className={`text-2xl font-black ${stat.color}`}>{stat.value}</span>
-                    </div>
-                ))}
-            </div>
+            {/* Quick Add Form */}
+            {showAdd && (
+                <div className="mb-6 p-4 bg-white/5 border border-indigo-500/30 rounded-xl">
+                    <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-3">Registrar Nuevo Cliente</h3>
+                    {fetcher.data?.error && (
+                        <div className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-xs font-bold text-red-200">
+                            {fetcher.data.error}
+                        </div>
+                    )}
+                    <fetcher.Form action="/admin/users" method="post" className="flex flex-col md:flex-row gap-3 items-end">
+                        <input type="hidden" name="intent" value="create_user" />
+                        
+                        <div className="w-full md:w-1/3">
+                            <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-1">Nombre Completo</label>
+                            <input 
+                                required 
+                                type="text" 
+                                name="full_name" 
+                                placeholder="Ej. Ana García" 
+                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" 
+                            />
+                        </div>
+                        
+                        <div className="w-full md:w-1/3">
+                            <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-1">Correo Electrónico</label>
+                            <input 
+                                required 
+                                type="email" 
+                                name="email" 
+                                placeholder="ana@ejemplo.com" 
+                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" 
+                            />
+                        </div>
 
-            {leads.length === 0 ? (
-                <p className="text-center text-white/40 text-sm py-6 italic">No hay leads registrados aún.</p>
+                        <div className="w-full md:w-1/4">
+                            <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-1">Plan Inicial</label>
+                            <select 
+                                name="planId" 
+                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                            >
+                                <option value="none">Sin plan (Créditos en 0)</option>
+                                {plans.map((p) => (
+                                    <option key={p.id} value={p.id}>{p.name} ({p.credits === null ? 'Ilimitado' : p.credits + ' cr'})</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <button 
+                            type="submit" 
+                            disabled={fetcher.state !== "idle"}
+                            className="w-full md:w-auto mt-2 md:mt-0 px-6 py-2 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                        >
+                            {fetcher.state === "submitting" ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                            Crear
+                        </button>
+                    </fetcher.Form>
+                </div>
+            )}
+
+            {clients.length === 0 ? (
+                <p className="text-center text-white/40 text-sm py-6 italic">No hay clientes activos aún.</p>
             ) : (
                 <div className="space-y-2">
-                    {leads.map(lead => (
-                        <div key={lead.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/[0.04] group cursor-pointer">
-                            <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center shrink-0">
-                                    <span className="font-bold text-white/70 text-sm">{lead.full_name.slice(0, 1)}</span>
+                    {clients.map(client => {
+                        const planName = client.memberships?.[0]?.plan_name || "Sin membresía";
+                        const isActive = client.memberships?.[0]?.status === 'active';
+
+                        return (
+                            <div key={client.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/[0.04] group cursor-pointer">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 flex items-center justify-center shrink-0">
+                                        <span className="font-black text-indigo-400 text-sm">
+                                            {client.full_name ? client.full_name.slice(0, 1).toUpperCase() : "U"}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-bold text-white">{client.full_name || "Usuario sin nombre"}</p>
+                                        <div className="flex items-center gap-2 mt-0.5">
+                                            <span className="text-[10px] text-white/40 font-medium">Registrado {timeAgo(client.created_at)}</span>
+                                            <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${isActive ? 'bg-green-500/10 text-green-400' : 'bg-white/5 text-white/30'}`}>
+                                                {planName}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-sm font-bold text-white">{lead.full_name}</p>
-                                    <p className="text-[10px] text-white/40 font-medium uppercase tracking-wider mt-0.5">{lead.source} • {timeAgo(lead.created_at)}</p>
+                                
+                                {/* Acciones rápidas */}
+                                <div className="flex items-center gap-2">
+                                    <fetcher.Form action="/admin/users" method="post" onSubmit={(e) => {
+                                        if(!confirm(`¿Estás seguro de eliminar a ${client.full_name}? Esto borrará todo su historial. Esta acción no se puede deshacer.`)) {
+                                            e.preventDefault();
+                                        }
+                                    }}>
+                                        <input type="hidden" name="intent" value="delete_user" />
+                                        <input type="hidden" name="userId" value={client.id} />
+                                        <button 
+                                            type="submit" 
+                                            title="Eliminar Cliente"
+                                            className="p-2 hover:bg-red-500/20 hover:text-red-400 rounded-lg text-white/20 transition-all opacity-0 group-hover:opacity-100"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </fetcher.Form>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-4">
-                                <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full border ${stageColors[lead.stage] || "bg-white/5 text-white/40 border-white/10"}`}>
-                                    {stageLabels[lead.stage] || lead.stage}
-                                </span>
-                                <div className="hidden md:flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button className="p-1.5 hover:bg-white/10 rounded-md text-white/50 hover:text-white transition-colors"><MessageCircle className="w-4 h-4" /></button>
-                                    <button className="p-1.5 hover:bg-white/10 rounded-md text-white/50 hover:text-white transition-colors"><Phone className="w-4 h-4" /></button>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -243,6 +433,7 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
     const [viewMode, setViewMode] = useState<"week" | "month">("week");
     const today = new Date();
     const [viewDate, setViewDate] = useState(new Date());
+    const [dayModalItems, setDayModalItems] = useState<{date: Date, classes: any[]} | null>(null);
 
     // Filter classes for the current week or month
     const filteredClasses = useMemo(() => {
@@ -250,7 +441,7 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
             const startOfWeek = new Date(viewDate);
             startOfWeek.setDate(viewDate.getDate() - (viewDate.getDay() === 0 ? 6 : viewDate.getDay() - 1));
             startOfWeek.setHours(0, 0, 0, 0);
-            
+
             const endOfWeek = new Date(startOfWeek);
             endOfWeek.setDate(startOfWeek.getDate() + 6);
             endOfWeek.setHours(23, 59, 59, 999);
@@ -337,8 +528,8 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                                     </div>
                                     <div className="space-y-2 min-h-[200px]">
                                         {dayClasses.map(cls => (
-                                            <div key={cls.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 group hover:border-purple-500/30 transition-all cursor-default">
-                                                <p className="text-xs font-black text-white leading-tight group-hover:text-purple-400 transition-colors line-clamp-1">{cls.title}</p>
+                                            <div key={cls.id} className={`p-2.5 rounded-xl border group transition-all cursor-default ${cls.isEvent ? "bg-violet-500/10 border-violet-500/30 hover:border-violet-500/50" : "bg-white/5 border-white/10 hover:border-purple-500/30"}`}>
+                                                <p className={`text-xs font-black leading-tight transition-colors line-clamp-1 ${cls.isEvent ? "text-violet-300 group-hover:text-violet-200" : "text-white group-hover:text-purple-400"}`}>{cls.title}</p>
                                                 <div className="flex flex-col gap-1 mt-2">
                                                     <div className="flex items-center gap-1 text-[9px] font-bold text-white/30 uppercase">
                                                         <Clock className="w-2.5 h-2.5" />
@@ -347,7 +538,7 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                                                     <div className="flex items-center gap-3 mt-1">
                                                         <div className="flex items-center gap-1 text-[9px] font-bold text-white/40">
                                                             <User className="w-2.5 h-2.5" />
-                                                            {cls.coach?.name || "Staff"}
+                                                            {(cls as any).coach_name || cls.coach?.name || "Sin coach"}
                                                         </div>
                                                         <div className="text-[9px] font-black text-white/20 ml-auto">
                                                             {cls.current_enrolled}/{cls.capacity}
@@ -388,12 +579,17 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                                     </div>
                                     <div className="space-y-1">
                                         {dayClasses.slice(0, 2).map(cls => (
-                                            <div key={cls.id} className="text-[9px] font-bold text-white/60 truncate bg-white/5 px-1.5 py-0.5 rounded-md border border-white/5">
+                                            <div key={cls.id} className={`text-[9px] font-bold truncate px-1.5 py-0.5 rounded-md border ${cls.isEvent ? "bg-violet-500/10 text-violet-300 border-violet-500/30" : "bg-white/5 text-white/60 border-white/5"}`}>
                                                 {new Date(cls.start_time).getHours()}:00 {cls.title}
                                             </div>
                                         ))}
                                         {dayClasses.length > 2 && (
-                                            <div className="text-[8px] font-black text-white/20 text-center uppercase">+{dayClasses.length - 2} más</div>
+                                            <button 
+                                                onClick={() => setDayModalItems({ date, classes: dayClasses })}
+                                                className="w-full text-[8px] font-black text-white/40 hover:text-white text-center uppercase py-0.5 transition-colors"
+                                            >
+                                                +{dayClasses.length - 2} más
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -402,20 +598,54 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                     </div>
                 )}
             </div>
-            
+
             <div className="p-4 bg-white/5 flex items-center justify-center">
                 <Link to="/admin/schedule" className="text-[10px] font-black text-purple-400 hover:text-purple-300 uppercase tracking-widest flex items-center gap-2 group transition-all">
                     Gestionar Calendario Completo
                     <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-1" />
                 </Link>
             </div>
+
+            {dayModalItems && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" onClick={() => setDayModalItems(null)}>
+                    <div className="relative w-full max-w-sm bg-slate-900 rounded-2xl border border-white/10 shadow-2xl flex flex-col text-white max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0">
+                            <h3 className="font-bold text-sm uppercase tracking-wider capitalize">
+                                {dayModalItems.date.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+                            </h3>
+                            <button onClick={() => setDayModalItems(null)} className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition-colors">
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-y-auto space-y-2">
+                            {dayModalItems.classes.map(cls => (
+                                <div key={cls.id} className={`p-3 rounded-xl border ${cls.isEvent ? "bg-violet-500/10 border-violet-500/30" : "bg-white/5 border-white/10"}`}>
+                                    <div className="flex justify-between items-start gap-2">
+                                        <p className={`text-sm font-black leading-tight ${cls.isEvent ? "text-violet-300" : "text-white"}`}>{cls.title}</p>
+                                        {cls.isEvent && <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 font-bold uppercase tracking-widest border border-violet-500/30 shrink-0">Evento</span>}
+                                    </div>
+                                    <div className="flex items-center justify-between mt-2">
+                                        <div className="flex items-center gap-1 text-[10px] font-bold text-white/40 uppercase">
+                                            <Clock className="w-3 h-3" />
+                                            {new Date(cls.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                        <div className="text-[10px] font-black text-white/20">
+                                            {cls.current_enrolled}/{cls.capacity} pax
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
 
 // ─── Main Component ──────────────────────────────────────────────
 export default function AdminDashboardIndex({ loaderData }: Route.ComponentProps) {
-    const { live, primaryColor, leads, leadStats, classes, gymId, setupSteps } = loaderData;
+    const { live, primaryColor, activeClients, gymPlans, classes, gymId, setupSteps, gym, nextClass, rooms } = loaderData;
     const fetcher = useFetcher();
 
     return (
@@ -439,6 +669,15 @@ export default function AdminDashboardIndex({ loaderData }: Route.ComponentProps
                 </fetcher.Form>
             </header>
 
+            {/* ROOM LAYOUT WIDGET — shown when booking_mode is assigned_resource OR there are rooms */}
+            {(gym?.booking_mode === "assigned_resource" || (rooms && rooms.length > 0)) && (
+                <RoomLayoutWidget
+                    gym={gym}
+                    rooms={rooms || []}
+                    nextClass={nextClass}
+                />
+            )}
+
             {/* KPI Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
@@ -458,8 +697,8 @@ export default function AdminDashboardIndex({ loaderData }: Route.ComponentProps
                 ))}
             </div>
 
-            {/* CRM LEADS OVERVIEW */}
-            <CRMLeadsOverview leads={leads} stats={leadStats} />
+            {/* ACTIVE CLIENTS OVERVIEW */}
+            <ActiveClientsOverview clients={activeClients} plans={gymPlans} />
 
             {/* SCHEDULE DASHBOARD */}
             <ScheduleDashboard classes={classes} />

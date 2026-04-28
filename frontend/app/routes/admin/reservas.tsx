@@ -2,7 +2,7 @@
 import type { Route } from "./+types/reservas";
 import { useFetcher } from "react-router";
 import { useState } from "react";
-import { Check, X, Clock, Users } from "lucide-react";
+import { Check, X, Clock, Users, ChevronLeft, ChevronRight } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface Attendee {
@@ -33,60 +33,56 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { supabaseAdmin } = await import("~/services/supabase.server");
     const { gymId } = await requireGymAdmin(request);
 
-    // Get today's classes
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    const { getClassesForGym } = await import("~/services/booking.server");
+    const rawClasses = await getClassesForGym(gymId);
 
-    const { data: classes } = await supabaseAdmin
-        .from("classes")
-        .select("id, title, capacity, start_time, coach:coaches!coach_id(name)")
-        .eq("gym_id", gymId)
-        .gte("start_time", todayStart.toISOString())
-        .lte("start_time", todayEnd.toISOString())
-        .order("start_time", { ascending: true });
+    const classIds = rawClasses.map(c => c.id);
 
-    const sessions: SessionReserva[] = [];
+    // Fetch all bookings and waitlist in 2 bulk queries instead of N
+    const [{ data: allBookings }, { data: allWaitlist }] = await Promise.all([
+        classIds.length > 0
+            ? supabaseAdmin
+                .from("bookings")
+                .select("id, class_id, status, user_id, profiles(full_name, email)")
+                .in("class_id", classIds)
+            : Promise.resolve({ data: [] }),
+        classIds.length > 0
+            ? supabaseAdmin
+                .from("waitlist")
+                .select("id, class_id, user_id, position, profiles(full_name, email)")
+                .in("class_id", classIds)
+                .order("position", { ascending: true })
+            : Promise.resolve({ data: [] }),
+    ]);
 
-    for (const cls of (classes ?? [])) {
-        // Get bookings for this class
-        const { data: bookings } = await supabaseAdmin
-            .from("bookings")
-            .select("id, status, user:profiles!user_id(full_name, email)")
-            .eq("class_id", cls.id);
-
-        // Get waitlist for this class
-        const { data: waitlist } = await supabaseAdmin
-            .from("waitlist")
-            .select("id, user:profiles!user_id(full_name, email)")
-            .eq("class_id", cls.id)
-            .order("position", { ascending: true });
+    const sessions: SessionReserva[] = rawClasses.map(cls => {
+        const bookings = (allBookings ?? []).filter((b: any) => b.class_id === cls.id);
+        const waitlist = (allWaitlist ?? []).filter((w: any) => w.class_id === cls.id);
 
         const attendees: Attendee[] = [
-            ...(bookings ?? []).map((b: any) => ({
+            ...bookings.map((b: any) => ({
                 id: b.id,
-                full_name: b.user?.full_name ?? "Sin nombre",
-                email: b.user?.email ?? "",
+                full_name: b.profiles?.full_name ?? "Sin nombre",
+                email: b.profiles?.email ?? "",
                 status: b.status as Attendee["status"],
             })),
-            ...(waitlist ?? []).map((w: any) => ({
+            ...waitlist.map((w: any) => ({
                 id: w.id,
-                full_name: w.user?.full_name ?? "Sin nombre",
-                email: w.user?.email ?? "",
+                full_name: w.profiles?.full_name ?? "Sin nombre",
+                email: w.profiles?.email ?? "",
                 status: "waitlist" as const,
             })),
         ];
 
-        sessions.push({
+        return {
             id: cls.id,
             title: cls.title,
-            coach_name: (cls as any).coach?.name ?? "Sin coach",
+            coach_name: (cls as any).coach_name ?? (cls as any).coach?.name ?? "Sin coach",
             start_time: cls.start_time,
             capacity: cls.capacity,
             attendees,
-        });
-    }
+        };
+    });
 
     return { sessions };
 }
@@ -118,43 +114,84 @@ export async function action({ request }: Route.ActionArgs) {
     return { success: true };
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────
+function toLocalDateString(date: Date) {
+    return date.toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
+}
+
+function isSameLocalDay(isoString: string, dateStr: string) {
+    // Compare the date portion of the ISO string (which is stored in local-ish time)
+    // with the YYYY-MM-DD string the user selected.
+    return isoString.slice(0, 10) === dateStr;
+}
+
 // ─── Component ──────────────────────────────────────────────────────
 export default function Reservas({ loaderData }: Route.ComponentProps) {
-    const { sessions } = loaderData;
+    const { sessions: allSessions } = loaderData;
     const fetcher = useFetcher();
-    const [selected, setSelected] = useState<string>(sessions[0]?.id ?? "");
 
-    const session = sessions.find(s => s.id === selected);
+    const today = new Date();
+    const [dateStr, setDateStr] = useState<string>(toLocalDateString(today));
+    const [selected, setSelected] = useState<string>("");
 
-    if (sessions.length === 0) {
-        return (
-            <div className="space-y-6">
+    // Filter sessions by selected date entirely in client — no UTC offset issues
+    const sessions = allSessions.filter(s => isSameLocalDay(s.start_time, dateStr));
+
+    const currentDate = new Date(`${dateStr}T12:00:00`);
+    const isToday = dateStr === toLocalDateString(today);
+    const dateLabel = currentDate.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" });
+
+    function goDate(offset: number) {
+        const d = new Date(`${dateStr}T12:00:00`);
+        d.setDate(d.getDate() + offset);
+        setDateStr(toLocalDateString(d));
+        setSelected("");
+    }
+
+    const session = sessions.find(s => s.id === selected) ?? sessions[0] ?? null;
+    const confirmed = session ? session.attendees.filter(a => a.status !== "waitlist").length : 0;
+
+    const DateNav = () => (
+        <div className="flex items-center gap-2">
+            <button onClick={() => goDate(-1)} className="p-2 rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors">
+                <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="text-center min-w-[160px]">
+                <p className="text-sm font-bold text-white capitalize">{dateLabel}</p>
+                {isToday && <p className="text-xs text-amber-400 font-semibold">Hoy</p>}
+            </div>
+            <button onClick={() => goDate(1)} className="p-2 rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors">
+                <ChevronRight className="w-4 h-4" />
+            </button>
+            {!isToday && (
+                <button onClick={() => { setDateStr(toLocalDateString(today)); setSelected(""); }} className="text-xs px-3 py-1.5 rounded-lg border border-white/[0.08] text-white/60 hover:bg-white/5 transition-colors">
+                    Hoy
+                </button>
+            )}
+        </div>
+    );
+
+    return (
+        <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-black text-white">Reservas</h1>
                     <p className="text-white/50 text-sm mt-0.5">Control de asistencia y listas de espera por sesión.</p>
                 </div>
+                <DateNav />
+            </div>
+
+            {sessions.length === 0 ? (
                 <div className="text-center py-20 bg-white/[0.03] backdrop-blur-2xl rounded-2xl border border-white/[0.08] shadow-2xl">
                     <Users className="w-12 h-12 text-white/30 mx-auto mb-4" />
-                    <h2 className="text-lg font-bold text-white mb-2">Sin sesiones hoy</h2>
-                    <p className="text-white/50 text-sm max-w-sm mx-auto">No hay clases programadas para hoy. Las reservas aparecerán cuando haya sesiones activas.</p>
+                    <h2 className="text-lg font-bold text-white mb-2">Sin sesiones este día</h2>
+                    <p className="text-white/50 text-sm max-w-sm mx-auto">No hay clases programadas para esta fecha. Usa las flechas para navegar a otro día.</p>
                 </div>
-            </div>
-        );
-    }
-
-    const confirmed = session ? session.attendees.filter(a => a.status !== "waitlist").length : 0;
-
-    return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-2xl font-black text-white">Reservas</h1>
-                <p className="text-white/50 text-sm mt-0.5">Control de asistencia y listas de espera por sesión.</p>
-            </div>
-
+            ) : (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Session selector */}
                 <div className="space-y-2">
-                    <p className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Sesiones de hoy</p>
+                    <p className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Sesiones del día</p>
                     {sessions.map(s => {
                         const enrolled = s.attendees.filter(a => a.status !== "waitlist").length;
                         const isActive = s.id === selected;
@@ -238,6 +275,7 @@ export default function Reservas({ loaderData }: Route.ComponentProps) {
                     </div>
                 )}
             </div>
+            )}
         </div>
     );
 }

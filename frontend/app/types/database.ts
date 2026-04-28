@@ -3,7 +3,7 @@
 // Expanded for SaaS multi-tenant: subscriptions, gamification, access control, CRM.
 
 // ─── Roles ───────────────────────────────────────────────────────
-export type UserRole = "admin" | "member" | "coach";
+export type UserRole = "admin" | "member" | "coach" | "front_desk";
 
 // ─── Profile ─────────────────────────────────────────────────────
 export interface Profile {

@@ -2,14 +2,14 @@
 // Marketing landing page for the SaaS product (grindproject.com).
 // Extracted from _index.tsx to allow conditional rendering with GymLanding.
 
-import { ArrowRight } from "lucide-react";
+
 import ParticleBackground from "./ParticleBackground";
 import Hero from "./Hero";
 import Features from "./Features";
 import Process from "./Process";
 import Testimonials from "./Testimonials";
 import Pricing from "./Pricing";
-import SectionWithMockup from "./SectionWithMockup";
+import { FeatureCarousel } from "~/components/ui/feature-carousel";
 import { LogoCloud } from "./LogoCloud";
 import FAQ from "./FAQ";
 import CallToAction from "./CallToAction";
@@ -32,16 +32,7 @@ export default function SaasLanding() {
                 <Process />
                 <Testimonials />
                 <Pricing />
-                <SectionWithMockup
-                    title={
-                        <>
-                            Control total desde tu <span className="text-white/50">centro de mando</span>
-                        </>
-                    }
-                    description="Visualiza el estado de tu estudio en tiempo récord. Gestiona miembros activos, ingresos, métricas de MRR y tu pipeline de CRM en una interfaz diseñada para la velocidad."
-                    primaryImageSrc="/images/landing/dashboard-mockup.png"
-                    secondaryImageSrc="/images/landing/dashboard-mockup.png"
-                />
+                <FeatureCarousel />
                 <LogoCloud logos={trustedLogos} />
                 <FAQ />
                 <CallToAction />

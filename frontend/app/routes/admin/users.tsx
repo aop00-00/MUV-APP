@@ -4,7 +4,7 @@
 import type { Route } from "./+types/users";
 import { useFetcher, useRevalidator } from "react-router";
 import { useState, useEffect, useRef } from "react";
-import { Search, PhoneForwarded, Tag, X, UserPlus, Mail, FileText, MoreVertical, Check } from "lucide-react";
+import { Search, PhoneForwarded, Tag, X, UserPlus, Mail, FileText, MoreVertical, Check, ShieldCheck, CreditCard, Plus } from "lucide-react";
 import { toast } from "react-hot-toast";
 
 // ─── Mock Data ───────────────────────────────────────────────────
@@ -33,7 +33,8 @@ export async function loader({ request }: Route.LoaderArgs) {
             memberships (
                 plan_name,
                 end_date,
-                status
+                status,
+                plan_type
             )
         `)
         .eq("gym_id", gymId)
@@ -72,10 +73,12 @@ export async function loader({ request }: Route.LoaderArgs) {
             membership: membership ? {
                 plan_name: membership.plan_name,
                 end_date: membership.end_date,
-                status: membership.status
+                status: membership.status,
+                plan_type: (membership as any).plan_type ?? "creditos",
             } : null,
             tags,
-            totalSpent: 0
+            totalSpent: 0,
+            role: u.role as string,
         };
     });
 
@@ -163,7 +166,8 @@ export async function action({ request }: Route.ActionArgs) {
             const plan = gymPlans.find(p => p.id === planId);
             if (plan) {
                 try {
-                    const creditsToAssign = plan.credits ?? 999; // null = ilimitado
+                    const planType = plan.plan_type as "creditos" | "membresia" | "ilimitado";
+                    const creditsToAssign = planType === "creditos" ? (plan.credits ?? 0) : 0;
 
                     await createMembership({
                         userId: data.user.id,
@@ -171,15 +175,18 @@ export async function action({ request }: Route.ActionArgs) {
                         planName: plan.name,
                         price: plan.price,
                         credits: creditsToAssign,
+                        planType,
                         validityDays: plan.validity_days,
                     });
 
-                    // Sum credits to profile
-                    await supabaseAdmin
-                        .from("profiles")
-                        .update({ credits: creditsToAssign })
-                        .eq("id", data.user.id)
-                        .eq("gym_id", gymId);
+                    // Only update profile credits for credit-based plans
+                    if (planType === "creditos" && creditsToAssign > 0) {
+                        await supabaseAdmin
+                            .from("profiles")
+                            .update({ credits: creditsToAssign })
+                            .eq("id", data.user.id)
+                            .eq("gym_id", gymId);
+                    }
                 } catch (subError: any) {
                     return {
                         success: true,
@@ -260,6 +267,97 @@ export async function action({ request }: Route.ActionArgs) {
         return { success: true };
     }
 
+    if (intent === "delete_user") {
+        const userId = formData.get("userId") as string;
+        
+        // Verificamos que el usuario pertenezca a este gimnasio
+        const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("id")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+            
+        if (!profile) {
+            return { error: "Usuario no encontrado o no autorizado" };
+        }
+
+        // Eliminar desde auth.admin (esto detonará los cascades en profiles si están configurados, 
+        // o si no, al menos remueve el acceso de login). Idealmente también borramos el profile explícitamente.
+        await supabaseAdmin.from("profiles").delete().eq("id", userId);
+        const { error } = await supabaseAdmin.auth.admin.deleteUser(userId);
+        
+        if (error) {
+            console.error("Error al eliminar usuario:", error);
+            return { error: error.message };
+        }
+        
+        return { success: true, message: "Usuario eliminado exitosamente." };
+    }
+
+    if (intent === "assign_membership") {
+        const userId = formData.get("userId") as string;
+        const planId = formData.get("planId") as string;
+        const paymentMethod = (formData.get("paymentMethod") as string) || "cash";
+
+        const gymPlans = await getGymPlans(gymId);
+        const plan = gymPlans.find(p => p.id === planId);
+        if (!plan) return { error: "Plan no encontrado." };
+
+        const { data: profileData } = await supabaseAdmin
+            .from("profiles")
+            .select("full_name")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        try {
+            const planType = plan.plan_type as "creditos" | "membresia" | "ilimitado";
+            const creditsToAssign = planType === "creditos" ? (plan.credits ?? 0) : 0;
+            await createMembership({
+                userId,
+                gymId,
+                planName: plan.name,
+                price: plan.price,
+                credits: creditsToAssign,
+                planType,
+                validityDays: plan.validity_days,
+                paymentMethod: paymentMethod as any,
+                customerName: profileData?.full_name ?? null,
+            });
+            // Only set profile credits for credit-based plans
+            if (planType === "creditos" && creditsToAssign > 0) {
+                await supabaseAdmin
+                    .from("profiles")
+                    .update({ credits: creditsToAssign })
+                    .eq("id", userId)
+                    .eq("gym_id", gymId);
+            }
+        } catch (err: any) {
+            return { error: err.message };
+        }
+        return { success: true, intent: "assign_membership" };
+    }
+
+    if (intent === "update_role") {
+        const userId = formData.get("userId") as string;
+        const newRole = formData.get("role") as string;
+
+        const validRoles = ["member", "coach", "front_desk", "admin"];
+        if (!validRoles.includes(newRole)) {
+            return { error: "Rol inválido." };
+        }
+
+        const { error } = await supabaseAdmin
+            .from("profiles")
+            .update({ role: newRole })
+            .eq("id", userId)
+            .eq("gym_id", gymId);
+
+        if (error) return { error: error.message };
+        return { success: true, updatedRole: newRole };
+    }
+
     return { success: true };
 }
 
@@ -293,14 +391,20 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     const fetcher = useFetcher();
     const creditFetcher = useFetcher();
     const tagFetcher = useFetcher();
+    const roleFetcher = useFetcher();
+    const membershipFetcher = useFetcher();
     const revalidator = useRevalidator();
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingCredits, setEditingCredits] = useState<{ userId: string; value: number } | null>(null);
     const [addingTagFor, setAddingTagFor] = useState<string | null>(null);
     const [newTagText, setNewTagText] = useState("");
     const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null);
+    const [roleMenuOpen, setRoleMenuOpen] = useState<string | null>(null);
+    const [assignMembershipFor, setAssignMembershipFor] = useState<string | null>(null);
     const lastCreditSubmissionId = useRef<string | null>(null);
     const lastTagSubmissionId = useRef<string | null>(null);
+    const lastRoleSubmissionId = useRef<string | null>(null);
+    const lastMembershipSubmissionId = useRef<string | null>(null);
 
 
     // Close modal on success
@@ -362,6 +466,39 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             }
         }
     }, [tagFetcher.data, tagFetcher.state, revalidator]);
+
+    useEffect(() => {
+        if (roleFetcher.state === "idle" && roleFetcher.data?.success) {
+            if (lastRoleSubmissionId.current !== JSON.stringify(roleFetcher.data)) {
+                toast.success("Rol actualizado", { duration: 2000, position: "bottom-right" });
+                lastRoleSubmissionId.current = JSON.stringify(roleFetcher.data);
+                setRoleMenuOpen(null);
+                setActionMenuOpen(null);
+                revalidator.revalidate();
+            }
+        } else if (roleFetcher.state === "idle" && roleFetcher.data?.error) {
+            if (lastRoleSubmissionId.current !== JSON.stringify(roleFetcher.data)) {
+                toast.error(`Error: ${roleFetcher.data.error}`, { duration: 3000, position: "bottom-right" });
+                lastRoleSubmissionId.current = JSON.stringify(roleFetcher.data);
+            }
+        }
+    }, [roleFetcher.data, roleFetcher.state, revalidator]);
+
+    useEffect(() => {
+        if (membershipFetcher.state === "idle" && membershipFetcher.data?.success && membershipFetcher.data?.intent === "assign_membership") {
+            if (lastMembershipSubmissionId.current !== JSON.stringify(membershipFetcher.data)) {
+                toast.success("Membresía asignada correctamente", { duration: 2000, position: "bottom-right" });
+                lastMembershipSubmissionId.current = JSON.stringify(membershipFetcher.data);
+                setAssignMembershipFor(null);
+                revalidator.revalidate();
+            }
+        } else if (membershipFetcher.state === "idle" && membershipFetcher.data?.error) {
+            if (lastMembershipSubmissionId.current !== JSON.stringify(membershipFetcher.data)) {
+                toast.error(`Error: ${membershipFetcher.data.error}`, { duration: 3000, position: "bottom-right" });
+                lastMembershipSubmissionId.current = JSON.stringify(membershipFetcher.data);
+            }
+        }
+    }, [membershipFetcher.data, membershipFetcher.state, revalidator]);
 
     const [activeSegment, setActiveSegment] = useState<string>("all");
     const [searchTerm, setSearchTerm] = useState("");
@@ -428,7 +565,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-white/40 uppercase mb-1">Contraseña (Opcional)</label>
-                                <input name="password" type="password" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white" placeholder="Mínimo 6 caracteres" />
+                                <input name="password" type="password" minLength={8} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white" placeholder="Mínimo 8 caracteres" />
                             </div>
 
                             <div>
@@ -545,60 +682,71 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
 
                                         {/* Membership */}
                                         <td className="px-4 py-3">
-                                            {user.membership ? (
-                                                <div>
-                                                    <p className={`text-xs font-medium ${isExpired ? "text-red-500" : "text-white/70"}`}>
+                                            {user.membership && !isExpired ? (
+                                                <button
+                                                    onClick={() => setAssignMembershipFor(user.id)}
+                                                    className="text-left group"
+                                                    title="Clic para reasignar membresía"
+                                                >
+                                                    <p className="text-xs font-semibold text-white/80 group-hover:text-white transition-colors">
                                                         {user.membership.plan_name}
                                                     </p>
-                                                    <p className={`text-xs ${isExpired ? "text-red-400" : "text-white/40"}`}>
-                                                        {isExpired ? "Vencida" : `Vence ${new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}`}
+                                                    <p className="text-xs text-white/40 group-hover:text-blue-400 transition-colors">
+                                                        Vence {new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
                                                     </p>
-                                                </div>
+                                                </button>
                                             ) : (
-                                                <span className="text-xs text-white/40">Sin membresía</span>
+                                                <button
+                                                    onClick={() => setAssignMembershipFor(user.id)}
+                                                    className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 border border-dashed border-blue-500/30 hover:border-blue-400 px-2 py-1 rounded-lg transition-all"
+                                                >
+                                                    <Plus className="w-3 h-3" />
+                                                    {isExpired ? "Renovar" : "Asignar"}
+                                                </button>
                                             )}
                                         </td>
 
                                         {/* Credits */}
                                         <td className="px-4 py-3">
-                                            {editingCredits?.userId === user.id ? (
-                                                <creditFetcher.Form method="post" className="flex items-center gap-1">
-                                                    <input type="hidden" name="intent" value="update_credits" />
-                                                    <input type="hidden" name="userId" value={user.id} />
-                                                    <input type="hidden" name="credits" value={editingCredits?.value ?? 0} />
-                                                    <input
-                                                        type="number"
-                                                        value={editingCredits?.value ?? 0}
-                                                        onChange={(e) => setEditingCredits({ userId: user.id, value: parseInt(e.target.value) || 0 })}
-                                                        min={0}
-                                                        className="w-14 bg-white/5 border border-blue-400 rounded px-2 py-1 text-center text-xs text-white"
-                                                        autoFocus
-                                                    />
-                                                    <button
-                                                        type="submit"
-                                                        disabled={creditFetcher.state !== "idle"}
-                                                        className="p-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50"
-                                                        title="Confirmar"
-                                                    >
-                                                        <Check className="w-3 h-3" />
+                                            {(() => {
+                                                const pt = user.membership?.plan_type ?? "creditos";
+                                                if (pt === "membresia" || pt === "ilimitado") {
+                                                    return (
+                                                        <div className="flex flex-col">
+                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full w-fit ${pt === "ilimitado" ? "bg-emerald-500/15 text-emerald-400" : "bg-sky-500/15 text-sky-400"}`}>
+                                                                {pt === "ilimitado" ? "Ilimitado" : "Membresía"}
+                                                            </span>
+                                                            <span className="text-[10px] text-white/30 mt-0.5">Acceso por fecha</span>
+                                                        </div>
+                                                    );
+                                                }
+                                                // creditos
+                                                return editingCredits?.userId === user.id ? (
+                                                    <creditFetcher.Form method="post" className="flex items-center gap-1">
+                                                        <input type="hidden" name="intent" value="update_credits" />
+                                                        <input type="hidden" name="userId" value={user.id} />
+                                                        <input type="hidden" name="credits" value={editingCredits?.value ?? 0} />
+                                                        <input
+                                                            type="number"
+                                                            value={editingCredits?.value ?? 0}
+                                                            onChange={(e) => setEditingCredits({ userId: user.id, value: parseInt(e.target.value) || 0 })}
+                                                            min={0}
+                                                            className="w-14 bg-white/5 border border-blue-400 rounded px-2 py-1 text-center text-xs text-white"
+                                                            autoFocus
+                                                        />
+                                                        <button type="submit" disabled={creditFetcher.state !== "idle"} className="p-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50" title="Confirmar">
+                                                            <Check className="w-3 h-3" />
+                                                        </button>
+                                                        <button type="button" onClick={() => setEditingCredits(null)} className="p-1 bg-red-600 hover:bg-red-700 text-white rounded transition-colors" title="Cancelar">
+                                                            <X className="w-3 h-3" />
+                                                        </button>
+                                                    </creditFetcher.Form>
+                                                ) : (
+                                                    <button onClick={() => setEditingCredits({ userId: user.id, value: user.credits })} className="text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors">
+                                                        {user.credits} <span className="text-xs text-white/40">créditos</span>
                                                     </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setEditingCredits(null)}
-                                                        className="p-1 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
-                                                        title="Cancelar"
-                                                    >
-                                                        <X className="w-3 h-3" />
-                                                    </button>
-                                                </creditFetcher.Form>
-                                            ) : (
-                                                <button
-                                                    onClick={() => setEditingCredits({ userId: user.id, value: user.credits })}
-                                                    className="text-sm font-semibold text-blue-600 hover:text-blue-400 transition-colors"
-                                                >
-                                                    {user.credits} <span className="text-xs text-white/40">créditos</span>
-                                                </button>
-                                            )}
+                                                );
+                                            })()}
                                         </td>
 
                                         {/* Tags */}
@@ -689,9 +837,13 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                         <>
                                                             <div
                                                                 className="fixed inset-0 z-10"
-                                                                onClick={() => setActionMenuOpen(null)}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setActionMenuOpen(null);
+                                                                    setRoleMenuOpen(null);
+                                                                }}
                                                             />
-                                                            <div className="absolute right-0 top-full mt-1 w-48 bg-slate-800 border border-white/10 rounded-lg shadow-2xl z-20 overflow-hidden">
+                                                            <div className="absolute right-0 top-full mt-1 w-52 bg-slate-800 border border-white/10 rounded-lg shadow-2xl z-20 overflow-hidden">
                                                                 <a
                                                                     href={`mailto:${user.email}`}
                                                                     className="flex items-center gap-2 px-3 py-2 text-xs text-white hover:bg-white/10 transition-colors"
@@ -723,6 +875,48 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                                     <FileText className="w-3.5 h-3.5" />
                                                                     Copiar info completa
                                                                 </button>
+
+                                                                {/* Cambiar rol */}
+                                                                <div className="border-t border-white/10">
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); setRoleMenuOpen(roleMenuOpen === user.id ? null : user.id); }}
+                                                                        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs text-amber-400 hover:bg-white/10 transition-colors text-left"
+                                                                    >
+                                                                        <span className="flex items-center gap-2">
+                                                                            <ShieldCheck className="w-3.5 h-3.5" />
+                                                                            Cambiar rol
+                                                                        </span>
+                                                                        <span className="text-white/30 capitalize">{user.role}</span>
+                                                                    </button>
+                                                                    {roleMenuOpen === user.id && (
+                                                                        <div className="bg-slate-900 border-t border-white/5 px-2 pb-2" onClick={(e) => e.stopPropagation()}>
+                                                                            {[
+                                                                                { value: "member",     label: "Miembro",      color: "text-blue-400" },
+                                                                                { value: "coach",      label: "Coach",        color: "text-green-400" },
+                                                                                { value: "front_desk", label: "Recepción",    color: "text-amber-400" },
+                                                                                { value: "admin",      label: "Admin",        color: "text-red-400" },
+                                                                            ].map(({ value, label, color }) => (
+                                                                                <roleFetcher.Form key={value} method="post">
+                                                                                    <input type="hidden" name="intent" value="update_role" />
+                                                                                    <input type="hidden" name="userId" value={user.id} />
+                                                                                    <input type="hidden" name="role" value={value} />
+                                                                                    <button
+                                                                                        type="submit"
+                                                                                        disabled={user.role === value || roleFetcher.state !== "idle"}
+                                                                                        className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-40 ${
+                                                                                            user.role === value
+                                                                                                ? "bg-white/10 " + color
+                                                                                                : "hover:bg-white/10 text-white/60"
+                                                                                        }`}
+                                                                                    >
+                                                                                        <span className={user.role === value ? color : ""}>{label}</span>
+                                                                                        {user.role === value && <Check className="w-3 h-3" />}
+                                                                                    </button>
+                                                                                </roleFetcher.Form>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
                                                             </div>
                                                         </>
                                                     )}
@@ -741,6 +935,118 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Asignar / Renovar Membresía ── */}
+            {assignMembershipFor && (() => {
+                const target = users.find(u => u.id === assignMembershipFor);
+                if (!target) return null;
+                const targetExpired = target.membership && new Date(target.membership.end_date) < new Date();
+                const isRenew = target.membership && !targetExpired;
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                        <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl relative">
+                            <button
+                                onClick={() => setAssignMembershipFor(null)}
+                                className="absolute right-4 top-4 text-white/30 hover:text-white transition-colors"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+
+                            {/* Header */}
+                            <div className="flex items-center gap-3 mb-5">
+                                <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                                    <CreditCard className="w-4 h-4 text-blue-400" />
+                                </div>
+                                <div>
+                                    <h2 className="text-base font-bold text-white">
+                                        {isRenew ? "Reasignar membresía" : "Asignar membresía"}
+                                    </h2>
+                                    <p className="text-xs text-white/40 truncate max-w-[200px]">{target.full_name}</p>
+                                </div>
+                            </div>
+
+                            {/* Membresía actual */}
+                            {target.membership && (
+                                <div className="mb-4 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.07] flex items-center justify-between">
+                                    <span className="text-xs text-white/50">Membresía actual</span>
+                                    <div className="text-right">
+                                        <p className={`text-xs font-semibold ${targetExpired ? "text-red-400" : "text-white/70"}`}>
+                                            {target.membership.plan_name}
+                                        </p>
+                                        <p className={`text-[10px] ${targetExpired ? "text-red-400/70" : "text-white/30"}`}>
+                                            {targetExpired ? "Vencida" : `Vence ${new Date(target.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}`}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {plans && plans.length > 0 ? (
+                                <membershipFetcher.Form method="post" className="space-y-3">
+                                    <input type="hidden" name="intent" value="assign_membership" />
+                                    <input type="hidden" name="userId" value={target.id} />
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-white/40 uppercase mb-1.5">Plan</label>
+                                        <select
+                                            name="planId"
+                                            defaultValue=""
+                                            required
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm appearance-none focus:border-blue-500/50 focus:outline-none transition-colors"
+                                        >
+                                            <option value="" disabled className="bg-slate-900">Selecciona un plan…</option>
+                                            {plans.map((plan: any) => (
+                                                <option key={plan.id} value={plan.id} className="bg-slate-900">
+                                                    {plan.name} — ${plan.price.toLocaleString("es-MX")} · {plan.validity_days}d
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-white/40 uppercase mb-1.5">Método de pago</label>
+                                        <select
+                                            name="paymentMethod"
+                                            defaultValue="cash"
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm appearance-none focus:border-blue-500/50 focus:outline-none transition-colors"
+                                        >
+                                            <option value="cash" className="bg-slate-900">Efectivo</option>
+                                            <option value="card" className="bg-slate-900">Tarjeta</option>
+                                            <option value="transfer" className="bg-slate-900">Transferencia</option>
+                                            <option value="mercado_pago" className="bg-slate-900">Mercado Pago</option>
+                                        </select>
+                                    </div>
+
+                                    {membershipFetcher.data?.error && (
+                                        <p className="text-xs text-red-400 text-center">{membershipFetcher.data.error}</p>
+                                    )}
+
+                                    <div className="flex gap-2 pt-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => setAssignMembershipFor(null)}
+                                            className="flex-1 py-2.5 rounded-xl text-sm font-semibold border border-white/10 text-white/60 hover:bg-white/5 transition-all"
+                                        >
+                                            Cancelar
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            disabled={membershipFetcher.state !== "idle"}
+                                            className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50"
+                                        >
+                                            {membershipFetcher.state !== "idle" ? "Asignando…" : "Confirmar"}
+                                        </button>
+                                    </div>
+                                </membershipFetcher.Form>
+                            ) : (
+                                <div className="text-center py-4">
+                                    <p className="text-sm text-amber-400 font-medium">No hay planes activos</p>
+                                    <p className="text-xs text-white/30 mt-1">Crea un plan en la sección <span className="text-white/50 font-semibold">Planes</span> para continuar.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

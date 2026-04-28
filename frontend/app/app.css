@@ -31,6 +31,14 @@ body {
   position: relative;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* Global Heading Styles for Landing */
 h1, h2, h3 {
   font-family: var(--font-display);
@@ -87,4 +95,44 @@ option {
 
 .animate-pulse-subtle {
   animation: pulse-subtle 3s ease-in-out infinite;
+}
+
+/* Dashboard Light Theme Overrides to handle hardcoded white classes */
+.dashboard-light-mode .text-white {
+  color: #1f2937; /* gray-800 */
+}
+
+.dashboard-light-mode .text-white\/20,
+.dashboard-light-mode .text-white\/30,
+.dashboard-light-mode .text-white\/40,
+.dashboard-light-mode .text-white\/50,
+.dashboard-light-mode .text-white\/60 {
+  color: #4b5563; /* gray-600 */
+}
+
+/* Specific resets for layout navigation text to keep brand colors intact when active */
+.dashboard-light-mode a.text-white {
+  color: inherit;
+}
+.dashboard-light-mode a.text-white\/40 {
+  color: #6b7280;
+}
+
+.dashboard-light-mode .bg-white\/5,
+.dashboard-light-mode .bg-white\/10,
+.dashboard-light-mode .bg-white\/\[0\.05\],
+.dashboard-light-mode .bg-white\/\[0\.03\],
+.dashboard-light-mode .bg-black\/40 {
+  background-color: rgba(255, 255, 255, 0.45);
+}
+
+.dashboard-light-mode .border-white\/10,
+.dashboard-light-mode .border-white\/5,
+.dashboard-light-mode .border-white\/\[0\.08\],
+.dashboard-light-mode .border-white\/\[0\.07\] {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.dashboard-light-mode .shadow-2xl {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.05);
 }

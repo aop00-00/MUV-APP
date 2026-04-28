@@ -19,7 +19,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     const { data: gym } = await supabaseAdmin
         .from("gyms")
-        .select("name, slug, logo_url, primary_color, timezone")
+        .select("name, slug, logo_url, primary_color, timezone, theme")
         .eq("id", gymId)
         .single();
 
@@ -30,6 +30,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             logoUrl: gym?.logo_url || "",
             primaryColor: gym?.primary_color || "#7c3aed",
             timezone: gym?.timezone || "America/Mexico_City",
+            theme: gym?.theme || "dark",
         }
     };
 }
@@ -48,6 +49,7 @@ export async function action({ request }: Route.ActionArgs) {
         const slug = formData.get("slug") as string;
         const primaryColor = formData.get("primaryColor") as string;
         const timezone = formData.get("timezone") as string;
+        const theme = formData.get("theme") as string;
         const logoUrl = formData.get("logoUrl") as string;
         const logoFile = formData.get("logoFile") as File | null;
 
@@ -81,6 +83,7 @@ export async function action({ request }: Route.ActionArgs) {
         if (slug) updates.slug = slug;
         if (primaryColor) updates.primary_color = primaryColor;
         if (timezone) updates.timezone = timezone;
+        if (theme) updates.theme = theme;
         if (finalLogoUrl !== undefined) updates.logo_url = finalLogoUrl || null;
 
         const { error } = await supabaseAdmin
@@ -113,6 +116,7 @@ export default function StudioGeneral({ loaderData }: Route.ComponentProps) {
         logoFile: null as File | null,
         primaryColor: gym.primaryColor,
         timezone: gym.timezone,
+        theme: gym.theme,
     });
 
     const saved = fetcher.data?.success && fetcher.state === "idle";
@@ -138,6 +142,7 @@ export default function StudioGeneral({ loaderData }: Route.ComponentProps) {
         fd.set("slug", form.slug);
         fd.set("primaryColor", form.primaryColor);
         fd.set("timezone", form.timezone);
+        fd.set("theme", form.theme);
         
         if (form.logoFile) {
             fd.set("logoFile", form.logoFile);
@@ -227,6 +232,27 @@ export default function StudioGeneral({ loaderData }: Route.ComponentProps) {
                             <div className="flex items-center gap-2 ml-1">
                                 <input type="color" value={form.primaryColor} onChange={e => updateColor(e.target.value)} className="w-9 h-9 rounded-xl cursor-pointer border-0" />
                                 <span className="text-xs text-white/40 font-mono">{form.primaryColor}</span>
+                            </div>
+                        </div>
+
+                        {/* Theme picker */}
+                        <div className="mt-5">
+                            <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Tema de Fondo</label>
+                            <div className="flex gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setForm(f => ({ ...f, theme: 'dark' }))}
+                                    className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition-all ${form.theme === 'dark' ? 'border-amber-400 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                                >
+                                    Oscuro (Dark)
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setForm(f => ({ ...f, theme: 'light' }))}
+                                    className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition-all ${form.theme === 'light' ? 'border-amber-400 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                                >
+                                    Claro / Zen (Beige)
+                                </button>
                             </div>
                         </div>
                     </div>

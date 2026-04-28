@@ -40,21 +40,35 @@ export interface UserBooking {
 export async function createClass(params: {
     gymId: string;
     title: string;
+    color?: string | null;
     coach_id: string;
-    start_time: string; // ISO timestamp
-    end_time: string;   // ISO timestamp
+    start_time: string;
+    end_time: string;
     capacity: number;
     location: string;
     room_id?: string;
 }): Promise<ClassSlot> {
-    const { gymId, title, coach_id, start_time, end_time, capacity, location, room_id } = params;
+    const { gymId, title, color, coach_id, start_time, end_time, capacity, location, room_id } = params;
+
+    // Resolve coach name so it's stored directly and never shows "Staff"
+    let coach_name: string | null = null;
+    if (coach_id) {
+        const { data: coachRow } = await supabaseAdmin
+            .from("coaches")
+            .select("name")
+            .eq("id", coach_id)
+            .single();
+        coach_name = coachRow?.name ?? null;
+    }
 
     const { data, error } = await supabaseAdmin
         .from("classes")
         .insert({
             gym_id: gymId,
             title,
+            color: color || null,
             coach_id,
+            coach_name,
             start_time,
             end_time,
             capacity,
@@ -62,7 +76,7 @@ export async function createClass(params: {
             location,
             room_id: room_id || null,
         })
-        .select("*, coach:coaches(name)")
+        .select("*")
         .single();
 
     if (error) throw new Error(`Error creating class: ${error.message}`);
@@ -86,12 +100,17 @@ export async function getClassesForGym(gymId: string): Promise<ClassSlot[]> {
 
     const { data, error } = await supabaseAdmin
         .from("classes")
-        .select("*, coach:coaches(name)")
+        .select("*, coach:coaches(id, name)")
         .eq("gym_id", gymId)
         .order("start_time", { ascending: true });
 
     if (error) throw new Error(`Error fetching classes: ${error.message}`);
-    return (data ?? []) as ClassSlot[];
+
+    // Normalize: if coach_name column missing but join succeeded, populate it
+    return (data ?? []).map((c: any) => ({
+        ...c,
+        coach_name: c.coach_name || c.coach?.name || null,
+    })) as ClassSlot[];
 }
 
 // ── Get classes for a specific date ──────────────────────────────
@@ -105,7 +124,7 @@ export async function getClassesByDate(date: string, gymId: string): Promise<Cla
 
     const { data, error } = await supabaseAdmin
         .from("classes")
-        .select("*, coach:coaches(name)")
+        .select("*")
         .eq("gym_id", gymId)
         .gte("start_time", start)
         .lte("start_time", end)
@@ -219,8 +238,31 @@ export async function getWaitlistPosition(
     return data?.position ?? null;
 }
 
+// ── Detect which optional columns exist on `classes` ────────────
+// Lets the sync work before/after migration 011 is applied.
+async function getClassesColumns(): Promise<Set<string>> {
+    const { data } = await supabaseAdmin
+        .from("classes")
+        .select("*")
+        .limit(1);
+    const cols = new Set<string>();
+    if (data && data.length > 0) {
+        Object.keys(data[0]).forEach(k => cols.add(k));
+    } else {
+        // Empty table — probe by selecting specific columns
+        const probe = await supabaseAdmin.from("classes").select("id, gym_id, title, start_time, end_time, capacity, location, coach_id, current_enrolled").limit(0);
+        if (!probe.error) ["id","gym_id","title","start_time","end_time","capacity","location","coach_id","current_enrolled"].forEach(c => cols.add(c));
+        // Probe new columns individually
+        for (const c of ["schedule_id", "room_id", "coach_name", "color"]) {
+            const { error } = await supabaseAdmin.from("classes").select(c).limit(0);
+            if (!error) cols.add(c);
+        }
+    }
+    return cols;
+}
+
 // ── Sync classes from schedules ─────────────────────────────────
-export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: number = 4) {
+export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: number = 4, tzOffsetMinutes: number = 0) {
     if (!gymId) throw new Error("gymId is required for sync");
 
     // 1. Get all active schedules for this gym
@@ -233,8 +275,18 @@ export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: num
     if (sError) throw new Error(`Error fetching schedules for sync: ${sError.message}`);
     if (!schedules || schedules.length === 0) return { success: true, count: 0 };
 
+    // Detect available optional columns once
+    const cols = await getClassesColumns();
+    const hasScheduleId = cols.has("schedule_id");
+    const hasRoomId = cols.has("room_id");
+    const hasCoachName = cols.has("coach_name");
+    const hasColor = cols.has("color");
+
+    if (!hasScheduleId) {
+        throw new Error("La columna 'schedule_id' no existe en 'classes'. Ejecuta la migración 011_schedule_sync_columns.sql en Supabase antes de sincronizar horarios.");
+    }
+
     // 2. Clear future classes linked to schedules to avoid duplicates
-    // We only clear from 'now' onwards
     const now = new Date().toISOString();
     const { error: dError } = await supabaseAdmin
         .from("classes")
@@ -257,16 +309,16 @@ export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: num
         const targetDays = (schedule.days as string[]) || [];
         const dayIndices = targetDays.map(d => dayMap[d]).filter(d => d !== undefined);
 
-        // Iterate through each day in the range
         let curr = new Date(startDate);
         while (curr <= endDate) {
             if (dayIndices.includes(curr.getDay())) {
-                // Combine date with schedule time
                 const [hours, minutes] = schedule.time.split(":").map(Number);
                 const start = new Date(curr);
-                start.setHours(hours, minutes, 0, 0);
+                // setHours on the server (UTC) sets UTC hours. Apply offset to convert
+                // local wall-clock time → UTC: UTC = local + offsetMinutes
+                start.setUTCHours(hours, minutes, 0, 0);
+                start.setTime(start.getTime() + tzOffsetMinutes * 60000);
 
-                // Skip if start time is in the past
                 if (start < new Date()) {
                     curr.setDate(curr.getDate() + 1);
                     continue;
@@ -275,18 +327,22 @@ export async function syncGymClassesFromSchedules(gymId: string, weeksAhead: num
                 const end = new Date(start);
                 end.setMinutes(end.getMinutes() + (schedule.duration || 60));
 
-                newClasses.push({
+                const row: any = {
                     gym_id: gymId,
                     schedule_id: schedule.id,
                     title: schedule.class_name,
-                    coach_id: schedule.coach_id, // Use ID if available
+                    coach_id: schedule.coach_id || null,
                     capacity: schedule.capacity,
                     location: schedule.room_name,
-                    room_id: schedule.room_id || null,
                     start_time: start.toISOString(),
                     end_time: end.toISOString(),
-                    current_enrolled: 0
-                });
+                    current_enrolled: 0,
+                };
+                if (hasRoomId) row.room_id = schedule.room_id || null;
+                if (hasCoachName) row.coach_name = schedule.coach_name || null;
+                if (hasColor) row.color = schedule.color || null;
+
+                newClasses.push(row);
             }
             curr.setDate(curr.getDate() + 1);
         }

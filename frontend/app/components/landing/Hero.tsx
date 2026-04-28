@@ -27,12 +27,13 @@ const transitionVariants = {
     },
 };
 
-// ── Nav items ─────────────────────────────────────────────────────
+// ─── Nav items ─────────────────────────────────────────────────────
 const menuItems = [
-    { name: "Características", href: "#features" },
-    { name: "Proceso", href: "#process" },
-    { name: "Precios", href: "#pricing" },
-    { name: "FAQ", href: "#faq" },
+    { name: "Plataforma", href: "/producto" },
+    { name: "Características", href: "/#features" },
+    { name: "Proceso", href: "/#process" },
+    { name: "Precios", href: "/#pricing" },
+    { name: "FAQ", href: "/#faq" },
 ];
 
 // ── Grind Project wordmark ────────────────────────────────────────
@@ -117,12 +118,12 @@ export const HeroHeader = () => {
                             <ul className="flex gap-8 text-sm">
                                 {menuItems.map((item, i) => (
                                     <li key={i}>
-                                        <a
-                                            href={item.href}
+                                        <Link
+                                            to={item.href}
                                             className="text-white/50 hover:text-white block duration-150"
                                         >
                                             {item.name}
-                                        </a>
+                                        </Link>
                                     </li>
                                 ))}
                             </ul>
@@ -144,13 +145,13 @@ export const HeroHeader = () => {
                                 <ul className="space-y-6 text-base">
                                     {menuItems.map((item, i) => (
                                         <li key={i}>
-                                            <a
-                                                href={item.href}
+                                            <Link
+                                                to={item.href}
                                                 className="text-white/60 hover:text-white block duration-150"
                                                 onClick={() => setMenuState(false)}
                                             >
                                                 {item.name}
-                                            </a>
+                                            </Link>
                                         </li>
                                     ))}
                                 </ul>

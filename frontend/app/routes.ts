@@ -9,6 +9,7 @@ import {
 export default [
     // ─── Landing Page (Marketing) ────────────────────────────────
     index("routes/_index.tsx"),
+    route("producto", "routes/producto.tsx"),
 
     // ─── Auth ────────────────────────────────────────────────────
     route("auth/login", "routes/auth/login.tsx"),
@@ -45,6 +46,9 @@ export default [
             route("fitcoins", "routes/dashboard/fitcoins.tsx"),
             route("checkout/:packId", "routes/dashboard/checkout/$packId.tsx"),
             route("checkout/success", "routes/dashboard/checkout/success.tsx"),
+            route("progreso", "routes/dashboard/progreso.tsx"),
+            route("strava/connect", "routes/dashboard/strava/connect.ts"),
+            route("strava/callback", "routes/dashboard/strava/callback.ts"),
         ]),
     ]),
 
@@ -82,6 +86,17 @@ export default [
         ]),
     ]),
 
+    // ─── Staff / Front Desk Panel (Protected by role='front_desk' or 'admin') ──
+    ...prefix("staff", [
+        layout("routes/staff/layout.tsx", [
+            index("routes/staff/_index.tsx"),
+            route("checkin",  "routes/staff/checkin.tsx"),
+            route("schedule", "routes/staff/schedule.tsx"),
+            route("pos",      "routes/staff/pos.tsx"),
+            route("walkin",   "routes/staff/walkin.tsx"),
+        ]),
+    ]),
+
     // ─── Barista Panel (Protected by role='coach') ───────────────
     ...prefix("barista", [
         layout("routes/barista/layout.tsx", [
@@ -94,6 +109,7 @@ export default [
     route("api/debug-db", "routes/api/debug-db.ts"),
     route("api/test-auth", "routes/api/test-auth.ts"),
     route("api/resources", "routes/api/resources.ts"),
+    route("api/strava-webhook", "routes/api/strava-webhook.ts"),
 
     // ─── Cron Jobs (Vercel Cron — protected by CRON_SECRET) ──────
     route("cron/inactivity-check", "routes/cron/inactivity-check.ts"),
@@ -102,4 +118,5 @@ export default [
     // MUST be last — dynamic segment only matches when no static route does
     route(":slug", "routes/gym-portal.tsx"),
 ] satisfies RouteConfig;
+
 

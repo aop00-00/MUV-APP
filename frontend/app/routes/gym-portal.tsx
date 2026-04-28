@@ -53,6 +53,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
                     admin: "/admin",
                     coach: "/barista",
                     member: "/dashboard",
+                    front_desk: "/staff",
                 };
                 throw redirect(redirectMap[profile.role] || "/dashboard");
             }

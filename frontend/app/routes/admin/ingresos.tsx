@@ -64,6 +64,7 @@ const METHOD_LABELS: Record<string, string> = {
     cash: "Efectivo",
     mercado_pago: "Mercado Pago",
     card: "Tarjeta",
+    transfer: "Transferencia",
 };
 const STATUS_CFG: Record<string, { bg: string; text: string; label: string }> = {
     paid: { bg: "bg-green-100", text: "text-green-700", label: "Pagado" },

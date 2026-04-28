@@ -46,7 +46,15 @@ export async function action({ request }: Route.ActionArgs) {
             } else {
                 const { data: newCoach } = await supabaseAdmin
                     .from("coaches")
-                    .insert({ gym_id: gymId, name: cls.coachName.trim(), status: "active" })
+                    .insert({ 
+                        gym_id: gymId, 
+                        name: cls.coachName.trim(), 
+                        status: "activo",
+                        is_active: true,
+                        email: `coach_${Date.now()}@temp.com`,
+                        role: "titular",
+                        specialties: [cls.name.trim()]
+                    })
                     .select("id")
                     .single();
                 coachId = newCoach?.id || null;
@@ -65,26 +73,28 @@ export async function action({ request }: Route.ActionArgs) {
 
         if (!classType) continue;
 
-        // 3. Create schedules for each selected day
-        const dayMap: Record<string, number> = {
-            Lun: 1, Mar: 2, Mié: 3, Jue: 4, Vie: 5, Sáb: 6, Dom: 0,
-        };
-
-        for (const day of cls.days) {
-            const dayNumber = dayMap[day];
-            if (dayNumber === undefined) continue;
-
+        // 3. Create schedule template
+        if (cls.days && cls.days.length > 0) {
             await supabaseAdmin.from("schedules").insert({
                 gym_id: gymId,
-                class_type_id: classType.id,
+                class_name: cls.name.trim(),
+                coach_name: cls.coachName.trim(),
                 coach_id: coachId,
-                day_of_week: dayNumber,
-                start_time: cls.time || "07:00",
-                end_time: addHour(cls.time || "07:00"),
+                room_name: "Sala Principal",
+                room_id: null,
+                days: cls.days,
+                time: cls.time || "07:00",
+                duration: 60,
+                capacity: 20,
                 is_active: true,
             });
         }
     }
+
+    // Auto-sync classes so they appear in /dashboard/schedule
+    const tzOffset = parseInt(formData.get("tz_offset") as string ?? "0", 10);
+    const { syncGymClassesFromSchedules } = await import("~/services/booking.server");
+    await syncGymClassesFromSchedules(gymId, 4, tzOffset);
 
     await updateOnboardingStep(gymId, 5);
     return { success: true };
@@ -175,6 +185,7 @@ export default function StepClasses() {
         const fd = new FormData();
         fd.set("intent", "save");
         fd.set("classes", JSON.stringify(classes.filter(c => c.name.trim())));
+        fd.set("tz_offset", String(new Date().getTimezoneOffset()));
         fetcher.submit(fd, { method: "post" });
     }
 

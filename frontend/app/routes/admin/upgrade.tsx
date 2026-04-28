@@ -2,11 +2,13 @@
 // Paywall / upgrade screen shown when trial expires or user clicks "Elegir plan".
 // Uses requireAuth directly (NOT requireGymAuth) to avoid redirect loop.
 
-import React from "react";
-import { Link } from "react-router";
+import React, { useEffect, useState } from "react";
+import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/upgrade";
-import { Zap, Sparkles, Rocket, Check, ArrowLeft } from "lucide-react";
+import { Zap, Sparkles, Rocket, Sprout, Check, ArrowLeft, Loader2 } from "lucide-react";
 import ParticleBackground from "~/components/landing/ParticleBackground";
+
+// ─── Loader ───────────────────────────────────────────────────────
 
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireAuth } = await import("~/services/auth.server");
@@ -36,6 +38,97 @@ export async function loader({ request }: Route.LoaderArgs) {
     };
 }
 
+// ─── Action ───────────────────────────────────────────────────────
+
+export async function action({ request }: Route.ActionArgs) {
+    const { requireAuth } = await import("~/services/auth.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+
+    const profile = await requireAuth(request);
+    if (!profile.gym_id) {
+        return { error: "No tienes un estudio asociado." };
+    }
+
+    const formData = await request.formData();
+    const planId = formData.get("plan_id") as string;
+
+    if (!["emprendedor", "starter", "pro", "elite"].includes(planId)) {
+        return { error: "Plan no válido." };
+    }
+
+    // ── Plan gratuito: actualizar directamente ─────────────────────
+    if (planId === "emprendedor") {
+        const { error } = await supabaseAdmin
+            .from("gyms")
+            .update({ plan_id: "emprendedor", plan_status: "active" })
+            .eq("id", profile.gym_id);
+
+        if (error) return { error: "Error al actualizar el plan. Intenta de nuevo." };
+
+        throw new Response(null, { status: 302, headers: { Location: "/admin" } });
+    }
+
+    // ── Planes pagados: crear preferencia MercadoPago (Flow 1 SaaS) ─
+    const PLAN_PRICES: Record<string, number> = {
+        starter: 999,
+        pro: 2099,
+        elite: 4099,
+    };
+    const PLAN_NAMES: Record<string, string> = {
+        starter: "Plan Starter",
+        pro: "Plan Pro",
+        elite: "Plan Elite",
+    };
+
+    const mpToken = process.env.MERCADO_PAGO_ACCESS_TOKEN_SAAS;
+    if (!mpToken) return { error: "Pagos no configurados. Contacta a soporte." };
+
+    const appUrl = process.env.APP_URL ?? "https://grindproject.vercel.app";
+    const externalRef = `flow:saas:plan:pending:user:${profile.id}:gym:${profile.gym_id}:plan:${planId}`;
+
+    const body = {
+        items: [{
+            id: `saas-${planId}`,
+            title: PLAN_NAMES[planId],
+            description: `Suscripción mensual a GrindProject ${PLAN_NAMES[planId]}`,
+            category_id: "services",
+            quantity: 1,
+            currency_id: "MXN",
+            unit_price: PLAN_PRICES[planId],
+        }],
+        back_urls: {
+            success: `${appUrl}/admin`,
+            failure: `${appUrl}/admin/upgrade`,
+            pending: `${appUrl}/admin`,
+        },
+        auto_return: "approved" as const,
+        external_reference: externalRef,
+        notification_url: process.env.N8N_WEBHOOK_MP_URL ?? `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
+        statement_descriptor: "GRINDPROJECT",
+    };
+
+    const res = await fetch("https://api.mercadopago.com/checkout/preferences", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${mpToken}`,
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+        const errText = await res.text();
+        console.error("[upgrade/action] MP error:", errText);
+        return { error: "Error al crear el pago. Intenta de nuevo." };
+    }
+
+    const preference = await res.json();
+    const isDev = process.env.NODE_ENV !== "production";
+    const checkoutUrl = isDev ? preference.sandbox_init_point : preference.init_point;
+
+    return { checkoutUrl };
+}
+
 // ─── Plan data ────────────────────────────────────────────────────
 
 interface UpgradePlan {
@@ -49,6 +142,24 @@ interface UpgradePlan {
 }
 
 const PLANS: UpgradePlan[] = [
+    {
+        id: "emprendedor",
+        name: "Emprendedor",
+        icon: <Sprout className="w-5 h-5" />,
+        price: 0,
+        desc: "Para estudios o entrenadores independientes que están comenzando.",
+        features: [
+            "1 sede fisica",
+            "Hasta 10 alumnos activos",
+            "3 tipos de clase",
+            "1 coach",
+            "Reservas y calendario",
+            "Check-in con codigo QR",
+            "Punto de Venta (5 productos)",
+            "Historial de 30 dias",
+        ],
+        featured: false,
+    },
     {
         id: "starter",
         name: "Starter",
@@ -110,6 +221,27 @@ const PLANS: UpgradePlan[] = [
 
 export default function UpgradePage({ loaderData }: Route.ComponentProps) {
     const { gymName, currentPlan, isExpired } = loaderData;
+    const fetcher = useFetcher<typeof action>();
+    const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+    // Redirect to MercadoPago checkout when action returns a URL
+    useEffect(() => {
+        if (fetcher.data && "checkoutUrl" in fetcher.data) {
+            window.location.href = fetcher.data.checkoutUrl as string;
+        }
+        if (fetcher.state === "idle") {
+            setLoadingPlan(null);
+        }
+    }, [fetcher.data, fetcher.state]);
+
+    function handleSelectPlan(planId: string) {
+        setLoadingPlan(planId);
+        const fd = new FormData();
+        fd.set("plan_id", planId);
+        fetcher.submit(fd, { method: "post" });
+    }
+
+    const errorMsg = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
     return (
         <>
@@ -141,16 +273,24 @@ export default function UpgradePage({ loaderData }: Route.ComponentProps) {
                     )}
                 </div>
 
+                {/* Error message */}
+                {errorMsg && (
+                    <div className="max-w-5xl w-full bg-red-500/10 border border-red-500/30 text-red-300 text-sm px-4 py-3 rounded-xl text-center mb-2">
+                        {errorMsg}
+                    </div>
+                )}
+
                 {/* Plan cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl w-full">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 max-w-6xl w-full">
                     {PLANS.map((plan) => {
                         const isCurrent = plan.id === currentPlan && !isExpired;
+                        const isLoading = loadingPlan === plan.id;
                         return (
                             <div
                                 key={plan.id}
                                 className={`relative flex flex-col rounded-2xl p-7 transition-all ${plan.featured
-                                        ? "border-2 border-white/40 bg-white/10 shadow-[0_0_60px_rgba(255,255,255,0.06)]"
-                                        : "border border-white/10 bg-white/[0.03]"
+                                    ? "border-2 border-white/40 bg-white/10 shadow-[0_0_60px_rgba(255,255,255,0.06)]"
+                                    : "border border-white/10 bg-white/[0.03]"
                                     }`}
                             >
                                 {plan.featured && (
@@ -169,10 +309,16 @@ export default function UpgradePage({ loaderData }: Route.ComponentProps) {
                                 <p className="text-white/40 text-sm mb-4">{plan.desc}</p>
 
                                 <div className="mb-6">
-                                    <span className="text-4xl font-black text-white">
-                                        ${plan.price.toLocaleString("es-MX")}
-                                    </span>
-                                    <span className="text-white/35 text-sm ml-1">MXN/mes</span>
+                                    {plan.price === 0 ? (
+                                        <span className="text-4xl font-black text-white">Gratis</span>
+                                    ) : (
+                                        <>
+                                            <span className="text-4xl font-black text-white">
+                                                ${plan.price.toLocaleString("es-MX")}
+                                            </span>
+                                            <span className="text-white/35 text-sm ml-1">MXN/mes</span>
+                                        </>
+                                    )}
                                 </div>
 
                                 <div className="w-full h-px bg-white/[0.08] mb-6" />
@@ -192,12 +338,18 @@ export default function UpgradePage({ loaderData }: Route.ComponentProps) {
                                     </div>
                                 ) : (
                                     <button
-                                        className={`w-full text-center py-3 rounded-xl font-semibold text-sm transition-all hover:scale-[1.02] active:scale-[0.98] ${plan.featured
-                                                ? "bg-white text-black hover:bg-white/90"
-                                                : "bg-white/5 border border-white/15 text-white hover:bg-white/10"
+                                        onClick={() => handleSelectPlan(plan.id)}
+                                        disabled={!!loadingPlan}
+                                        className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-semibold text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed ${!loadingPlan ? "hover:scale-[1.02] active:scale-[0.98]" : ""} ${plan.featured
+                                            ? "bg-white text-black hover:bg-white/90"
+                                            : "bg-white/5 border border-white/15 text-white hover:bg-white/10"
                                             }`}
                                     >
-                                        {isExpired ? `Activar ${plan.name}` : `Cambiar a ${plan.name}`}
+                                        {isLoading ? (
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            isExpired ? `Activar ${plan.name}` : `Cambiar a ${plan.name}`
+                                        )}
                                     </button>
                                 )}
                             </div>

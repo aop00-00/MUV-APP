@@ -57,15 +57,14 @@ export async function createEvent(params: {
     gymId: string;
     name: string;
     description: string;
-    date: string; // YYYY-MM-DD
-    time: string; // HH:MM
+    startIso: string; // pre-built ISO from browser (correct local→UTC conversion)
     max_capacity: number;
     price: number;
     location: string;
 }): Promise<GymEvent> {
-    const { gymId, name, description, date, time, max_capacity, price, location } = params;
+    const { gymId, name, description, startIso, max_capacity, price, location } = params;
 
-    const startTime = new Date(`${date}T${time}:00`).toISOString();
+    const startTime = startIso;
 
     const { data, error } = await supabaseAdmin
         .from("events")

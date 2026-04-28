@@ -44,7 +44,7 @@ export async function action({ request }: Route.ActionArgs) {
     // Use maybeSingle() to handle missing profiles gracefully
     const { data: profile, error: profileError } = await supabaseAdmin
         .from("profiles")
-        .select("role")
+        .select("role, gym_id")
         .eq("id", data.user.id)
         .maybeSingle();
 
@@ -67,10 +67,47 @@ export async function action({ request }: Route.ActionArgs) {
     }
 
     const role = profile?.role || data.user.user_metadata?.role || "member";
+    const gymId = profile?.gym_id;
+
+    // Admin with gym but onboarding incomplete → go directly to setup
+    if (role === "admin" && gymId) {
+        const { data: gym } = await supabaseAdmin
+            .from("gyms")
+            .select("onboarding_completed")
+            .eq("id", gymId)
+            .single();
+        if (gym && !gym.onboarding_completed) {
+            return createUserSession(request, "/onboarding/setup", data.user.id, role);
+        }
+    }
+
+    // Admin without gym_id → try to auto-repair broken link before giving up
+    if (role === "admin" && !gymId) {
+        const { data: ownedGym } = await supabaseAdmin
+            .from("gyms")
+            .select("id, onboarding_completed")
+            .eq("owner_id", data.user.id)
+            .maybeSingle();
+
+        if (ownedGym) {
+            // Repair the broken profile→gym link
+            await supabaseAdmin
+                .from("profiles")
+                .update({ gym_id: ownedGym.id })
+                .eq("id", data.user.id);
+            console.warn(`[login] Auto-repaired gym_id link for user ${data.user.id} → gym ${ownedGym.id}`);
+            const destination = ownedGym.onboarding_completed ? "/admin" : "/onboarding/setup";
+            return createUserSession(request, destination, data.user.id, role);
+        }
+
+        return createUserSession(request, "/onboarding", data.user.id, role);
+    }
+
     const redirectMap: Record<string, string> = {
         member: "/dashboard",
         admin: "/admin",
         coach: "/barista",
+        front_desk: "/staff",
     };
 
     return createUserSession(request, redirectMap[role] || "/dashboard", data.user.id, role);
@@ -90,10 +127,10 @@ export default function Login({ actionData }: Route.ComponentProps) {
                 {/* Header */}
                 <div className="text-center">
                     <h1 className="text-4xl font-black text-gray-900 tracking-tight uppercase font-display">
-                        {gymName}
+                        PROJECT STUDIO
                     </h1>
                     <p className="text-gray-500 mt-2 text-sm italic font-medium">
-                        POWERED BY GRIND PROJECT
+                        POWERED BY PROJECT STUDIO
                     </p>
                 </div>
 

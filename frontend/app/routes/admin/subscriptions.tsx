@@ -9,26 +9,28 @@ import {
     CheckCircle, Clock, TrendingUp, Users, DollarSign, Filter
 } from "lucide-react";
 // Server services moved to dynamic imports inside loader/action
-import type { Subscription, SubscriptionStatus, SubscriptionPlan } from "~/types/database";
+import type { Subscription, SubscriptionStatus } from "~/types/database";
 
 // ─── Loader & Action ─────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { listSubscriptions, getRenewalQueue, PLAN_CATALOG } = await import("~/services/subscription.server");
+    const { getRenewalQueue } = await import("~/services/subscription.server");
+    const { getGymPlans } = await import("~/services/plan.server");
     const { supabaseAdmin } = await import("~/services/supabase.server");
 
     const { profile, gymId } = await requireGymAdmin(request);
 
-    const [profilesData, renewalQueue] = await Promise.all([
+    const [profilesData, renewalQueue, gymPlans] = await Promise.all([
         supabaseAdmin
             .from("profiles")
             .select("*, memberships(*)")
             .eq("gym_id", gymId),
         getRenewalQueue(7, gymId),
+        getGymPlans(gymId),
     ]);
 
     const allProfiles = profilesData.data || [];
-    
+
     // Sort profiles to put those with active memberships first
     const sortedProfiles = [...allProfiles].sort((a, b) => {
         const aHasActive = (a.memberships as any[]).some(m => m.status === "active");
@@ -49,13 +51,13 @@ export async function loader({ request }: Route.LoaderArgs) {
             }, 0),
     };
 
-    return { profiles: sortedProfiles, renewalQueue, plans: PLAN_CATALOG, stats, gymId };
+    return { profiles: sortedProfiles, renewalQueue, plans: gymPlans.filter(p => p.is_active), stats, gymId };
 }
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const {
-        PLAN_CATALOG, createMembership,
+        createMembership,
         freezeMembership, reactivateMembership, cancelMembership,
     } = await import("~/services/subscription.server");
 
@@ -76,35 +78,62 @@ export async function action({ request }: Route.ActionArgs) {
                 await cancelMembership(subId, gymId);
                 return { success: true, message: `Membresía cancelada.` };
             case "renew": {
-                // Renew = reactivate + extend end_date by 1 month
                 const { supabaseAdmin } = await import("~/services/supabase.server");
                 const newEnd = new Date();
                 newEnd.setMonth(newEnd.getMonth() + 1);
+
+                // Fetch membership to get price and user info for the order
+                const { data: memData } = await supabaseAdmin
+                    .from("memberships")
+                    .select("price, plan_name, user_id, profiles(full_name)")
+                    .eq("id", subId)
+                    .eq("gym_id", gymId)
+                    .single();
+
                 await supabaseAdmin
                     .from("memberships")
-                    .update({
-                        status: "active",
-                        end_date: newEnd.toISOString().split("T")[0],
-                    })
+                    .update({ status: "active", end_date: newEnd.toISOString().split("T")[0] })
                     .eq("id", subId)
                     .eq("gym_id", gymId);
+
+                // Register renewal income
+                if (memData && Number(memData.price) > 0) {
+                    const { createOrder } = await import("~/services/order.server");
+                    const renewalPrice = Number(memData.price);
+                    await createOrder({
+                        gymId,
+                        userId: memData.user_id,
+                        customerName: (memData.profiles as any)?.full_name ?? null,
+                        paymentMethod: "cash",
+                        type: "renewal",
+                        items: [{ productId: subId, name: `Renovación: ${memData.plan_name}`, quantity: 1, unitPrice: renewalPrice }],
+                        subtotal: renewalPrice,
+                        tax: 0,
+                        total: renewalPrice,
+                    }).catch(err => console.error("[renew] order insert failed:", err.message));
+                }
+
                 return { success: true, message: `Membresía renovada.` };
             }
             case "link_plan": {
                 const userId = formData.get("userId") as string;
                 const planId = formData.get("planId") as string;
-                const plan = PLAN_CATALOG.find(p => p.id === planId);
+                const paymentMethod = (formData.get("paymentMethod") as string) || "cash";
+                const customerName = (formData.get("customerName") as string) || null;
+                const { getGymPlans } = await import("~/services/plan.server");
+                const gymPlans = await getGymPlans(gymId);
+                const plan = gymPlans.find(p => p.id === planId);
                 if (!plan) return { success: false, error: "Plan inválido" };
-
-                const linkGymId = formData.get("gymId") as string || gymId;
 
                 await createMembership({
                     userId,
-                    gymId: linkGymId,
+                    gymId,
                     planName: plan.name,
                     price: plan.price,
-                    credits: plan.credits,
-                    months: 1
+                    credits: plan.credits ?? 999,
+                    validityDays: plan.validity_days,
+                    paymentMethod: paymentMethod as any,
+                    customerName,
                 });
                 return { success: true, message: "Plan vinculado con éxito." };
             }
@@ -156,12 +185,13 @@ function SubscriptionRow({ profile, plans, gymId }: { profile: any, plans: any[]
                     <div className="flex items-center justify-between">
                         <span className="text-xs text-white/30 italic">Sin membresía activa</span>
                         {showLink ? (
-                            <fetcher.Form method="post" className="flex items-center gap-2">
+                            <fetcher.Form method="post" className="flex items-center gap-2 flex-wrap">
                                 <input type="hidden" name="intent" value="link_plan" />
                                 <input type="hidden" name="userId" value={profile.id} />
                                 <input type="hidden" name="gymId" value={gymId} />
-                                <select 
-                                    name="planId" 
+                                <input type="hidden" name="customerName" value={profile.full_name ?? ""} />
+                                <select
+                                    name="planId"
                                     className="text-[11px] bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white"
                                     required
                                 >
@@ -169,6 +199,15 @@ function SubscriptionRow({ profile, plans, gymId }: { profile: any, plans: any[]
                                     {plans.map(p => (
                                         <option key={p.id} value={p.id}>{p.name} - ${p.price}</option>
                                     ))}
+                                </select>
+                                <select
+                                    name="paymentMethod"
+                                    className="text-[11px] bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white"
+                                >
+                                    <option value="cash">Efectivo</option>
+                                    <option value="card">Tarjeta</option>
+                                    <option value="mercado_pago">Mercado Pago</option>
+                                    <option value="transfer">Transferencia</option>
                                 </select>
                                 <button type="submit" className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded">Vincular</button>
                                 <button type="button" onClick={() => setShowLink(false)} className="text-[10px] text-white/40">×</button>
@@ -197,8 +236,8 @@ function SubscriptionRow({ profile, plans, gymId }: { profile: any, plans: any[]
         <tr className="border-b border-gray-50 hover:bg-white/5/50 transition-colors">
             <td className="py-4 px-4">
                 <div>
-                    <p className="font-semibold text-white text-sm">{sub.user?.full_name ?? "—"}</p>
-                    <p className="text-xs text-white/40">{sub.user?.email ?? "—"}</p>
+                    <p className="font-semibold text-white text-sm">{profile.full_name || "—"}</p>
+                    <p className="text-xs text-white/40">{profile.email || "—"}</p>
                 </div>
             </td>
             <td className="py-4 px-4">
@@ -296,30 +335,35 @@ function SubscriptionRow({ profile, plans, gymId }: { profile: any, plans: any[]
 }
 
 // ─── Plan Card ────────────────────────────────────────────────────
-function PlanCard({ plan }: { plan: SubscriptionPlan }) {
+function PlanCard({ plan }: { plan: any }) {
     return (
-        <div className={`rounded-xl border ${plan.is_popular ? "border-violet-300 bg-violet-50" : "border-white/[0.08] bg-white/5"} p-5 relative`}>
+        <div className={`rounded-xl border ${plan.is_popular ? "border-violet-300 bg-violet-50/10" : "border-white/[0.08] bg-white/5"} p-5 relative`}>
             {plan.is_popular && (
                 <span className="absolute -top-2.5 left-4 text-[11px] bg-violet-600 text-white px-3 py-0.5 rounded-full font-bold uppercase tracking-wider">
                     Popular
                 </span>
             )}
-            <h3 className={`text-lg font-black ${plan.is_popular ? "text-violet-700" : "text-white"}`}>
+            <h3 className={`text-lg font-black ${plan.is_popular ? "text-violet-400" : "text-white"}`}>
                 {plan.name}
             </h3>
             <p className="text-2xl font-black text-white mt-1">
-                ${plan.price.toLocaleString()}
-                <span className="text-sm font-normal text-white/40">/mes</span>
+                ${plan.price.toLocaleString("es-MX")}
+                <span className="text-sm font-normal text-white/40"> MXN</span>
             </p>
-            <p className="text-sm text-white/50 mt-1">{plan.credits_included} créditos de clase</p>
-            <ul className="mt-3 space-y-1.5">
-                {(plan.features ?? []).map((f, i) => (
-                    <li key={i} className="flex items-center gap-2 text-xs text-white/60">
-                        <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
-                        {f}
-                    </li>
-                ))}
-            </ul>
+            <div className="text-sm text-white/50 mt-2 space-y-1">
+                <p>{plan.credits === null ? "Clases ilimitadas" : `${plan.credits} crédito${plan.credits !== 1 ? "s" : ""}`}</p>
+                <p>Vigencia: {plan.validity_days} días</p>
+            </div>
+            {(plan.features ?? []).length > 0 && (
+                <ul className="mt-3 space-y-1.5">
+                    {(plan.features ?? []).map((f: string, i: number) => (
+                        <li key={i} className="flex items-center gap-2 text-xs text-white/60">
+                            <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                            {f}
+                        </li>
+                    ))}
+                </ul>
+            )}
         </div>
     );
 }

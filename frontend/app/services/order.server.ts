@@ -9,36 +9,66 @@ import type { Order, PaymentMethod } from "~/types/database";
 // ── Types ─────────────────────────────────────────────────────────
 export interface CreateOrderParams {
     gymId: string;
-    userId: string | null; // null for anonymous POS sales
+    userId: string | null;
     customerName: string | null;
     paymentMethod: PaymentMethod;
     items: { productId: string; name: string; quantity: number; unitPrice: number }[];
     subtotal: number;
     tax: number;
     total: number;
+    type?: "pos" | "membership" | "renewal" | "event";
 }
 
 // ── Create an order (POS checkout) ────────────────────────────────
 export async function createOrder(params: CreateOrderParams): Promise<Order> {
-    const { gymId, userId, customerName, paymentMethod, items, subtotal, tax, total } = params;
+    const { gymId, userId, customerName, paymentMethod, items, subtotal, tax, total, type = "pos" } = params;
 
-    // Insert the order
-    const { data: order, error: orderError } = await supabaseAdmin
+    const safePaymentMethod = (["mercado_pago", "cash", "card", "transfer"].includes(paymentMethod as string))
+        ? paymentMethod
+        : "cash";
+
+    // Try inserting with all columns; if customer_name/type columns are missing (schema cache),
+    // fall back to inserting only the core columns that are guaranteed to exist.
+    let order: any;
+    const fullInsert = {
+        gym_id: gymId,
+        user_id: userId,
+        customer_name: customerName,
+        payment_method: safePaymentMethod,
+        type,
+        status: "paid",
+        subtotal,
+        tax,
+        total,
+    };
+
+    const { data: d1, error: e1 } = await supabaseAdmin
         .from("orders")
-        .insert({
-            gym_id: gymId,
-            user_id: userId,
-            customer_name: customerName,
-            payment_method: paymentMethod,
-            status: "paid",
-            subtotal,
-            tax,
-            total,
-        })
+        .insert(fullInsert)
         .select()
         .single();
 
-    if (orderError) throw new Error(`Error creating order: ${orderError.message}`);
+    if (e1) {
+        // Columns may not exist yet — fall back to minimal insert
+        const { data: d2, error: e2 } = await supabaseAdmin
+            .from("orders")
+            .insert({
+                gym_id: gymId,
+                user_id: userId,
+                payment_method: safePaymentMethod,
+                status: "paid",
+                subtotal,
+                tax,
+                total,
+            })
+            .select()
+            .single();
+
+        if (e2) throw new Error(`Error creating order: ${e2.message}`);
+        order = d2;
+    } else {
+        order = d1;
+    }
 
     // Insert order items
     if (items.length > 0) {

@@ -32,20 +32,23 @@ export async function getGymPlans(gymId: string): Promise<GymPlan[]> {
 
     if (error) throw new Error(`Error fetching plans: ${error.message}`);
 
-    return (data ?? []).map((p: any) => ({
-        id: p.id,
-        gym_id: p.gym_id,
-        name: p.name,
-        description: p.description,
-        price: p.price,
-        credits: p.credits,
-        validity_days: p.metadata?.validity_days ?? 30,
-        plan_type: p.metadata?.plan_type ?? "creditos",
-        is_popular: p.metadata?.is_popular ?? false,
-        is_active: p.is_active,
-        features: p.metadata?.features ?? [],
-        created_at: p.created_at,
-    }));
+    return (data ?? []).map((p: any) => {
+        const planType = p.metadata?.plan_type ?? "creditos";
+        return {
+            id: p.id,
+            gym_id: p.gym_id,
+            name: p.name,
+            description: p.description,
+            price: p.price,
+            credits: planType === "creditos" ? p.credits : null,
+            validity_days: p.metadata?.validity_days ?? 30,
+            plan_type: planType,
+            is_popular: p.metadata?.is_popular ?? false,
+            is_active: p.is_active,
+            features: p.metadata?.features ?? [],
+            created_at: p.created_at,
+        };
+    });
 }
 
 // ── Get active plans for student view ────────────────────────────
@@ -66,6 +69,9 @@ export async function createPlan(params: {
 }): Promise<GymPlan> {
     const { gymId, name, price, credits, validityDays, planType, isPopular } = params;
 
+    // DB column credits is NOT NULL — store 0 for unlimited plans; derive null back on read via plan_type
+    const dbCredits = planType === "creditos" ? (credits ?? 0) : 0;
+
     const { data, error } = await supabaseAdmin
         .from("products")
         .insert({
@@ -74,8 +80,8 @@ export async function createPlan(params: {
             description: `Plan ${name}`,
             price,
             category: "plan",
-            credits,
-            stock: 9999, // plans have unlimited stock
+            credits: dbCredits,
+            stock: 9999,
             is_active: true,
             metadata: {
                 validity_days: validityDays,
@@ -95,7 +101,7 @@ export async function createPlan(params: {
         name: data.name,
         description: data.description,
         price: data.price,
-        credits,
+        credits: planType === "creditos" ? dbCredits : null,
         validity_days: validityDays,
         plan_type: planType as GymPlan["plan_type"],
         is_popular: isPopular,
