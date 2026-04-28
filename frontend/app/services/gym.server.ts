@@ -79,19 +79,8 @@ export async function requireGymAuth(request: Request): Promise<{
 
     // Check gym status
     if (gym.plan_status === 'suspended' || gym.plan_status === 'cancelled') {
-        // If suspended due to trial expiry, redirect to upgrade page
-        if (gym.plan_status === 'suspended') {
-            throw redirect("/admin/upgrade");
-        }
-        console.warn(`[ACCESS DENIED] User ${profile.id} tried to access suspended gym ${gym.id} (${gym.name})`);
-        throw json(
-            {
-                error: "Este estudio está suspendido. Contacta a soporte.",
-                gymName: gym.name,
-                slug: gym.slug
-            },
-            { status: 403 }
-        );
+        console.warn(`[ACCESS DENIED] User ${profile.id} tried to access suspended/cancelled gym ${gym.id} (${gym.name})`);
+        throw redirect("/admin/upgrade");
     }
 
     // Check trial expiry — lazily suspend if trial has ended
@@ -291,6 +280,28 @@ export async function validateUserGymMembership(
     }
 
     return true;
+}
+
+/**
+ * Front-desk authentication — requires gym_id AND (role=admin OR role=front_desk).
+ * Use this for staff panel routes (/staff/*).
+ *
+ * @throws redirect to /dashboard if user is not admin or front_desk
+ * @returns Profile and validated gymId
+ */
+export async function requireGymFrontDesk(request: Request): Promise<{
+    profile: Profile;
+    gymId: string;
+}> {
+    const { profile, gymId } = await requireGymAuth(request);
+
+    if (profile.role !== "admin" && profile.role !== "front_desk") {
+        console.warn(`[ACCESS DENIED] User ${profile.id} (role: ${profile.role}) tried to access front desk route`);
+        const destination = profile.role === "member" ? "/dashboard" : "/auth/login";
+        throw redirect(destination);
+    }
+
+    return { profile, gymId };
 }
 
 /**
