@@ -45,7 +45,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
         throw new Response("Estudio no encontrado", { status: 404 });
     }
 
-    // If user is already logged in and belongs to this gym, redirect to their panel
+    // If user is already logged in and belongs to this gym, redirect to their panel.
+    // Admins are NOT redirected so they can preview their own landing page.
+    let isAdminPreview = false;
     try {
         const { getSession } = await import("~/services/auth.server");
         const session = await getSession(request);
@@ -60,23 +62,26 @@ export async function loader({ params, request }: Route.LoaderArgs) {
                 .single();
 
             if (profile?.gym_id === gym.id) {
-                const redirectMap: Record<string, string> = {
-                    admin: "/admin",
-                    coach: "/barista",
-                    member: "/dashboard",
-                    front_desk: "/staff",
-                };
-                throw new Response(null, {
-                    status: 302,
-                    headers: { Location: redirectMap[profile.role] || "/dashboard" },
-                });
+                if (profile.role === "admin") {
+                    isAdminPreview = true;
+                } else {
+                    const redirectMap: Record<string, string> = {
+                        coach: "/barista",
+                        member: "/dashboard",
+                        front_desk: "/staff",
+                    };
+                    throw new Response(null, {
+                        status: 302,
+                        headers: { Location: redirectMap[profile.role] || "/dashboard" },
+                    });
+                }
             }
         }
     } catch (e) {
         if (e instanceof Response) throw e;
     }
 
-    return { gym };
+    return { gym, isAdminPreview };
 }
 
 // ─── Meta ────────────────────────────────────────────────────────
@@ -606,7 +611,7 @@ function GymFooter({ gym }: { gym: GymLandingData }) {
 
 // ─── Main Component ───────────────────────────────────────────────
 export default function GymPortal({ loaderData, actionData }: Route.ComponentProps) {
-    const { gym } = loaderData;
+    const { gym, isAdminPreview } = loaderData;
     const [showAuth, setShowAuth] = useState(false);
     const color = gym.primary_color || "#7c3aed";
 
@@ -614,8 +619,16 @@ export default function GymPortal({ loaderData, actionData }: Route.ComponentPro
 
     return (
         <div className="min-h-screen bg-black font-sans">
+            {/* Admin preview banner */}
+            {isAdminPreview && (
+                <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-black text-xs font-bold text-center py-2 flex items-center justify-center gap-4">
+                    <span>MODO PREVIEW — Así ven tu web tus clientes</span>
+                    <a href="/admin/landing" className="underline hover:no-underline">Editar web</a>
+                    <a href="/admin" className="underline hover:no-underline">Volver al admin</a>
+                </div>
+            )}
             {/* Floating nav */}
-            <nav className="fixed top-0 left-0 right-0 z-40 px-6 py-4 flex items-center justify-between">
+            <nav className={`fixed left-0 right-0 z-40 px-6 py-4 flex items-center justify-between ${isAdminPreview ? "top-8" : "top-0"}`}>
                 <div className="flex items-center gap-3">
                     {gym.logo_url ? (
                         <img src={gym.logo_url} alt={gym.name} className="w-8 h-8 rounded-lg object-cover" />
