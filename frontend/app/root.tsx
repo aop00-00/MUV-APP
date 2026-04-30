@@ -113,18 +113,36 @@ export async function loader({ request }: Route.LoaderArgs) {
   // without a configured .env file or when SUPABASE_URL is missing)
   const supabaseUrl = typeof process !== "undefined" ? process.env.SUPABASE_URL : undefined;
   if (!supabaseUrl) {
-    return { tenant, subdomain };
+    return { tenant, subdomain, customDomain: null };
   }
 
   try {
     const { supabaseAdmin } = await import("./services/supabase.server");
 
     // Resolve which gym to display:
-    // Priority: 1) subdomain slug  2) session gym_id  3) first gym in DB
+    // Priority: 1) custom domain  2) subdomain slug  3) session gym_id  4) first gym in DB
     let gymId: string | null = null;
 
-    // 1. If on a subdomain, resolve gym by slug (takes priority)
-    if (subdomain) {
+    const url = new URL(request.url);
+    const host = url.hostname;
+    const appDomain = process.env.APP_DOMAIN || "projectstudio.app";
+    const isMainDomain =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === appDomain ||
+      host === `www.${appDomain}` ||
+      host.endsWith(".vercel.app") ||
+      host.endsWith(`.${appDomain}`);
+
+    // 1. Custom domain (e.g. estudioyoga.com) — checked before subdomain
+    if (!isMainDomain && !gymId) {
+      const { getGymByCustomDomain } = await import("./services/gym-lookup.server");
+      const customDomainGym = await getGymByCustomDomain(host);
+      if (customDomainGym) gymId = customDomainGym.id;
+    }
+
+    // 2. If on a subdomain, resolve gym by slug
+    if (!gymId && subdomain) {
       const { getGymBySlug } = await import("./services/gym-lookup.server");
       const subdomainGym = await getGymBySlug(subdomain);
       if (subdomainGym) gymId = subdomainGym.id;
@@ -161,7 +179,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       gymId = firstGym?.id ?? null;
     }
 
-    if (!gymId) return { tenant, subdomain };
+    const customDomain = !isMainDomain ? host : null;
+    if (!gymId) return { tenant, subdomain, customDomain };
 
     const { data: gym } = await supabaseAdmin
       .from("gyms")
@@ -183,6 +202,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         coaches: [],
       };
     }
+    return { tenant, subdomain, customDomain };
   } catch (error) {
     // Never crash the root loader — silently fall back to DEFAULT_TENANT
     if (process.env.NODE_ENV !== "production") {
@@ -190,7 +210,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
-  return { tenant, subdomain };
+  return { tenant, subdomain, customDomain: null };
 }
 
 // ─── App Root ─────────────────────────────────────────────────────

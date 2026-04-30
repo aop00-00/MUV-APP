@@ -26,6 +26,18 @@ export async function getGymBySlug(slug: string): Promise<GymPublicInfo | null> 
     return data as GymPublicInfo;
 }
 
+export async function getGymByCustomDomain(domain: string): Promise<GymPublicInfo | null> {
+    const { data, error } = await supabaseAdmin
+        .from("gyms")
+        .select("id, name, slug, logo_url, primary_color, accent_color, plan_status")
+        .eq("custom_domain", domain.toLowerCase().trim())
+        .single();
+
+    if (error || !data) return null;
+    if (data.plan_status === "suspended" || data.plan_status === "cancelled") return null;
+    return data as GymPublicInfo;
+}
+
 // ─── Full landing page data ─────────────────────────────────────
 export interface GymLandingCoach {
     id: string;
@@ -92,6 +104,13 @@ export interface GymLandingData extends GymPublicInfo {
     upcoming_classes: (GymUpcomingClass & { coach_name?: string })[];
 }
 
+const GYM_LANDING_SELECT = `
+    id, name, slug, logo_url, primary_color, accent_color, plan_status, currency,
+    tagline, description, phone, email, address, city, maps_url,
+    instagram_url, facebook_url, whatsapp_url, hero_image_url,
+    gallery_urls, landing_sections
+`;
+
 /**
  * Fetches everything needed to render a gym's subdomain landing page.
  * 1 query for the gym row + 5 parallel queries for related data.
@@ -99,21 +118,37 @@ export interface GymLandingData extends GymPublicInfo {
 export async function getGymLandingData(slug: string): Promise<GymLandingData | null> {
     const { data: gym, error } = await supabaseAdmin
         .from("gyms")
-        .select(`
-            id, name, slug, logo_url, primary_color, accent_color, plan_status, currency,
-            tagline, description, phone, email, address, city, maps_url,
-            instagram_url, facebook_url, whatsapp_url, hero_image_url,
-            gallery_urls, landing_sections
-        `)
+        .select(GYM_LANDING_SELECT)
         .eq("slug", slug.toLowerCase().trim())
         .single();
 
     if (error || !gym) return null;
     if (gym.plan_status === "suspended" || gym.plan_status === "cancelled") return null;
 
+    return buildLandingData(gym);
+}
+
+/**
+ * Same as getGymLandingData but resolves by custom_domain instead of slug.
+ * Used when a gym has a custom domain like estudioyoga.com.
+ */
+export async function getGymLandingDataByDomain(domain: string): Promise<GymLandingData | null> {
+    const { data: gym, error } = await supabaseAdmin
+        .from("gyms")
+        .select(GYM_LANDING_SELECT)
+        .eq("custom_domain", domain.toLowerCase().trim())
+        .single();
+
+    if (error || !gym) return null;
+    if (gym.plan_status === "suspended" || gym.plan_status === "cancelled") return null;
+
+    // Reuse the same related-data logic
+    return buildLandingData(gym);
+}
+
+async function buildLandingData(gym: any): Promise<GymLandingData> {
     const gymId = gym.id;
 
-    // Parallel queries for related data
     const [coachesRes, classTypesRes, plansRes, locationsRes, classesRes] = await Promise.all([
         supabaseAdmin
             .from("coaches")
@@ -148,7 +183,6 @@ export async function getGymLandingData(slug: string): Promise<GymLandingData | 
             .limit(10),
     ]);
 
-    // Map coach_id → coach name for upcoming classes
     const coachMap = new Map<string, string>();
     for (const c of coachesRes.data ?? []) {
         coachMap.set(c.id, c.name);

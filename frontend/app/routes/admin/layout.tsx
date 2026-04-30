@@ -32,6 +32,8 @@ import {
     ChevronRight,
     Menu,
     X,
+    Zap,
+    Globe,
 } from "lucide-react";
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ const NAV: NavItem[] = [
         icon: Briefcase,
         children: [
             { name: "CRM (Leads)", href: "/admin/crm", icon: UserCircle },
+            { name: "FitCoins", href: "/admin/fitcoins", icon: Zap },
             { name: "Planes", href: "/admin/planes", icon: CreditCard },
             { name: "Cupones", href: "/admin/cupones", icon: Ticket },
             { name: "Mis Ingresos", href: "/admin/ingresos", icon: TrendingUp },
@@ -94,6 +97,7 @@ const NAV: NavItem[] = [
         icon: Wrench,
         children: [
             { name: "General", href: "/admin/studio", icon: Settings2 },
+            { name: "Mi Web Pública", href: "/admin/landing", icon: Globe },
             { name: "Ubicaciones", href: "/admin/ubicaciones", icon: MapPin },
             { name: "Operaciones", href: "/admin/operaciones", icon: Wrench },
             { name: "Coaches", href: "/admin/coaches", icon: UserCog },

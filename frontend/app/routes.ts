@@ -20,6 +20,7 @@ export default [
     ...prefix("onboarding", [
         layout("routes/onboarding/layout.tsx", [
             index("routes/onboarding/_index.tsx"), // Checkout existente (5 pasos)
+            route("success", "routes/onboarding/success.tsx"), // Retorno desde MP Checkout
             // NEW: Post-checkout setup wizard (6-7 pasos adaptativos)
             ...prefix("setup", [
                 layout("routes/onboarding/setup/layout.tsx", [
@@ -77,8 +78,10 @@ export default [
             route("pos", "routes/admin/pos.tsx"),
             // ── Otros ─────────────────────────────────────────────
             route("crm", "routes/admin/crm.tsx"),
+            route("fitcoins", "routes/admin/fitcoins.tsx"),
             // ── Mi Estudio ────────────────────────────────────────
             route("studio", "routes/admin/studio.tsx"),
+            route("landing", "routes/admin/landing.tsx"),
             route("ubicaciones", "routes/admin/ubicaciones.tsx"),
             route("operaciones", "routes/admin/operaciones.tsx"),
             route("coaches", "routes/admin/coaches.tsx"),
