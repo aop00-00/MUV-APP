@@ -18,13 +18,16 @@ interface RoomLayoutWidgetProps {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function getConfig(studioType?: string | null) {
-    const map: Record<string, { label: string; emoji: string; resourceType: string }> = {
-        cycling: { label: "Bicicleta", emoji: "🚲", resourceType: "bike" },
-        pilates: { label: "Reformer",  emoji: "🛏️", resourceType: "reformer" },
-        barre:   { label: "Barra",     emoji: "⚡",  resourceType: "barre" },
-        yoga:    { label: "Mat",       emoji: "🧘", resourceType: "mat" },
+    const map: Record<string, { label: string; resourceType: string }> = {
+        cycling: { label: "Bicicleta", resourceType: "bike"     },
+        pilates: { label: "Reformer",  resourceType: "reformer" },
+        barre:   { label: "Barra",     resourceType: "barre"    },
+        yoga:    { label: "Mat",       resourceType: "mat"      },
+        hiit:    { label: "Lugar",     resourceType: "spot"     },
+        dance:   { label: "Lugar",     resourceType: "spot"     },
+        martial: { label: "Lugar",     resourceType: "spot"     },
     };
-    return map[studioType ?? ""] ?? { label: "Lugar", emoji: "⚡", resourceType: "spot" };
+    return map[studioType ?? ""] ?? { label: "Lugar", resourceType: "spot" };
 }
 
 function gridToResources(grid: LayoutGrid, studioType?: string | null) {

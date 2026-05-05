@@ -3,7 +3,7 @@
 import type { Route } from "./+types/pos";
 import { useFetcher } from "react-router";
 import { useState, useEffect } from "react";
-import { ShoppingCart, Trash2, Search, User, CreditCard, Banknote, AlertTriangle, X, Plus, Minus, Package, Edit, Save } from "lucide-react";
+import { ShoppingCart, Trash2, Search, User, CreditCard, Banknote, AlertTriangle, X, Plus, Minus, Package, Edit, Save, UserPlus } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────
 interface POSProduct {
@@ -14,6 +14,7 @@ interface POSProduct {
     category: string;
     is_active: boolean;
     description: string | null;
+    metadata: Record<string, any> | null;
 }
 
 interface CartItem {
@@ -41,6 +42,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         category: p.category ?? "Otro",
         is_active: p.is_active ?? true,
         description: p.description ?? null,
+        metadata: p.metadata ?? null,
     }));
 
     return { products, customers };
@@ -153,6 +155,90 @@ export async function action({ request }: Route.ActionArgs) {
         return { success: true, message: "Producto eliminado." };
     }
 
+    if (intent === "plan_checkout") {
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const { createMembership } = await import("~/services/subscription.server");
+        const { createOrder } = await import("~/services/order.server");
+
+        const full_name = formData.get("full_name") as string;
+        const email = formData.get("email") as string;
+        const phone = (formData.get("phone") as string) || null;
+        const password = (formData.get("password") as string) || "Grind2026!";
+        const method = (formData.get("method") as "cash" | "card" | "transfer") || "cash";
+        const total = Number(formData.get("total") ?? 0);
+        const itemsJson = formData.get("items") as string;
+        const items: Array<{ productId: string; name: string; quantity: number; unitPrice: number; category: string; metadata: any }> = itemsJson ? JSON.parse(itemsJson) : [];
+        const subtotal = Math.round((total / 1.16) * 100) / 100;
+        const tax = Math.round((total - subtotal) * 100) / 100;
+
+        // 1. Crear usuario en auth
+        const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: { full_name, gym_id: gymId, role: "member" },
+        });
+        if (authError) return { success: false, message: `Error al crear usuario: ${authError.message}`, intent: "plan_checkout" };
+
+        const userId = authData.user.id;
+
+        // 2. Crear perfil
+        const { error: profileError } = await supabaseAdmin.from("profiles").upsert(
+            { id: userId, email, full_name, phone, role: "member", credits: 0, gym_id: gymId },
+            { onConflict: "id" }
+        );
+        if (profileError) {
+            await supabaseAdmin.auth.admin.deleteUser(userId);
+            return { success: false, message: `Error al crear perfil: ${profileError.message}`, intent: "plan_checkout" };
+        }
+
+        // 3. Crear membresía por cada item de tipo plan
+        const planItems = items.filter(i => i.category === "plan");
+        for (const planItem of planItems) {
+            const meta = planItem.metadata ?? {};
+            const planType = (meta.plan_type ?? "creditos") as "creditos" | "membresia" | "ilimitado";
+            const credits = planType === "creditos" ? (meta.credits ?? 0) : 0;
+            const validityDays = meta.validity_days ?? 30;
+            try {
+                await createMembership({
+                    userId,
+                    gymId,
+                    planName: planItem.name,
+                    price: planItem.unitPrice * planItem.quantity,
+                    credits,
+                    planType,
+                    validityDays,
+                    paymentMethod: method as any,
+                    customerName: full_name,
+                });
+                if (planType === "creditos" && credits > 0) {
+                    await supabaseAdmin.from("profiles").update({ credits }).eq("id", userId).eq("gym_id", gymId);
+                }
+            } catch (err: any) {
+                console.error("[POS plan_checkout] membership error:", err.message);
+            }
+        }
+
+        // 4. Registrar orden / ingreso
+        try {
+            await createOrder({
+                gymId,
+                userId,
+                customerName: full_name,
+                paymentMethod: method as any,
+                type: "membership",
+                items: items.map(i => ({ productId: i.productId, name: i.name, quantity: i.quantity, unitPrice: i.unitPrice })),
+                subtotal,
+                tax,
+                total,
+            });
+        } catch (err: any) {
+            console.error("[POS plan_checkout] order error:", err.message);
+        }
+
+        return { success: true, message: `¡${full_name} registrado y plan asignado!`, intent: "plan_checkout" };
+    }
+
     if (intent === "toggle_active") {
         const { toggleProductActive } = await import("~/services/product.server");
         const productId = formData.get("productId") as string;
@@ -166,7 +252,8 @@ export async function action({ request }: Route.ActionArgs) {
 
 export default function POS({ loaderData }: Route.ComponentProps) {
     const { products, customers } = loaderData;
-    const fetcher = useFetcher();
+    const fetcher = useFetcher<{ success?: boolean; message?: string; intent?: string }>();
+    const newMemberFetcher = useFetcher<{ success?: boolean; message?: string; intent?: string }>();
     const [view, setView] = useState<"pos" | "inventory">("pos");
     const [cart, setCart] = useState<CartItem[]>([]);
     const [customerSearch, setCustomerSearch] = useState("");
@@ -175,19 +262,43 @@ export default function POS({ loaderData }: Route.ComponentProps) {
     const [editingProduct, setEditingProduct] = useState<POSProduct | null>(null);
     const [showAddModal, setShowAddModal] = useState(false);
     const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+    const [showNewMemberForm, setShowNewMemberForm] = useState(false);
+    const [newMember, setNewMember] = useState({ full_name: "", email: "", phone: "", password: "", confirmPassword: "" });
 
-    const actionData = fetcher.data as { success?: boolean; message?: string } | undefined;
+    const hasPlan = cart.some(c => c.product.category === "plan");
+    const passwordValid = newMember.password.length >= 8 && newMember.password === newMember.confirmPassword;
+    const newMemberIsValid = newMember.full_name.trim() !== "" && newMember.email.includes("@") && passwordValid;
+
+    // Ocultar formulario si ya no hay plan en el carrito
+    useEffect(() => {
+        if (!hasPlan) setShowNewMemberForm(false);
+    }, [hasPlan]);
 
     useEffect(() => {
-        if (!actionData?.message) return;
-        setToast({ type: actionData.success ? "success" : "error", message: actionData.message });
-        if (actionData.success && (actionData.message === "Venta completada." || actionData.message === "Cargo a cuenta registrado.")) {
+        const data = fetcher.data;
+        if (!data?.message) return;
+        setToast({ type: data.success ? "success" : "error", message: data.message });
+        if (data.success && (data.message === "Venta completada." || data.message === "Cargo a cuenta registrado.")) {
             setCart([]);
             setSelectedCustomer(null);
         }
         const t = setTimeout(() => setToast(null), 4000);
         return () => clearTimeout(t);
-    }, [actionData]);
+    }, [fetcher.data]);
+
+    useEffect(() => {
+        const data = newMemberFetcher.data;
+        if (!data?.message) return;
+        setToast({ type: data.success ? "success" : "error", message: data.message });
+        if (data.success && data.intent === "plan_checkout") {
+            setCart([]);
+            setSelectedCustomer(null);
+            setShowNewMemberForm(false);
+            setNewMember({ full_name: "", email: "", phone: "", password: "", confirmPassword: "" });
+        }
+        const t = setTimeout(() => setToast(null), 5000);
+        return () => clearTimeout(t);
+    }, [newMemberFetcher.data]);
 
     const addToCart = (product: POSProduct) => {
         setCart((prev) => {
@@ -359,89 +470,194 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                 </div>
                             </div>
 
-                            {/* Customer assignment */}
-                            {selectedCustomer ? (
-                                <div className="flex items-center justify-between bg-purple-600/20 border border-purple-500/30 rounded-lg p-2.5">
-                                    <div className="flex items-center gap-2">
-                                        <User className="w-4 h-4 text-purple-400" />
-                                        <div>
-                                            <p className="text-xs font-medium text-white">{selectedCustomer.name}</p>
-                                            <p className="text-[10px] text-purple-300">Saldo: ${selectedCustomer.balance}</p>
-                                        </div>
-                                    </div>
-                                    <button onClick={() => setSelectedCustomer(null)} className="text-white/40 hover:text-white">
-                                        <X className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
-                            ) : (
-                                <div className="relative">
+                            {/* ── Nuevo Alumno (solo cuando hay plan en el carrito) ── */}
+                            {hasPlan && (
+                                <div className={`rounded-xl border transition-all ${showNewMemberForm ? "border-blue-500/40 bg-blue-500/10" : "border-white/10 bg-white/5"}`}>
                                     <button
-                                        onClick={() => setShowCustomerSearch(!showCustomerSearch)}
-                                        className="w-full flex items-center gap-2 text-xs text-white/50 hover:text-white/70 bg-white/5 border border-white/10 rounded-lg px-3 py-2 transition-colors"
+                                        onClick={() => { setShowNewMemberForm(!showNewMemberForm); setSelectedCustomer(null); }}
+                                        className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-bold transition-colors"
                                     >
-                                        <Search className="w-3.5 h-3.5" />
-                                        Asignar a cuenta de cliente…
+                                        <span className={`flex items-center gap-2 ${showNewMemberForm ? "text-blue-300" : "text-white/50"}`}>
+                                            <UserPlus className="w-3.5 h-3.5" />
+                                            Registrar nuevo alumno
+                                        </span>
+                                        <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${showNewMemberForm ? "bg-blue-500/30 text-blue-300" : "bg-white/10 text-white/30"}`}>
+                                            {showNewMemberForm ? "activo" : "plan detectado"}
+                                        </span>
                                     </button>
-                                    {showCustomerSearch && (
-                                        <div className="absolute bottom-full left-0 right-0 mb-1 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-10 overflow-hidden">
+                                    {showNewMemberForm && (
+                                        <div className="px-3 pb-3 space-y-2 border-t border-blue-500/20 pt-2">
                                             <input
                                                 type="text"
-                                                placeholder="Buscar cliente…"
-                                                value={customerSearch}
-                                                onChange={(e) => setCustomerSearch(e.target.value)}
-                                                className="w-full px-3 py-2.5 text-sm bg-transparent border-b border-white/5 text-white outline-none"
-                                                autoFocus
+                                                placeholder="Nombre completo *"
+                                                value={newMember.full_name}
+                                                onChange={e => setNewMember(p => ({ ...p, full_name: e.target.value }))}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-blue-400 placeholder-white/30"
                                             />
-                                            <div className="max-h-40 overflow-y-auto">
-                                                {filteredCustomers.map((c) => (
-                                                    <button
-                                                        key={c.id}
-                                                        onClick={() => { setSelectedCustomer(c); setShowCustomerSearch(false); setCustomerSearch(""); }}
-                                                        className="w-full text-left px-3 py-2 hover:bg-white/5 text-sm flex items-center justify-between text-white"
-                                                    >
-                                                        <span className="font-medium">{c.name}</span>
-                                                        <span className="text-xs text-white/40">Saldo: ${c.balance}</span>
-                                                    </button>
-                                                ))}
-                                            </div>
+                                            <input
+                                                type="email"
+                                                placeholder="Correo electrónico *"
+                                                value={newMember.email}
+                                                onChange={e => setNewMember(p => ({ ...p, email: e.target.value }))}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-blue-400 placeholder-white/30"
+                                            />
+                                            <input
+                                                type="tel"
+                                                placeholder="Teléfono (opcional)"
+                                                value={newMember.phone}
+                                                onChange={e => setNewMember(p => ({ ...p, phone: e.target.value }))}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-blue-400 placeholder-white/30"
+                                            />
+                                            <input
+                                                type="password"
+                                                placeholder="Contraseña * (mín. 8 caracteres)"
+                                                value={newMember.password}
+                                                onChange={e => setNewMember(p => ({ ...p, password: e.target.value }))}
+                                                className={`w-full bg-black/30 border rounded-lg px-3 py-2 text-white text-xs outline-none placeholder-white/30 transition-colors ${
+                                                    newMember.password && newMember.password.length < 8
+                                                        ? "border-red-500/50 focus:border-red-400"
+                                                        : "border-white/10 focus:border-blue-400"
+                                                }`}
+                                            />
+                                            <input
+                                                type="password"
+                                                placeholder="Confirmar contraseña *"
+                                                value={newMember.confirmPassword}
+                                                onChange={e => setNewMember(p => ({ ...p, confirmPassword: e.target.value }))}
+                                                className={`w-full bg-black/30 border rounded-lg px-3 py-2 text-white text-xs outline-none placeholder-white/30 transition-colors ${
+                                                    newMember.confirmPassword && newMember.confirmPassword !== newMember.password
+                                                        ? "border-red-500/50 focus:border-red-400"
+                                                        : "border-white/10 focus:border-blue-400"
+                                                }`}
+                                            />
+                                            {newMember.password.length > 0 && newMember.password.length < 8 && (
+                                                <p className="text-[9px] text-red-400 pl-1">Mínimo 8 caracteres.</p>
+                                            )}
+                                            {newMember.confirmPassword.length > 0 && newMember.confirmPassword !== newMember.password && (
+                                                <p className="text-[9px] text-red-400 pl-1">Las contraseñas no coinciden.</p>
+                                            )}
                                         </div>
                                     )}
                                 </div>
                             )}
 
-                            {/* Payment buttons */}
-                            <div className="grid grid-cols-2 gap-2">
-                                <fetcher.Form method="post">
-                                    <input type="hidden" name="intent" value="checkout" />
-                                    <input type="hidden" name="method" value="cash" />
-                                    <input type="hidden" name="total" value={total} />
-                                    <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
-                                    <button
-                                        type="submit"
-                                        disabled={cart.length === 0 || fetcher.state !== "idle"}
-                                        className="w-full flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
-                                    >
-                                        <Banknote className="w-4 h-4" />
-                                        Efectivo
-                                    </button>
-                                </fetcher.Form>
-                                <fetcher.Form method="post">
-                                    <input type="hidden" name="intent" value="checkout" />
-                                    <input type="hidden" name="method" value="card" />
-                                    <input type="hidden" name="total" value={total} />
-                                    <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
-                                    <button
-                                        type="submit"
-                                        disabled={cart.length === 0 || fetcher.state !== "idle"}
-                                        className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
-                                    >
-                                        <CreditCard className="w-4 h-4" />
-                                        Tarjeta
-                                    </button>
-                                </fetcher.Form>
-                            </div>
+                            {/* Customer assignment (solo si NO está en modo nuevo alumno) */}
+                            {!showNewMemberForm && (
+                                selectedCustomer ? (
+                                    <div className="flex items-center justify-between bg-purple-600/20 border border-purple-500/30 rounded-lg p-2.5">
+                                        <div className="flex items-center gap-2">
+                                            <User className="w-4 h-4 text-purple-400" />
+                                            <div>
+                                                <p className="text-xs font-medium text-white">{selectedCustomer.name}</p>
+                                                <p className="text-[10px] text-purple-300">Saldo: ${selectedCustomer.balance}</p>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => setSelectedCustomer(null)} className="text-white/40 hover:text-white">
+                                            <X className="w-3.5 h-3.5" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="relative">
+                                        <button
+                                            onClick={() => setShowCustomerSearch(!showCustomerSearch)}
+                                            className="w-full flex items-center gap-2 text-xs text-white/50 hover:text-white/70 bg-white/5 border border-white/10 rounded-lg px-3 py-2 transition-colors"
+                                        >
+                                            <Search className="w-3.5 h-3.5" />
+                                            Asignar a cuenta de cliente…
+                                        </button>
+                                        {showCustomerSearch && (
+                                            <div className="absolute bottom-full left-0 right-0 mb-1 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-10 overflow-hidden">
+                                                <input
+                                                    type="text"
+                                                    placeholder="Buscar cliente…"
+                                                    value={customerSearch}
+                                                    onChange={(e) => setCustomerSearch(e.target.value)}
+                                                    className="w-full px-3 py-2.5 text-sm bg-transparent border-b border-white/5 text-white outline-none"
+                                                    autoFocus
+                                                />
+                                                <div className="max-h-40 overflow-y-auto">
+                                                    {filteredCustomers.map((c) => (
+                                                        <button
+                                                            key={c.id}
+                                                            onClick={() => { setSelectedCustomer(c); setShowCustomerSearch(false); setCustomerSearch(""); }}
+                                                            className="w-full text-left px-3 py-2 hover:bg-white/5 text-sm flex items-center justify-between text-white"
+                                                        >
+                                                            <span className="font-medium">{c.name}</span>
+                                                            <span className="text-xs text-white/40">Saldo: ${c.balance}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            )}
 
-                            {selectedCustomer && (
+                            {/* ── Botones de pago ── */}
+                            {showNewMemberForm ? (
+                                // Modo nuevo alumno: plan_checkout
+                                <div className="grid grid-cols-2 gap-2">
+                                    {(["cash", "card"] as const).map(method => (
+                                        <newMemberFetcher.Form key={method} method="post">
+                                            <input type="hidden" name="intent" value="plan_checkout" />
+                                            <input type="hidden" name="method" value={method} />
+                                            <input type="hidden" name="full_name" value={newMember.full_name} />
+                                            <input type="hidden" name="email" value={newMember.email} />
+                                            <input type="hidden" name="phone" value={newMember.phone} />
+                                            <input type="hidden" name="password" value={newMember.password} />
+                                            <input type="hidden" name="total" value={total} />
+                                            <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price, category: c.product.category, metadata: c.product.metadata })))} />
+                                            <button
+                                                type="submit"
+                                                disabled={cart.length === 0 || !newMemberIsValid || newMemberFetcher.state !== "idle"}
+                                                className={`w-full flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors ${method === "cash" ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}
+                                            >
+                                                {newMemberFetcher.state !== "idle" ? (
+                                                    <span className="text-xs">Procesando…</span>
+                                                ) : method === "cash" ? (
+                                                    <><Banknote className="w-4 h-4" /> Efectivo</>
+                                                ) : (
+                                                    <><CreditCard className="w-4 h-4" /> Tarjeta</>
+                                                )}
+                                            </button>
+                                        </newMemberFetcher.Form>
+                                    ))}
+                                </div>
+                            ) : (
+                                // Modo normal: checkout estándar
+                                <div className="grid grid-cols-2 gap-2">
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="checkout" />
+                                        <input type="hidden" name="method" value="cash" />
+                                        <input type="hidden" name="total" value={total} />
+                                        <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
+                                        <button
+                                            type="submit"
+                                            disabled={cart.length === 0 || fetcher.state !== "idle"}
+                                            className="w-full flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
+                                        >
+                                            <Banknote className="w-4 h-4" />
+                                            Efectivo
+                                        </button>
+                                    </fetcher.Form>
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="checkout" />
+                                        <input type="hidden" name="method" value="card" />
+                                        <input type="hidden" name="total" value={total} />
+                                        <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
+                                        <button
+                                            type="submit"
+                                            disabled={cart.length === 0 || fetcher.state !== "idle"}
+                                            className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
+                                        >
+                                            <CreditCard className="w-4 h-4" />
+                                            Tarjeta
+                                        </button>
+                                    </fetcher.Form>
+                                </div>
+                            )}
+
+                            {selectedCustomer && !showNewMemberForm && (
                                 <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="charge_account" />
                                     <input type="hidden" name="customerId" value={selectedCustomer.id} />

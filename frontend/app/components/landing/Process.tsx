@@ -29,7 +29,7 @@ const ENTRIES: Entry[] = [
         description:
             "Escoge un plan sin contratos forzosos y escala las funciones de tu estudio según crezca tu comunidad.",
         items: [
-            "Comienza gratis con el plan Starter.",
+            "Comienza gratis con el plan Emprendedor.",
             "Planes flexibles: Starter, Pro y Elite.",
             "Cancela o cambia de nivel en cualquier momento.",
         ],
@@ -56,9 +56,9 @@ const ENTRIES: Entry[] = [
         description:
             "Define permisos granulares para que cada miembro acceda solo a la información que le corresponde.",
         items: [
-            "Paneles para Admin, Recepción y Coaches.",
-            "App auto-servicio para reservas y pagos de alumnas.",
-            "Invitaciones seguras por email con un solo clic.",
+            "Paneles para Admin, Recepción y Alumnos.",
+            "App auto-servicio para reservas y pagos de alumnos.",
+            "Acceso al portal de autoservicio desde el primer día.",
         ],
     },
     {
@@ -69,9 +69,9 @@ const ENTRIES: Entry[] = [
         description:
             "Automatizamos las ventas, recordatorios y accesos para que tú te enfoques en brindar la mejor clase.",
         items: [
-            "Link de reservas directo para WhatsApp e Instagram.",
-            "Notificaciones automáticas y acceso físico por QR.",
-            "Métricas clave y dashboard de ingresos en tiempo real.",
+            "Check-in físico con código QR único: sin filas, sin papel, sin fricción.",
+            "FitCoins activos: tus socios acumulan puntos por asistencia y los canjean en tu tienda.",
+            "Facturación fiscal automática (CFDI / SII) y reportería financiera en tiempo real.",
         ],
         button: { to: "/onboarding", text: "Empezar ahora" },
     },

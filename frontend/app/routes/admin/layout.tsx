@@ -4,7 +4,6 @@
 import { useState } from "react";
 import { Link, Outlet, useLocation, useRouteLoaderData } from "react-router";
 import ParticleBackground from "~/components/landing/ParticleBackground";
-import { TrialBanner } from "~/components/admin/TrialBanner";
 import { isRouteAllowed, type PlanId } from "~/config/plan-features";
 import type { Route } from "./+types/layout";
 import {
@@ -12,7 +11,6 @@ import {
     CalendarDays,
     Clock,
     CalendarOff,
-    ArrowLeftRight,
     Sparkles,
     BookOpen,
     Users,
@@ -30,10 +28,12 @@ import {
     LogOut,
     ChevronDown,
     ChevronRight,
+    ChevronLeft,
     Menu,
     X,
     Zap,
     Globe,
+    PieChart,
 } from "lucide-react";
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -62,7 +62,6 @@ const NAV: NavItem[] = [
             { name: "Sesiones", href: "/admin/schedule", icon: CalendarDays },
             { name: "Horarios", href: "/admin/horarios", icon: Clock },
             { name: "Períodos Especiales", href: "/admin/periodos", icon: CalendarOff },
-            { name: "Sustituciones", href: "/admin/sustituciones", icon: ArrowLeftRight },
             { name: "Eventos", href: "/admin/events", icon: Sparkles },
             { name: "Reservas", href: "/admin/reservas", icon: BookOpen },
         ],
@@ -88,7 +87,8 @@ const NAV: NavItem[] = [
             { name: "Cupones", href: "/admin/cupones", icon: Ticket },
             { name: "Mis Ingresos", href: "/admin/ingresos", icon: TrendingUp },
             { name: "Nómina", href: "/admin/nomina", icon: Wallet },
-            { name: "Config. Pagos", href: "/admin/pos", icon: Settings2 },
+            { name: "Finanzas", href: "/admin/finanzas", icon: PieChart },
+            { name: "Punto de Venta", href: "/admin/pos", icon: Settings2 },
         ],
     },
     {
@@ -138,13 +138,6 @@ export async function loader({ request }: Route.LoaderArgs) {
         .eq("id", gymId)
         .single();
 
-    // Compute trial banner info
-    let trialDaysLeft: number | null = null;
-    if (gym?.plan_id === "starter" && gym?.plan_status === "trial" && gym?.trial_ends_at) {
-        const msLeft = new Date(gym.trial_ends_at).getTime() - Date.now();
-        trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
-    }
-
     // Demo mode: treat demo gyms as elite so all nav items show
     const isDemoGym = gymId.startsWith("00000000-");
     const planId = isDemoGym ? "elite" : (gym?.plan_id || "starter");
@@ -159,9 +152,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         },
         planInfo: {
             planId: planId as PlanId,
-            planStatus: gym?.plan_status || "trial",
-            trialDaysLeft,
-            isTrialActive: gym?.plan_id === "starter" && gym?.plan_status === "trial" && trialDaysLeft !== null && trialDaysLeft > 0,
+            planStatus: gym?.plan_status || "active",
         },
     };
 }
@@ -207,9 +198,9 @@ function SidebarContent({ branding, planId, onLinkClick, isLight }: { branding: 
             <div className={`px-5 py-5 border-b ${borderColor}`}>
                 <div className="flex items-center gap-3">
                     {branding.logo && (
-                        <div className={`w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center shrink-0 border ${isLight ? 'bg-black/5 border-black/10' : 'bg-white/10 border-white/10'}`}>
-                            {branding.logo.startsWith("http") || branding.logo.startsWith("data:") ? (
-                                <img src={branding.logo} alt="Logo" className="w-full h-full object-cover" />
+                        <div className={`h-14 w-auto min-w-[3.5rem] px-1 rounded-xl overflow-hidden flex items-center justify-center shrink-0 border ${isLight ? 'bg-black/5 border-black/10' : 'bg-white/10 border-white/10'}`}>
+                            {branding.logo.startsWith("http") || branding.logo.startsWith("data:") || branding.logo.startsWith("/") ? (
+                                <img src={branding.logo} alt="Logo" className="h-full w-auto object-contain" />
                             ) : (
                                 <span className="text-xl">{branding.logo}</span>
                             )}
@@ -317,8 +308,9 @@ function SidebarContent({ branding, planId, onLinkClick, isLight }: { branding: 
 
 export default function AdminLayout({ loaderData }: Route.ComponentProps) {
     const [mobileOpen, setMobileOpen] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
     const branding = loaderData.gymBranding;
-    const { planId, isTrialActive, trialDaysLeft } = loaderData.planInfo;
+    const { planId } = loaderData.planInfo;
     
     const isLight = branding.theme === "light";
 
@@ -327,16 +319,30 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
             <ParticleBackground variant={isLight ? "light" : "dark"} />
             <div className={`relative z-10 min-h-screen flex flex-col ${isLight ? 'text-gray-900 dashboard-light-mode' : 'text-white'}`}>
 
-                {/* ── Trial banner ── */}
-                {isTrialActive && trialDaysLeft !== null && (
-                    <TrialBanner daysLeft={trialDaysLeft} />
-                )}
-
                 <div className="flex-1 flex">
                     {/* ── Desktop sidebar ── */}
-                    <aside className={`hidden md:flex flex-col w-60 shrink-0 border-r backdrop-blur-xl ${isLight ? 'bg-white/40 border-black/5' : 'bg-black/40 border-white/[0.07]'}`}>
-                        <SidebarContent branding={branding} planId={planId} isLight={isLight} />
-                    </aside>
+                    <div className={`hidden md:block relative shrink-0 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'w-4' : 'w-60'}`}>
+                        <aside className={`flex flex-col h-full border-r backdrop-blur-xl overflow-hidden transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'w-0 border-r-0' : 'w-60'} ${isLight ? 'bg-white/40 border-black/5' : 'bg-black/40 border-white/[0.07]'}`}>
+                            <SidebarContent branding={branding} planId={planId} isLight={isLight} />
+                        </aside>
+                        {/* Toggle button — always visible */}
+                        <button
+                            onClick={() => setSidebarCollapsed(v => !v)}
+                            title={sidebarCollapsed ? "Mostrar menú" : "Ocultar menú"}
+                            className={`absolute top-5 -right-3.5 z-30 flex items-center justify-center w-7 h-7 rounded-full border shadow-md transition-all duration-150 ${
+                                sidebarCollapsed
+                                    ? 'bg-violet-600 border-violet-500 text-white shadow-violet-500/30 scale-110'
+                                    : isLight
+                                        ? 'bg-white border-black/10 text-gray-400 hover:text-gray-900 hover:bg-gray-50'
+                                        : 'bg-[#1a1a1a] border-white/10 text-white/40 hover:text-white hover:bg-white/10'
+                            }`}
+                        >
+                            {sidebarCollapsed
+                                ? <ChevronRight className="w-3.5 h-3.5" />
+                                : <ChevronLeft className="w-3.5 h-3.5" />
+                            }
+                        </button>
+                    </div>
 
                     {/* ── Mobile overlay sidebar ── */}
                     {mobileOpen && (
@@ -365,8 +371,8 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
                         <header className={`md:hidden flex items-center justify-between p-4 md:px-4 md:py-3 border-b backdrop-blur-xl ${isLight ? 'bg-white/40 border-black/5' : 'bg-black/40 border-white/[0.07]'}`}>
                             <div className="flex items-center gap-2">
                                 {branding.logo && (
-                                    <div className="w-6 h-6 rounded-md overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
-                                        {branding.logo.startsWith("http") || branding.logo.startsWith("data:") ? (
+                                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-white/10 flex items-center justify-center shrink-0 border border-white/10">
+                                        {branding.logo.startsWith("http") || branding.logo.startsWith("data:") || branding.logo.startsWith("/") ? (
                                             <img src={branding.logo} alt="Logo" className="w-full h-full object-cover" />
                                         ) : (
                                             <span className="text-sm">{branding.logo}</span>

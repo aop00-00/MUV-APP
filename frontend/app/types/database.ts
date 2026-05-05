@@ -150,17 +150,20 @@ export interface SubscriptionPlan {
 
 // ─── FitCoins (Gamification) ──────────────────────────────────────────────────
 export type FitCoinSource =
-    | "attendance"      // +10 per class attended
-    | "referral"        // +100 per converted referral
-    | "purchase"        // +5 per $ spent in store
-    | "streak_bonus"    // +50 for 7-day streak
-    | "redemption"      // negative – used for rewards
-    | "bonus"           // generic bonus
-    | "admin_grant";    // manual adjustment by admin
+    | "attendance"          // class attended
+    | "referral"            // converted referral
+    | "purchase"            // purchase in store / package
+    | "streak_bonus"        // streak bonus
+    | "redemption"          // negative – reward redeemed
+    | "bonus"               // generic bonus / custom rule
+    | "birthday"            // birthday award
+    | "membership_renewal"  // membership renewal
+    | "admin_grant";        // manual adjustment by admin
 
 export interface FitCoin {
     id: string;
     user_id: string;
+    gym_id: string;
     amount: number;               // Positive = earned, negative = redeemed
     source: FitCoinSource;
     balance_after: number;        // Running total after this tx
@@ -169,15 +172,39 @@ export interface FitCoin {
     created_at: string;
 }
 
+// ─── FitCoin Rules (per-gym configurable, replaces hardcoded logic) ───────────
+export type FitCoinPointsMode = "fixed" | "per_amount";
+
+export interface FitCoinRule {
+    id: string;
+    gym_id: string;
+    event_type: string;           // 'attendance' | 'purchase' | 'referral' | 'birthday' | 'membership_renewal' | custom
+    label: string;                // Human-readable name shown to members
+    is_custom: boolean;           // true = admin grants manually; false = auto-triggered
+    is_active: boolean;
+    points_mode: FitCoinPointsMode;
+    points: number;               // fixed: total pts  |  per_amount: pts per unit
+    amount_unit: number | null;   // per_amount: how many $ = 1 unit
+    points_referee: number | null;// only for event_type='referral'
+    created_at: string;
+    updated_at: string;
+}
+
+// ─── FitCoin Rewards (DB-driven per-gym catalog) ──────────────────────────────
 export interface FitCoinReward {
     id: string;
+    gym_id?: string;
     name: string;
     description: string;
     cost: number;                 // Points required
-    category?: "discount" | "merch" | "access" | "experience";
-    icon?: string;                // Emoji for display
-    available?: boolean;          // Alias for is_available
+    category: "discount" | "merch" | "access" | "experience";
+    is_active?: boolean;
+    sort_order?: number;
+    // Legacy compat fields (in-memory catalog had these)
+    icon?: string;
+    available?: boolean;
     is_available?: boolean;
+    created_at?: string;
 }
 
 // ─── Waitlist ─────────────────────────────────────────────────────────────────
@@ -332,6 +359,8 @@ export interface Gym {
   plan_id: string;
   plan_status: string;            // "trial", "active", "suspended", "cancelled"
   trial_ends_at: string | null;
+  plan_expires_at: string | null; // fecha de expiración para planes trimestral/anual
+  saas_mp_preapproval_id: string | null; // MP preapproval ID para suscripciones mensuales
   tax_region: TaxRegion;
   currency: string;               // "MXN", "USD", "ARS", "CLP", "COP"
   timezone: string;               // e.g. "America/Mexico_City"

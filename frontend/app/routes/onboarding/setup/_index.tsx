@@ -14,7 +14,7 @@ export default function StepWelcome() {
     let title = "¡Suscripción confirmada!";
     let subtitle = (
         <>
-            Tu plan está activo con 7 días de prueba gratuita.<br />
+            Tu plan está activo y listo para usar.<br />
             Ahora configuremos tu estudio en menos de 5 minutos.
         </>
     );
@@ -31,7 +31,7 @@ export default function StepWelcome() {
         title = "¡Suscripción confirmada!";
         subtitle = (
             <>
-                Tu plan <strong className="text-white">Starter</strong> cuenta con 7 de prueba gratuita.<br />
+                Tu plan <strong className="text-white">Starter</strong> está activo.<br />
                 Aprovecha alumnos y sedes ilimitadas. Configura tu estudio ahora.
             </>
         );
@@ -39,15 +39,15 @@ export default function StepWelcome() {
         title = "¡Suscripción Pro configurada!";
         subtitle = (
             <>
-                Tu plan <strong className="text-white">Pro</strong> está activo y tienes 7 días de prueba gratuita.<br />
-                Escala tu negocio con el CRM, control de accesos y Fitcoins. Comencemos la configuración.
+                Tu plan <strong className="text-white">Pro</strong> está activo y listo para escalar.<br />
+                Gestiona tus leads, control de accesos y Fitcoins. Comencemos la configuración.
             </>
         );
     } else if (planId === "elite") {
         title = "¡Suscripción Elite lista!";
         subtitle = (
             <>
-                Tu plan <strong className="text-white">Elite</strong> está preparado con 7 días de prueba gratuita.<br />
+                Tu plan <strong className="text-white">Elite</strong> está preparado.<br />
                 Tendrás facturación automática web y la app. Configura tu estudio en menos de 5 minutos.
             </>
         );

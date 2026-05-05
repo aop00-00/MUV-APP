@@ -2,9 +2,19 @@
 // Full Strava activity history with metrics and summary cards.
 
 import type { Route } from "./+types/progreso";
-import { Link } from "react-router";
-import { Activity, Heart, Flame, Clock, TrendingUp, ChevronLeft, Zap } from "lucide-react";
+import { Link, Form, useNavigation } from "react-router";
+import { Activity, Heart, Flame, Clock, TrendingUp, ChevronLeft, Zap, RefreshCw } from "lucide-react";
 import { useDashboardTheme } from "~/hooks/useDashboardTheme";
+
+// ─── Action: manual sync ──────────────────────────────────────────────────────
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { syncStravaActivities } = await import("~/services/strava.server");
+
+    const { profile, gymId } = await requireGymAuth(request);
+    const result = await syncStravaActivities(profile.id, gymId);
+    return { synced: result.synced };
+}
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
@@ -72,6 +82,8 @@ function sportColor(type: string) {
 export default function ProgresoPage({ loaderData }: Route.ComponentProps) {
     const { connected, activities, summary } = loaderData as any;
     const th = useDashboardTheme();
+    const navigation = useNavigation();
+    const syncing = navigation.state === "submitting";
 
     if (!connected) {
         return (
@@ -109,13 +121,23 @@ export default function ProgresoPage({ loaderData }: Route.ComponentProps) {
                 <Link to="/dashboard" className={`${th.muted} hover:${th.title} transition-colors`}>
                     <ChevronLeft className="w-5 h-5" />
                 </Link>
-                <div>
+                <div className="flex-1">
                     <h1 className={`text-2xl font-bold ${th.title}`}>Mi Progreso</h1>
                     <p className={`${th.muted} text-sm flex items-center gap-1`}>
                         <span className="inline-block w-2 h-2 rounded-full bg-[#FC4C02]" />
                         Strava conectado
                     </p>
                 </div>
+                <Form method="post">
+                    <button
+                        type="submit"
+                        disabled={syncing}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-[#FC4C02]/10 text-[#FC4C02] hover:bg-[#FC4C02]/20 transition-all disabled:opacity-50"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
+                        {syncing ? "Sincronizando…" : "Sincronizar"}
+                    </button>
+                </Form>
             </div>
 
             {/* Summary cards */}

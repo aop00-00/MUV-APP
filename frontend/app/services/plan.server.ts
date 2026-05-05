@@ -33,7 +33,9 @@ export async function getGymPlans(gymId: string): Promise<GymPlan[]> {
     if (error) throw new Error(`Error fetching plans: ${error.message}`);
 
     return (data ?? []).map((p: any) => {
-        const planType = p.metadata?.plan_type ?? "creditos";
+        // metadata.plan_type is the canonical field; fall back to the top-level column for rows
+        // created before metadata was structured, then default to "creditos"
+        const planType = p.metadata?.plan_type ?? p.plan_type ?? "creditos";
         return {
             id: p.id,
             gym_id: p.gym_id,

@@ -45,7 +45,7 @@ export async function requireGymAuth(request: Request): Promise<{
     // Verify gym exists and is active
     const { data: gym, error } = await supabaseAdmin
         .from("gyms")
-        .select("id, plan_id, plan_status, trial_ends_at, name, slug")
+        .select("id, plan_id, plan_status, trial_ends_at, plan_expires_at, name, slug")
         .eq("id", profile.gym_id)
         .single();
 
@@ -88,6 +88,19 @@ export async function requireGymAuth(request: Request): Promise<{
         const trialEnd = new Date(gym.trial_ends_at);
         if (trialEnd < new Date()) {
             console.warn(`[TRIAL EXPIRED] Gym ${gym.id} (${gym.name}) trial ended at ${gym.trial_ends_at}`);
+            await supabaseAdmin
+                .from("gyms")
+                .update({ plan_status: "suspended" })
+                .eq("id", gym.id);
+            throw redirect("/admin/upgrade");
+        }
+    }
+
+    // Check plan_expires_at for quarterly/annual one-time payments
+    if (gym.plan_status === 'active' && gym.plan_expires_at) {
+        const planExpiry = new Date(gym.plan_expires_at);
+        if (planExpiry < new Date()) {
+            console.warn(`[PLAN EXPIRED] Gym ${gym.id} (${gym.name}) plan expired at ${gym.plan_expires_at}`);
             await supabaseAdmin
                 .from("gyms")
                 .update({ plan_status: "suspended" })

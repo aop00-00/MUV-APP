@@ -116,10 +116,13 @@ export default function CallToAction() {
                 {/* Card content — dashboard screenshot fills the card */}
                 <div className="relative h-full w-full overflow-hidden rounded-2xl">
                     {/* Dashboard screenshot */}
-                    <img
-                        src="/cta-dashboard.jpg.jpg"
-                        alt="Project Studio — dashboard de gestión de studio"
-                        className="absolute inset-0 w-full h-full object-cover object-top select-none brightness-75"
+                    <video
+                        src="/mi-video-hero.mp4.mp4"
+                        autoPlay
+                        loop
+                        muted
+                        playsInline
+                        className="absolute inset-0 w-full h-full object-cover object-top select-none brightness-50"
                         draggable={false}
                     />
                     {/* Dark tint overlay for text legibility */}

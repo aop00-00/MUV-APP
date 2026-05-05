@@ -151,7 +151,8 @@ const LANDING_FEATURES = [
         title: 'Potencia para Usuarios y Admins',
         description:
             'Nuestra plataforma está diseñada para empoderar a todos. Los usuarios disfrutan de una interfaz intuitiva para sus gestiones, mientras que los administradores obtienen el control total y las herramientas de análisis necesarias para escalar su negocio con fuerza.',
-        image: '/images/custom-landing/mobile_mockup_2.png',
+        image: '/images/landing/feature_app_.png',
+        position: 'object-center',
     },
 ];
 
@@ -218,16 +219,19 @@ function CustomLandingSection() {
                 {/* Feature Cards */}
                 <div className="flex flex-col lg:grid lg:grid-cols-3 gap-6 md:gap-8">
                     {LANDING_FEATURES.map((feature, i) => (
-                        <ScrollReveal key={feature.id} delay={i * 0.15}>
-                            <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm group hover:border-white/20 transition-all duration-300">
+                        <ScrollReveal key={feature.id} delay={i * 0.15} className="h-full">
+                            <div className="h-full flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm group hover:border-white/20 transition-all duration-300">
                                 <div className="h-56 sm:h-64 md:h-72 lg:h-64 bg-white/5 overflow-hidden shrink-0">
                                     <img
                                         src={feature.image}
                                         alt={feature.title}
-                                        className="h-full w-full object-cover object-top filter group-hover:brightness-110 group-hover:scale-[1.03] transition-all duration-500"
+                                        className={cn(
+                                            "h-full w-full object-cover filter group-hover:brightness-110 group-hover:scale-[1.03] transition-all duration-500",
+                                            feature.position || "object-top"
+                                        )}
                                     />
                                 </div>
-                                <div className="px-5 py-5 md:px-8 md:py-6">
+                                <div className="px-5 py-5 md:px-8 md:py-6 flex-1 flex flex-col">
                                     <h3 className="mb-2 md:mb-4 text-lg md:text-2xl font-bold text-white leading-tight">
                                         {feature.title}
                                     </h3>

@@ -15,6 +15,8 @@ interface GatewayDef {
     description: string;
     keyLabel: string;
     keyPlaceholder: string;
+    secondKeyLabel?: string;
+    secondKeyPlaceholder?: string;
     docsUrl: string;
     features: string[];
 }
@@ -29,6 +31,8 @@ const GATEWAYS: GatewayDef[] = [
         description: "Acepta pagos con tarjeta, OXXO, transferencia SPEI y Mercado Crédito. Ideal para México y Latinoamérica.",
         keyLabel: "Access Token",
         keyPlaceholder: "APP_USR-...",
+        secondKeyLabel: "Public Key",
+        secondKeyPlaceholder: "APP_USR-... (clave pública)",
         docsUrl: "https://www.mercadopago.com.mx/developers",
         features: ["Tarjeta débito y crédito", "OXXO Pay", "SPEI / CLABE", "Meses sin intereses"],
     },
@@ -90,7 +94,7 @@ export async function action({ request }: Route.ActionArgs) {
         const apiKey = formData.get("api_key") as string;
         if (!apiKey?.trim()) return { error: "Ingresa tu clave de API para continuar." };
 
-        // Upsert gateway config (store key masked — in production, use vault/secrets manager)
+        // Upsert registry de conexión (token enmascarado para auditoría)
         await supabaseAdmin.from("payment_gateways").upsert({
             gym_id: gymId,
             provider,
@@ -98,6 +102,15 @@ export async function action({ request }: Route.ActionArgs) {
             is_connected: true,
             connected_at: new Date().toISOString(),
         }, { onConflict: "gym_id,provider" });
+
+        // Guardar el token real en gyms para que el sistema de pagos pueda usarlo
+        if (provider === "mercadopago") {
+            const publicKey = formData.get("public_key") as string | null;
+            await supabaseAdmin.from("gyms").update({
+                mp_access_token: apiKey.trim(),
+                ...(publicKey?.trim() ? { mp_public_key: publicKey.trim() } : {}),
+            }).eq("id", gymId);
+        }
     }
 
     if (intent === "disconnect") {
@@ -105,6 +118,13 @@ export async function action({ request }: Route.ActionArgs) {
             .update({ is_connected: false, api_key_masked: null })
             .eq("gym_id", gymId)
             .eq("provider", provider);
+
+        // Limpiar token real del gym al desconectar
+        if (provider === "mercadopago") {
+            await supabaseAdmin.from("gyms")
+                .update({ mp_access_token: null, mp_public_key: null })
+                .eq("id", gymId);
+        }
     }
 
     return { success: true };
@@ -114,6 +134,7 @@ export async function action({ request }: Route.ActionArgs) {
 function GatewayCard({ gateway, isConnected }: { gateway: GatewayDef; isConnected: boolean }) {
     const fetcher = useFetcher();
     const [showKey, setShowKey] = useState(false);
+    const [showSecondKey, setShowSecondKey] = useState(false);
 
     const optimisticConnected = fetcher.formData
         ? fetcher.formData.get("intent") === "connect"
@@ -158,6 +179,8 @@ function GatewayCard({ gateway, isConnected }: { gateway: GatewayDef; isConnecte
                 <fetcher.Form method="post" className="space-y-3">
                     <input type="hidden" name="intent" value="connect" />
                     <input type="hidden" name="provider" value={gateway.id} />
+
+                    {/* Campo principal (Access Token / Secret Key / Client ID) */}
                     <div>
                         <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">{gateway.keyLabel}</label>
                         <div className="flex items-center border border-white/[0.08] rounded-xl overflow-hidden focus-within:border-gray-400 transition-colors bg-white/5">
@@ -168,9 +191,27 @@ function GatewayCard({ gateway, isConnected }: { gateway: GatewayDef; isConnecte
                             </button>
                         </div>
                     </div>
+
+                    {/* Campo secundario (Public Key — solo Mercado Pago) */}
+                    {gateway.secondKeyLabel && (
+                        <div>
+                            <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">
+                                {gateway.secondKeyLabel}
+                                <span className="ml-1.5 normal-case font-normal text-white/30">(opcional, habilita Apple Pay)</span>
+                            </label>
+                            <div className="flex items-center border border-white/[0.08] rounded-xl overflow-hidden focus-within:border-gray-400 transition-colors bg-white/5">
+                                <input name="public_key" type={showSecondKey ? "text" : "password"} placeholder={gateway.secondKeyPlaceholder}
+                                    className="flex-1 pl-3 pr-2 py-2.5 text-sm focus:outline-none bg-transparent font-mono text-white" />
+                                <button type="button" onClick={() => setShowSecondKey(v => !v)} className="px-3 text-white/40 hover:text-white/70 transition-colors">
+                                    {showSecondKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="flex items-center justify-between gap-3">
                         <a href={gateway.docsUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-white/40 hover:text-white/70 underline underline-offset-2 transition-colors">
-                            ¿Dónde encuentro mi clave?
+                            ¿Dónde encuentro mis claves?
                         </a>
                         <button type="submit" className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95"
                             style={{ backgroundColor: gateway.accentColor }}>
@@ -181,7 +222,10 @@ function GatewayCard({ gateway, isConnected }: { gateway: GatewayDef; isConnecte
             ) : (
                 <div className="flex items-center justify-between">
                     <div>
-                        <p className="text-xs text-white/50">Clave registrada correctamente.</p>
+                        <p className="text-xs text-white/50">Claves registradas correctamente.</p>
+                        {gateway.secondKeyLabel && (
+                            <p className="text-[11px] text-white/30 mt-0.5">Access Token + Public Key guardados.</p>
+                        )}
                     </div>
                     <fetcher.Form method="post" className="inline">
                         <input type="hidden" name="intent" value="disconnect" />

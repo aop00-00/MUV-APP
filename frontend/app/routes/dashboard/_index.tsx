@@ -1,13 +1,14 @@
 import type { Route } from "./+types/_index";
 import { Link, useFetcher } from "react-router";
 import { useDashboardTheme as useDashboardThemeHook, type ThemeTokens } from "~/hooks/useDashboardTheme";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
     Calendar, CreditCard, TrendingUp, ArrowRight, Flame, Coffee,
     Dumbbell, Timer, Smile, Frown, Meh, Zap, Activity, Plus, History, Trash2, Check, X, Scale, Ruler,
-    Droplet, Heart, Moon, Award, ChevronLeft, ChevronRight, Clock, MapPin, Users, Sparkles, Rocket, Crown, Star, Ticket
+    Droplet, Heart, Moon, Award, ChevronLeft, ChevronRight, Clock, MapPin, Users, Sparkles, Rocket, Crown, Star, Ticket, Armchair, CalendarPlus
 } from "lucide-react";
 import { BookingConfirmationPopup } from "~/components/BookingConfirmationPopup";
+import { AlreadyBookedPopup } from "~/components/AlreadyBookedPopup";
 
 // ─── Constants ──────────────────────────────────────────────────
 const PREDEFINED_EXERCISES = [
@@ -88,9 +89,10 @@ export async function loader({ request }: Route.LoaderArgs) {
         { data: upcomingClasses },
         rawEvents,
         { data: userEventRegs },
+        { data: activeMembership },
     ] = await Promise.all([
         // Gym basics
-        supabaseAdmin.from("gyms").select("brand_color, primary_color, studio_type, plan_id").eq("id", gymId).single(),
+        supabaseAdmin.from("gyms").select("brand_color, primary_color, studio_type, plan_id, booking_mode").eq("id", gymId).single(),
         // User stats snapshot
         supabaseAdmin
             .from("user_stats")
@@ -146,10 +148,10 @@ export async function loader({ request }: Route.LoaderArgs) {
             .in("category", ["beverage", "supplement"])
             .order("created_at", { ascending: true })
             .limit(1),
-        // Next upcoming booking
+        // Next upcoming booking — only guaranteed columns, no optional ones
         supabaseAdmin
             .from("bookings")
-            .select("id, class:classes!class_id(title, start_time, location)")
+            .select("id, class_id, resource_id, class:classes!class_id(title, start_time, location)")
             .eq("user_id", profile.id)
             .eq("gym_id", gymId)
             .eq("status", "confirmed")
@@ -170,11 +172,22 @@ export async function loader({ request }: Route.LoaderArgs) {
             .select("event_id")
             .eq("user_id", profile.id)
             .eq("gym_id", gymId),
+        // Active membership to determine booking access type
+        supabaseAdmin
+            .from("memberships")
+            .select("plan_type, end_date")
+            .eq("user_id", profile.id)
+            .eq("gym_id", gymId)
+            .eq("status", "active")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
     ]);
 
     const gymContext = {
         brandColor: gym?.brand_color || gym?.primary_color || "#7c3aed",
         studioType: gym?.studio_type || null,
+        bookingMode: (gym?.booking_mode || "capacity_only") as string,
     };
 
     // Determine user state
@@ -328,15 +341,61 @@ export async function loader({ request }: Route.LoaderArgs) {
         (a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
     );
 
+    // Collect class_ids and resource_ids for secondary lookups
+    const classIds = upcomingBookings.map((b: any) => b.class_id).filter(Boolean) as string[];
+    const resourceIds = upcomingBookings.map((b: any) => b.resource_id).filter(Boolean) as string[];
+
+    // Step 1: get coach_id from classes (guaranteed column, no optional ones)
+    const classToCoachId = new Map<string, string>();
+    if (classIds.length > 0) {
+        const { data: classRows } = await supabaseAdmin
+            .from("classes")
+            .select("id, coach_id")
+            .in("id", classIds);
+        for (const c of classRows ?? []) {
+            if (c.coach_id) classToCoachId.set(c.id, c.coach_id);
+        }
+    }
+
+    // Step 2: look up the coaches table (NOT profiles) — coaches are stored in their own table
+    const coachIdList = [...new Set(classToCoachId.values())] as string[];
+    const coachNameMap = new Map<string, string>();
+    if (coachIdList.length > 0) {
+        const { data: coachRows } = await supabaseAdmin
+            .from("coaches")
+            .select("id, name")
+            .in("id", coachIdList);
+        for (const c of coachRows ?? []) coachNameMap.set(c.id, c.name);
+    }
+
+    // Resources lookup
+    const resourceMap = new Map<string, { name: string; resource_type: string }>();
+    if (resourceIds.length > 0) {
+        const { data: resourceRows } = await supabaseAdmin
+            .from("resources")
+            .select("id, name, resource_type")
+            .in("id", resourceIds);
+        for (const r of resourceRows ?? []) {
+            resourceMap.set(r.id, { name: r.name, resource_type: r.resource_type });
+        }
+    }
+
     // Build upcoming items list: all booked classes + registered events, sorted by date
-    const bookedClassItems = upcomingBookings.map((b: any) => ({
-        id: b.id,
-        name: b.class.title ?? "Clase",
-        startTime: b.class.start_time,
-        instructor: (b.class as any).coach_name ?? "Coach",
-        location: b.class.location ?? "Gimnasio",
-        isEvent: false as const,
-    }));
+    const bookedClassItems = upcomingBookings.map((b: any) => {
+        const res = b.resource_id ? resourceMap.get(b.resource_id) : null;
+        const coachId = b.class_id ? classToCoachId.get(b.class_id) : null;
+        const coachName = coachId ? (coachNameMap.get(coachId) ?? null) : null;
+        return {
+            id: b.id,
+            name: b.class.title ?? "Clase",
+            startTime: b.class.start_time,
+            instructor: coachName,
+            location: b.class.location ?? "Gimnasio",
+            isEvent: false as const,
+            resourceName: res?.name ?? null,
+            resourceType: res?.resource_type ?? null,
+        };
+    });
     const registeredEventItems = (rawEvents ?? [])
         .filter((e: any) => registeredEventIds.has(e.id) && new Date(e.start_time).getTime() > nowTime)
         .map((e: any) => ({
@@ -352,7 +411,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     );
 
     // Determine nextClass: first item of upcomingItems
-    let finalNextClass: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent?: boolean } =
+    let finalNextClass: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent?: boolean; resourceName?: string | null; resourceType?: string | null } =
         upcomingItems[0] ?? nextClass;
 
     // Strava: check connection + load stored activities
@@ -430,6 +489,8 @@ export async function loader({ request }: Route.LoaderArgs) {
         stravaActivities,
         stravaStats,
         stravaParam,
+        membershipPlanType: (activeMembership?.plan_type ?? null) as "creditos" | "membresia" | "ilimitado" | null,
+        bookingMode: gymContext.bookingMode,
     };
 }
 
@@ -442,61 +503,9 @@ export async function action({ request }: Route.ActionArgs) {
 
     if (intent === "book_class") {
         const classId = formData.get("classId") as string;
-
-        // Check user has credits
-        if ((profile.credits ?? 0) < 1) {
-            return { success: false, error: "No tienes créditos suficientes" };
-        }
-
-        // Get class details
-        const { data: classData } = await supabaseAdmin
-            .from("classes")
-            .select("*, current_enrolled, capacity")
-            .eq("id", classId)
-            .single();
-
-        if (!classData) {
-            return { success: false, error: "Clase no encontrada" };
-        }
-
-        if (classData.current_enrolled >= classData.capacity) {
-            return { success: false, error: "Clase llena" };
-        }
-
-        // Create booking
-        const { data: booking, error: bookingError } = await supabaseAdmin
-            .from("bookings")
-            .insert({
-                user_id: profile.id,
-                class_id: classId,
-                gym_id: gymId,
-                status: "confirmed",
-            })
-            .select()
-            .single();
-
-        if (bookingError) {
-            return { success: false, error: bookingError.message };
-        }
-
-        // Deduct credit
-        await supabaseAdmin
-            .from("profiles")
-            .update({ credits: (profile.credits ?? 0) - 1 })
-            .eq("id", profile.id);
-
-        // Increment class enrollment
-        await supabaseAdmin
-            .from("classes")
-            .update({ current_enrolled: (classData.current_enrolled ?? 0) + 1 })
-            .eq("id", classId);
-
-        return {
-            success: true,
-            booking_id: booking.id,
-            class_id: classId,
-            credits_remaining: (profile.credits ?? 0) - 1
-        };
+        const { bookClass } = await import("~/services/booking.server");
+        const result = await bookClass(classId, profile.id, gymId);
+        return { ...result, class_id: classId };
     }
 
     if (intent === "register_event") {
@@ -537,6 +546,19 @@ export async function action({ request }: Route.ActionArgs) {
             event_name: (eventData as any).name ?? (eventData as any).title ?? "Evento",
             event_start: eventData.start_time,
         };
+    }
+
+    if (intent === "cancel_booking") {
+        const bookingId = formData.get("bookingId") as string;
+        if (!bookingId) return { success: false, error: "ID de reserva requerido" };
+        const { cancelBooking } = await import("~/services/booking.server");
+        try {
+            const result = await cancelBooking(bookingId, profile.id, gymId);
+            if (!result.success) return { success: false, error: result.error ?? "No se pudo cancelar" };
+            return { success: true, intent: "cancel_booking", refunded: result.refunded };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
     }
 
     if (intent === "quick_buy") {
@@ -643,6 +665,10 @@ export async function action({ request }: Route.ActionArgs) {
     return {};
 }
 
+// ─── Helper: strip internal UUID suffix from resource names ────────
+// Resources may be stored as "Reformer 11__0957b5" — show only the readable part.
+const cleanResourceName = (name: string) => name.replace(/__[0-9a-f]+$/i, "").trim();
+
 // ─── Radar Chart SVG Component ───────────────────────────────────
 function RadarChart({ stats }: { stats: Record<string, number> }) {
     const labels = Object.keys(stats);
@@ -717,12 +743,50 @@ function RadarChart({ stats }: { stats: Record<string, number> }) {
 
 // ─── Upcoming Item Card ──────────────────────────────────────────
 function UpcomingItemCard({ item, index }: {
-    item: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent: boolean };
+    item: { id: string; name: string; startTime: string; instructor: string; location: string; isEvent: boolean; resourceName?: string | null; resourceType?: string | null };
     index: number;
     th: ThemeTokens;
 }) {
     const [open, setOpen] = useState(false);
+    const [confirmCancel, setConfirmCancel] = useState(false);
+    const cancelFetcher = useFetcher<any>();
     const isEv = item.isEvent;
+
+    const addToCalendar = () => {
+        const start = new Date(item.startTime);
+        const end = new Date(start.getTime() + 60 * 60 * 1000); // +1 hora por defecto
+        const fmt = (d: Date) =>
+            d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+        const lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//GRIND//Dashboard//ES",
+            "BEGIN:VEVENT",
+            `DTSTART:${fmt(start)}`,
+            `DTEND:${fmt(end)}`,
+            `SUMMARY:${item.name}`,
+            item.instructor ? `DESCRIPTION:Coach: ${item.instructor}` : "",
+            item.location ? `LOCATION:${item.location}` : "",
+            `STATUS:CONFIRMED`,
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ].filter(Boolean).join("\r\n");
+
+        const blob = new Blob([lines], { type: "text/calendar;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${item.name.replace(/\s+/g, "_")}.ics`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    useEffect(() => {
+        if (cancelFetcher.state === "idle" && cancelFetcher.data?.success && cancelFetcher.data?.intent === "cancel_booking") {
+            setOpen(false);
+            setConfirmCancel(false);
+        }
+    }, [cancelFetcher.data, cancelFetcher.state]);
 
     const dateStr = new Date(item.startTime).toLocaleString("es-MX", {
         weekday: "long", day: "numeric", month: "long",
@@ -801,7 +865,7 @@ function UpcomingItemCard({ item, index }: {
             {open && (
                 <div
                     className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-                    onClick={() => setOpen(false)}
+                    onClick={() => { setOpen(false); setConfirmCancel(false); }}
                 >
                     <div
                         className={`relative w-full max-w-md bg-slate-900 rounded-2xl border shadow-2xl flex flex-col text-white ${isEv ? "border-violet-500/30" : "border-white/10"}`}
@@ -820,7 +884,7 @@ function UpcomingItemCard({ item, index }: {
                                 <h3 className="text-xl font-black text-white leading-tight">{item.name}</h3>
                             </div>
                             <button
-                                onClick={() => setOpen(false)}
+                                onClick={() => { setOpen(false); setConfirmCancel(false); }}
                                 className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center"
                             >
                                 <X className="w-5 h-5" />
@@ -847,12 +911,25 @@ function UpcomingItemCard({ item, index }: {
                                 </div>
                             )}
 
-                            {item.instructor && (
+                            {!isEv && (
                                 <div className="flex items-start gap-3">
                                     <Users className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
                                     <div>
-                                        <p className="text-xs text-white/50 mb-0.5">Instructor</p>
-                                        <p className="font-semibold text-sm text-white">{item.instructor}</p>
+                                        <p className="text-xs text-white/50 mb-0.5">Coach</p>
+                                        <p className="font-semibold text-sm text-white">
+                                            {item.instructor ?? <span className="text-white/30 italic">Sin asignar</span>}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Asiento / recurso asignado */}
+                            {!isEv && item.resourceName && (
+                                <div className="flex items-center gap-3 rounded-xl px-4 py-3 bg-lime-400/10 border border-lime-400/20">
+                                    <Armchair className="w-5 h-5 text-lime-400 shrink-0" />
+                                    <div>
+                                        <p className="text-xs text-white/50 mb-0.5 capitalize">{item.resourceType ?? "Asiento"} asignado</p>
+                                        <p className="font-black text-lg text-lime-400 leading-none">{cleanResourceName(item.resourceName)}</p>
                                     </div>
                                 </div>
                             )}
@@ -876,7 +953,7 @@ function UpcomingItemCard({ item, index }: {
                         </div>
 
                         {/* Footer */}
-                        <div className={`shrink-0 px-6 pb-6 pt-4 border-t bg-slate-900 ${isEv ? "border-violet-500/20" : "border-white/[0.06]"}`}>
+                        <div className={`shrink-0 px-6 pb-6 pt-4 border-t bg-slate-900 space-y-3 ${isEv ? "border-violet-500/20" : "border-white/[0.06]"}`}>
                             <Link
                                 to={isEv ? "/dashboard/packages" : "/dashboard/schedule"}
                                 onClick={() => setOpen(false)}
@@ -884,6 +961,52 @@ function UpcomingItemCard({ item, index }: {
                             >
                                 {isEv ? "Ver evento completo" : "Ver agenda completa"}
                             </Link>
+
+                            {/* Agregar a calendario nativo */}
+                            <button
+                                type="button"
+                                onClick={addToCalendar}
+                                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold border border-white/10 text-white/70 hover:text-white hover:bg-white/5 transition-all"
+                            >
+                                <CalendarPlus className="w-4 h-4" />
+                                Agregar a mi calendario
+                            </button>
+
+                            {/* Cancelar reserva — solo para clases, no eventos */}
+                            {!isEv && (
+                                cancelFetcher.data?.error ? (
+                                    <p className="text-center text-xs text-red-400">{cancelFetcher.data.error}</p>
+                                ) : confirmCancel ? (
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setConfirmCancel(false)}
+                                            className="flex-1 py-2.5 rounded-xl text-sm font-semibold border border-white/10 text-white/60 hover:bg-white/5 transition-all"
+                                        >
+                                            Mantener reserva
+                                        </button>
+                                        <cancelFetcher.Form method="post" className="flex-1">
+                                            <input type="hidden" name="intent" value="cancel_booking" />
+                                            <input type="hidden" name="bookingId" value={item.id} />
+                                            <button
+                                                type="submit"
+                                                disabled={cancelFetcher.state !== "idle"}
+                                                className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50"
+                                            >
+                                                {cancelFetcher.state !== "idle" ? "Cancelando…" : "Sí, cancelar"}
+                                            </button>
+                                        </cancelFetcher.Form>
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmCancel(true)}
+                                        className="w-full py-2.5 rounded-xl text-sm font-medium text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/40 hover:bg-red-500/5 transition-all"
+                                    >
+                                        Cancelar reserva
+                                    </button>
+                                )
+                            )}
                         </div>
                     </div>
                 </div>
@@ -904,6 +1027,8 @@ interface WeeklyCalendarProps {
     selectedClass: ClassEvent | null;
     onBook: (classId: string) => void;
     userCredits: number;
+    membershipPlanType: "creditos" | "membresia" | "ilimitado" | null;
+    bookingMode: string;
     th: ThemeTokens;
     registeredEventIds?: string[];
 }
@@ -919,6 +1044,8 @@ function WeeklyCalendar({
     selectedClass,
     onBook,
     userCredits,
+    membershipPlanType,
+    bookingMode,
     th,
     registeredEventIds = [],
 }: WeeklyCalendarProps) {
@@ -1336,6 +1463,15 @@ function WeeklyCalendar({
                                             Ver evento e inscribirme
                                         </Link>
                                     )
+                                ) : bookingMode === "assigned_resource" && selectedClass.bookedCount < selectedClass.capacity ? (
+                                    // Seat-selection studios: go to full schedule view where SeatMap lives
+                                    <Link
+                                        to={`/dashboard/schedule?class=${selectedClass.id}`}
+                                        onClick={() => onClassSelect(null)}
+                                        className="block w-full py-3.5 bg-lime-400 hover:bg-lime-500 text-slate-900 rounded-xl font-bold shadow-xl shadow-lime-400/20 transition-all active:scale-95 min-h-[48px] text-center"
+                                    >
+                                        Elegir mi lugar →
+                                    </Link>
                                 ) : (
                                     <>
                                         <button
@@ -1343,16 +1479,21 @@ function WeeklyCalendar({
                                                 onBook(selectedClass.id);
                                                 onClassSelect(null);
                                             }}
-                                            disabled={userCredits < 1 || selectedClass.bookedCount >= selectedClass.capacity}
+                                            disabled={
+                                                (membershipPlanType === "creditos" || membershipPlanType === null ? userCredits < 1 : false)
+                                                || selectedClass.bookedCount >= selectedClass.capacity
+                                            }
                                             className="w-full py-3.5 bg-lime-400 hover:bg-lime-500 disabled:bg-white/10 disabled:text-white/40 text-slate-900 rounded-xl font-bold shadow-xl shadow-lime-400/20 transition-all active:scale-95 min-h-[48px]"
                                         >
-                                            {userCredits < 1
-                                                ? "Sin créditos suficientes"
-                                                : selectedClass.bookedCount >= selectedClass.capacity
-                                                    ? "Clase llena"
-                                                    : "Reservar clase (1 crédito)"}
+                                            {selectedClass.bookedCount >= selectedClass.capacity
+                                                ? "Clase llena"
+                                                : (membershipPlanType === "creditos" || membershipPlanType === null) && userCredits < 1
+                                                    ? "Sin créditos suficientes"
+                                                    : membershipPlanType === "creditos" || membershipPlanType === null
+                                                        ? "Reservar clase (1 crédito)"
+                                                        : "Reservar clase"}
                                         </button>
-                                        {userCredits < 1 && (
+                                        {(membershipPlanType === "creditos" || membershipPlanType === null) && userCredits < 1 && (
                                             <p className="text-xs text-red-400 text-center mt-2">
                                                 <Link to="/dashboard/packages" className="underline">Comprar más créditos →</Link>
                                             </p>
@@ -1520,10 +1661,13 @@ const CLASS_COLORS: Record<ClassType, { bg: string; text: string; dot: string }>
 
 // ─── Main Component ──────────────────────────────────────────────
 export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
-    const { gymContext, profile, userState, nextClass, streak, classesMonth, gymOccupancy, radarStats, initialPrs, initialBodyStats, quickBuy, recentActivity, classes, registeredEventIds = [], upcomingItems = [], stravaEnabled = false, stravaConnected = false, stravaActivities = [], stravaStats = { weeklyMinutes: 0, totalMinutes: 0, avgHR: 0 }, stravaParam } = loaderData;
+    const { gymContext, profile, userState, nextClass, streak, classesMonth, gymOccupancy, radarStats, initialPrs, initialBodyStats, quickBuy, recentActivity, classes, registeredEventIds = [], upcomingItems = [], stravaEnabled = false, stravaConnected = false, stravaActivities = [], stravaStats = { weeklyMinutes: 0, totalMinutes: 0, avgHR: 0 }, stravaParam, membershipPlanType = null, bookingMode = "capacity_only" } = loaderData as any;
     const brandColor = gymContext?.brandColor || "#7c3aed";
     const th = useDashboardThemeHook();
     const fetcher = useFetcher();
+    const bookingFetcher = useFetcher<any>();
+    // Capture class info at booking-submit time so the effect doesn't depend on classes/selectedClass
+    const pendingBookingClass = useRef<{ title: string; start_time: string } | null>(null);
     const [prs, setPrs] = useState(initialPrs);
     const [selectedExercise, setSelectedExercise] = useState("");
     const [addingDataTo, setAddingDataTo] = useState<string | null>(null);
@@ -1545,26 +1689,37 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
     const [confirmedBooking, setConfirmedBooking] = useState<{
         title: string;
         startTime: string;
-        creditsRemaining: number;
+        creditsRemaining: number | null;
+        planType: "creditos" | "membresia" | "ilimitado";
     } | null>(null);
 
-    // Monitor booking success
-    useEffect(() => {
-        if (fetcher.data && (fetcher.data as any).success && (fetcher.data as any).booking_id) {
-            const bookedClassId = (fetcher.data as any).class_id || selectedClass?.id;
-            const bookedClass = classes.find(c => c.id === bookedClassId) || selectedClass;
+    // Already booked popup state
+    const [showAlreadyBooked, setShowAlreadyBooked] = useState(false);
+    const [alreadyBookedClass, setAlreadyBookedClass] = useState<{ title: string; startTime: string } | null>(null);
 
-            if (bookedClass) {
-                setConfirmedBooking({
-                    title: bookedClass.title,
-                    startTime: bookedClass.start_time,
-                    creditsRemaining: (fetcher.data as any).credits_remaining ?? profile.credits - 1,
-                });
-                setShowConfirmation(true);
-                setSelectedClass(null);
-            }
+    // Monitor booking responses — dedicated fetcher, no dependency on classes/selectedClass
+    useEffect(() => {
+        if (bookingFetcher.state !== "idle" || !bookingFetcher.data) return;
+
+        const data = bookingFetcher.data;
+
+        if (data.error === "already_booked" && pendingBookingClass.current) {
+            setAlreadyBookedClass({ title: pendingBookingClass.current.title, startTime: pendingBookingClass.current.start_time });
+            setShowAlreadyBooked(true);
+            pendingBookingClass.current = null;
+        } else if (data.success && data.booking_id && pendingBookingClass.current) {
+            const pt = data.plan_type ?? "creditos";
+            setConfirmedBooking({
+                title: pendingBookingClass.current.title,
+                startTime: pendingBookingClass.current.start_time,
+                creditsRemaining: pt === "creditos" ? (data.credits_remaining ?? 0) : null,
+                planType: pt,
+            });
+            setShowConfirmation(true);
+            pendingBookingClass.current = null;
         }
-    }, [fetcher.data, selectedClass, classes, profile.credits]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bookingFetcher.state]);
     const [isAddingBodyStat, setIsAddingBodyStat] = useState(false);
 
     const handleAddExercise = () => {
@@ -1710,13 +1865,27 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                     <div className={`${th.muted} text-sm`}>Racha de días</div>
                 </div>
 
-                {/* Créditos */}
+                {/* Créditos / Membresía */}
                 <div className={`${th.card} backdrop-blur-md rounded-2xl p-5 ${th.cardHover} transition-all`}>
-                    <div className="flex items-center gap-2 mb-3">
-                        <Heart className="w-5 h-5 text-red-400" />
-                    </div>
-                    <div className={`text-3xl font-bold ${th.title} mb-1`}>{profile.credits}</div>
-                    <div className={`${th.muted} text-sm`}>Créditos disponibles</div>
+                    {membershipPlanType === "membresia" || membershipPlanType === "ilimitado" ? (
+                        <>
+                            <div className="flex items-center gap-2 mb-3">
+                                <Sparkles className="w-5 h-5 text-emerald-400" />
+                            </div>
+                            <div className={`text-lg font-bold ${th.title} mb-1 leading-tight`}>
+                                {membershipPlanType === "ilimitado" ? "Ilimitado ∞" : "Activa ✓"}
+                            </div>
+                            <div className={`${th.muted} text-sm`}>Membresía vigente</div>
+                        </>
+                    ) : (
+                        <>
+                            <div className="flex items-center gap-2 mb-3">
+                                <Heart className="w-5 h-5 text-red-400" />
+                            </div>
+                            <div className={`text-3xl font-bold ${th.title} mb-1`}>{profile.credits}</div>
+                            <div className={`${th.muted} text-sm`}>Créditos disponibles</div>
+                        </>
+                    )}
                 </div>
             </div>
 
@@ -1773,12 +1942,16 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                 onClassSelect={setSelectedClass}
                 selectedClass={selectedClass}
                 onBook={(classId) => {
+                    const cls = classes.find(c => c.id === classId);
+                    if (cls) pendingBookingClass.current = { title: cls.title, start_time: cls.start_time };
                     const fd = new FormData();
                     fd.set("intent", "book_class");
                     fd.set("classId", classId);
-                    fetcher.submit(fd, { method: "post" });
+                    bookingFetcher.submit(fd, { method: "post" });
                 }}
                 userCredits={profile.credits ?? 0}
+                membershipPlanType={membershipPlanType}
+                bookingMode={bookingMode}
                 th={th}
                 registeredEventIds={registeredEventIds as string[]}
             />
@@ -1791,6 +1964,16 @@ export default function DashboardIndex({ loaderData }: Route.ComponentProps) {
                     classTitle={confirmedBooking.title}
                     startTime={confirmedBooking.startTime}
                     creditsRemaining={confirmedBooking.creditsRemaining}
+                    planType={confirmedBooking.planType}
+                />
+            )}
+
+            {/* Already Booked Popup */}
+            {showAlreadyBooked && alreadyBookedClass && (
+                <AlreadyBookedPopup
+                    classTitle={alreadyBookedClass.title}
+                    startTime={alreadyBookedClass.startTime}
+                    onClose={() => setShowAlreadyBooked(false)}
                 />
             )}
 

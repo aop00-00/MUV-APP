@@ -17,17 +17,123 @@ export interface SeatResource {
     is_active: boolean;
 }
 
+// ─── Discipline SVG Icons ───────────────────────────────────────────────────
+// Custom SVG icons that accurately represent each studio discipline.
+
+function IconCycling({ size = 20 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="5.5" cy="17.5" r="3.5" />
+            <circle cx="18.5" cy="17.5" r="3.5" />
+            <path d="M15 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm-3 11.5L9 10l3-2 2 4h4" />
+            <path d="m5.5 17.5 3-7 2-1" />
+        </svg>
+    );
+}
+
+function IconPilates({ size = 20 }: { size?: number }) {
+    // Represents a reformer machine: a horizontal platform with pulleys
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            {/* Reformer bed/carriage */}
+            <rect x="2" y="10" width="20" height="5" rx="1.5" />
+            {/* Headrest */}
+            <rect x="3" y="8" width="5" height="2" rx="1" />
+            {/* Foot bar */}
+            <line x1="18" y1="8" x2="18" y2="10" />
+            <line x1="20" y1="8" x2="20" y2="10" />
+            <line x1="18" y1="8" x2="20" y2="8" />
+            {/* Legs */}
+            <line x1="4" y1="15" x2="4" y2="18" />
+            <line x1="20" y1="15" x2="20" y2="18" />
+            {/* Springs/ropes */}
+            <line x1="14" y1="12" x2="22" y2="12" strokeDasharray="1.5 1" />
+        </svg>
+    );
+}
+
+function IconYoga({ size = 20 }: { size?: number }) {
+    // Yoga mat with lotus-like pose suggestion
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            {/* Mat */}
+            <ellipse cx="12" cy="19" rx="9" ry="2" />
+            {/* Person in tree/lotus pose */}
+            <circle cx="12" cy="6" r="2" />
+            {/* Arms raised */}
+            <path d="M9 11c1-1 2-1.5 3-1.5s2 .5 3 1.5" />
+            <line x1="7" y1="10" x2="9" y2="11" />
+            <line x1="17" y1="10" x2="15" y2="11" />
+            {/* Body */}
+            <line x1="12" y1="9.5" x2="12" y2="16" />
+            {/* Crossed legs */}
+            <path d="M12 16 Q9 18 8 19" />
+            <path d="M12 16 Q15 18 16 19" />
+        </svg>
+    );
+}
+
+function IconBarre({ size = 20 }: { size?: number }) {
+    // Ballet barre: horizontal bar with vertical supports + leg extension
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            {/* Horizontal barre */}
+            <line x1="2" y1="10" x2="22" y2="10" />
+            {/* Vertical supports */}
+            <line x1="4" y1="10" x2="4" y2="20" />
+            <line x1="20" y1="10" x2="20" y2="20" />
+            {/* Person doing arabesque */}
+            <circle cx="13" cy="5" r="2" />
+            {/* Body leaning on barre */}
+            <line x1="13" y1="7" x2="11" y2="10" />
+            {/* Leg extended back */}
+            <line x1="11" y1="10" x2="8" y2="13" />
+            <line x1="11" y1="10" x2="16" y2="8" />
+            {/* Arm on barre */}
+            <line x1="13" y1="8" x2="17" y2="10" />
+        </svg>
+    );
+}
+
+function IconHiit({ size = 20 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+        </svg>
+    );
+}
+
+function IconMat({ size = 20 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="8" width="18" height="10" rx="2" />
+            <line x1="7" y1="8" x2="7" y2="18" strokeOpacity="0.4" />
+            <line x1="12" y1="8" x2="12" y2="18" strokeOpacity="0.4" />
+            <line x1="17" y1="8" x2="17" y2="18" strokeOpacity="0.4" />
+        </svg>
+    );
+}
+
 // ─── Discipline config ──────────────────────────────────────────────────────
 
-const DISCIPLINE_CONFIG: Record<string, { label: string; emoji: string; resourceType: string }> = {
-    cycling: { label: "Bicicleta", emoji: "🚲", resourceType: "bike" },
-    pilates: { label: "Reformer", emoji: "🛏️", resourceType: "reformer" },
-    barre:   { label: "Barra",     emoji: "⚡", resourceType: "barre" },
-    yoga:    { label: "Mat",       emoji: "🧘", resourceType: "mat" },
+type DisciplineConfig = {
+    label: string;
+    resourceType: string;
+    Icon: React.ComponentType<{ size?: number }>;
 };
 
-function getConfig(studioType?: string | null) {
-    return DISCIPLINE_CONFIG[studioType ?? ""] ?? { label: "Lugar", emoji: "⚡", resourceType: "spot" };
+const DISCIPLINE_CONFIG: Record<string, DisciplineConfig> = {
+    cycling: { label: "Bicicleta", resourceType: "bike",     Icon: IconCycling },
+    pilates: { label: "Reformer",  resourceType: "reformer", Icon: IconPilates },
+    barre:   { label: "Barra",     resourceType: "barre",    Icon: IconBarre   },
+    yoga:    { label: "Mat",       resourceType: "mat",      Icon: IconYoga    },
+    hiit:    { label: "Lugar",     resourceType: "spot",     Icon: IconHiit    },
+    dance:   { label: "Lugar",     resourceType: "spot",     Icon: IconMat     },
+    martial: { label: "Lugar",     resourceType: "spot",     Icon: IconMat     },
+};
+
+function getConfig(studioType?: string | null): DisciplineConfig {
+    return DISCIPLINE_CONFIG[studioType ?? ""] ?? { label: "Lugar", resourceType: "spot", Icon: IconMat };
 }
 
 // ─── READ-ONLY Seat Map (user booking) ─────────────────────────────────────
@@ -142,7 +248,7 @@ export function ReadOnlySeatMap({
                                                 : {}
                                     }
                                 >
-                                    <span className="text-base leading-none">{config.emoji}</span>
+                                    <config.Icon size={16} />
                                     <span className="text-[7px] font-bold leading-none mt-0.5 opacity-70">
                                         {seatLabel.replace(/\D/g, "")}
                                     </span>
@@ -336,7 +442,7 @@ export function EditableSeatMap({
                                     >
                                         {isActive ? (
                                             <>
-                                                <span className="text-base leading-none">{config.emoji}</span>
+                                                <config.Icon size={16} />
                                                 <span className="text-[7px] font-bold leading-none mt-0.5 opacity-60">
                                                     {(cell?.name || "").replace(/\D/g, "")}
                                                 </span>

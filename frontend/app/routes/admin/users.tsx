@@ -4,7 +4,7 @@
 import type { Route } from "./+types/users";
 import { useFetcher, useRevalidator } from "react-router";
 import { useState, useEffect, useRef } from "react";
-import { Search, PhoneForwarded, Tag, X, UserPlus, Mail, FileText, MoreVertical, Check, ShieldCheck, CreditCard, Plus } from "lucide-react";
+import { Search, PhoneForwarded, Tag, X, UserPlus, Mail, FileText, MoreVertical, Check, ShieldCheck, CreditCard, Plus, Trash2 } from "lucide-react";
 import { toast } from "react-hot-toast";
 
 // ─── Mock Data ───────────────────────────────────────────────────
@@ -31,6 +31,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             gym_id,
             metadata,
             memberships (
+                id,
                 plan_name,
                 end_date,
                 status,
@@ -71,6 +72,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             lastVisitDaysAgo,
             segment,
             membership: membership ? {
+                id: (membership as any).id,
                 plan_name: membership.plan_name,
                 end_date: membership.end_date,
                 status: membership.status,
@@ -339,6 +341,39 @@ export async function action({ request }: Route.ActionArgs) {
         return { success: true, intent: "assign_membership" };
     }
 
+    if (intent === "extend_membership") {
+        const membershipId = formData.get("membershipId") as string;
+        const newEndDate = formData.get("endDate") as string;
+
+        if (!membershipId || !newEndDate) return { error: "Datos incompletos." };
+
+        // Verify the membership belongs to a user in this gym
+        const { data: membershipData } = await supabaseAdmin
+            .from("memberships")
+            .select("id, user_id")
+            .eq("id", membershipId)
+            .single();
+
+        if (!membershipData) return { error: "Membresía no encontrada." };
+
+        const { data: ownerProfile } = await supabaseAdmin
+            .from("profiles")
+            .select("id")
+            .eq("id", membershipData.user_id)
+            .eq("gym_id", gymId)
+            .single();
+
+        if (!ownerProfile) return { error: "No autorizado." };
+
+        const { error } = await supabaseAdmin
+            .from("memberships")
+            .update({ end_date: newEndDate })
+            .eq("id", membershipId);
+
+        if (error) return { error: error.message };
+        return { success: true, intent: "extend_membership" };
+    }
+
     if (intent === "update_role") {
         const userId = formData.get("userId") as string;
         const newRole = formData.get("role") as string;
@@ -393,6 +428,8 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     const tagFetcher = useFetcher();
     const roleFetcher = useFetcher();
     const membershipFetcher = useFetcher();
+    const deleteFetcher = useFetcher();
+    const expiryFetcher = useFetcher();
     const revalidator = useRevalidator();
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingCredits, setEditingCredits] = useState<{ userId: string; value: number } | null>(null);
@@ -405,6 +442,10 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     const lastTagSubmissionId = useRef<string | null>(null);
     const lastRoleSubmissionId = useRef<string | null>(null);
     const lastMembershipSubmissionId = useRef<string | null>(null);
+    const lastDeleteSubmissionId = useRef<string | null>(null);
+    const wasExpirySubmitting = useRef(false);
+    const [confirmDeleteFor, setConfirmDeleteFor] = useState<{ id: string; name: string } | null>(null);
+    const [editingExpiry, setEditingExpiry] = useState<{ userId: string; membershipId: string; currentDate: string } | null>(null);
 
 
     // Close modal on success
@@ -485,6 +526,23 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     }, [roleFetcher.data, roleFetcher.state, revalidator]);
 
     useEffect(() => {
+        if (deleteFetcher.state === "idle" && deleteFetcher.data?.success) {
+            if (lastDeleteSubmissionId.current !== JSON.stringify(deleteFetcher.data)) {
+                toast.success("Usuario eliminado correctamente", { duration: 2000, position: "bottom-right" });
+                lastDeleteSubmissionId.current = JSON.stringify(deleteFetcher.data);
+                setConfirmDeleteFor(null);
+                setActionMenuOpen(null);
+                revalidator.revalidate();
+            }
+        } else if (deleteFetcher.state === "idle" && deleteFetcher.data?.error) {
+            if (lastDeleteSubmissionId.current !== JSON.stringify(deleteFetcher.data)) {
+                toast.error(`Error: ${deleteFetcher.data.error}`, { duration: 3000, position: "bottom-right" });
+                lastDeleteSubmissionId.current = JSON.stringify(deleteFetcher.data);
+            }
+        }
+    }, [deleteFetcher.data, deleteFetcher.state, revalidator]);
+
+    useEffect(() => {
         if (membershipFetcher.state === "idle" && membershipFetcher.data?.success && membershipFetcher.data?.intent === "assign_membership") {
             if (lastMembershipSubmissionId.current !== JSON.stringify(membershipFetcher.data)) {
                 toast.success("Membresía asignada correctamente", { duration: 2000, position: "bottom-right" });
@@ -499,6 +557,23 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             }
         }
     }, [membershipFetcher.data, membershipFetcher.state, revalidator]);
+
+    useEffect(() => {
+        if (expiryFetcher.state === "submitting") {
+            wasExpirySubmitting.current = true;
+            return;
+        }
+        if (expiryFetcher.state === "idle" && wasExpirySubmitting.current) {
+            wasExpirySubmitting.current = false;
+            if (expiryFetcher.data?.success) {
+                toast.success("Fecha de vencimiento actualizada", { duration: 2000, position: "bottom-right" });
+                setEditingExpiry(null);
+                revalidator.revalidate();
+            } else if (expiryFetcher.data?.error) {
+                toast.error(`Error: ${expiryFetcher.data.error}`, { duration: 3000, position: "bottom-right" });
+            }
+        }
+    }, [expiryFetcher.state, expiryFetcher.data, revalidator]);
 
     const [activeSegment, setActiveSegment] = useState<string>("all");
     const [searchTerm, setSearchTerm] = useState("");
@@ -683,18 +758,56 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                         {/* Membership */}
                                         <td className="px-4 py-3">
                                             {user.membership && !isExpired ? (
-                                                <button
-                                                    onClick={() => setAssignMembershipFor(user.id)}
-                                                    className="text-left group"
-                                                    title="Clic para reasignar membresía"
-                                                >
-                                                    <p className="text-xs font-semibold text-white/80 group-hover:text-white transition-colors">
+                                                <div className="text-left">
+                                                    <button
+                                                        onClick={() => setAssignMembershipFor(user.id)}
+                                                        className="text-xs font-semibold text-white/80 hover:text-white transition-colors block"
+                                                        title="Clic para reasignar membresía"
+                                                    >
                                                         {user.membership.plan_name}
-                                                    </p>
-                                                    <p className="text-xs text-white/40 group-hover:text-blue-400 transition-colors">
-                                                        Vence {new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
-                                                    </p>
-                                                </button>
+                                                    </button>
+                                                    {editingExpiry?.userId === user.id ? (
+                                                        <expiryFetcher.Form method="post" className="flex items-center gap-1 mt-1">
+                                                            <input type="hidden" name="intent" value="extend_membership" />
+                                                            <input type="hidden" name="membershipId" value={user.membership.id} />
+                                                            <input
+                                                                type="date"
+                                                                name="endDate"
+                                                                defaultValue={editingExpiry.currentDate}
+                                                                className="bg-white/5 border border-blue-400 rounded px-1.5 py-0.5 text-xs text-white w-30 focus:outline-none"
+                                                                autoFocus
+                                                            />
+                                                            <button
+                                                                type="submit"
+                                                                disabled={expiryFetcher.state !== "idle"}
+                                                                className="p-0.5 bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50"
+                                                                title="Guardar"
+                                                            >
+                                                                <Check className="w-3 h-3" />
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setEditingExpiry(null)}
+                                                                className="p-0.5 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                                                                title="Cancelar"
+                                                            >
+                                                                <X className="w-3 h-3" />
+                                                            </button>
+                                                        </expiryFetcher.Form>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => setEditingExpiry({
+                                                                userId: user.id,
+                                                                membershipId: user.membership!.id,
+                                                                currentDate: user.membership!.end_date.split("T")[0],
+                                                            })}
+                                                            className="text-xs text-white/40 hover:text-blue-400 transition-colors mt-0.5"
+                                                            title="Clic para cambiar fecha de vencimiento"
+                                                        >
+                                                            Vence {new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
+                                                        </button>
+                                                    )}
+                                                </div>
                                             ) : (
                                                 <button
                                                     onClick={() => setAssignMembershipFor(user.id)}
@@ -710,7 +823,8 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                         <td className="px-4 py-3">
                                             {(() => {
                                                 const pt = user.membership?.plan_type ?? "creditos";
-                                                if (pt === "membresia" || pt === "ilimitado") {
+                                                const hasActiveMembership = user.membership && !isExpired;
+                                                if (hasActiveMembership && (pt === "membresia" || pt === "ilimitado")) {
                                                     return (
                                                         <div className="flex flex-col">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full w-fit ${pt === "ilimitado" ? "bg-emerald-500/15 text-emerald-400" : "bg-sky-500/15 text-sky-400"}`}>
@@ -720,7 +834,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                         </div>
                                                     );
                                                 }
-                                                // creditos
+                                                // sin membresía activa o plan de créditos
                                                 return editingCredits?.userId === user.id ? (
                                                     <creditFetcher.Form method="post" className="flex items-center gap-1">
                                                         <input type="hidden" name="intent" value="update_credits" />
@@ -876,6 +990,20 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                                     Copiar info completa
                                                                 </button>
 
+                                                                {/* Eliminar usuario */}
+                                                                <div className="border-t border-white/10">
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setConfirmDeleteFor({ id: user.id, name: user.full_name });
+                                                                            setActionMenuOpen(null);
+                                                                        }}
+                                                                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors text-left"
+                                                                    >
+                                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                                        Eliminar usuario
+                                                                    </button>
+                                                                </div>
+
                                                                 {/* Cambiar rol */}
                                                                 <div className="border-t border-white/10">
                                                                     <button
@@ -935,6 +1063,44 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal: Confirmar Eliminación ── */}
+            {confirmDeleteFor && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0">
+                                <Trash2 className="w-5 h-5 text-red-400" />
+                            </div>
+                            <div>
+                                <h2 className="text-base font-bold text-white">Eliminar usuario</h2>
+                                <p className="text-xs text-white/40 truncate max-w-[200px]">{confirmDeleteFor.name}</p>
+                            </div>
+                        </div>
+                        <p className="text-sm text-white/60 mb-5">
+                            Esta acción es <span className="text-red-400 font-semibold">permanente</span>. Se eliminarán todos los datos del usuario incluyendo membresías y créditos.
+                        </p>
+                        <deleteFetcher.Form method="post" className="flex gap-2">
+                            <input type="hidden" name="intent" value="delete_user" />
+                            <input type="hidden" name="userId" value={confirmDeleteFor.id} />
+                            <button
+                                type="button"
+                                onClick={() => setConfirmDeleteFor(null)}
+                                className="flex-1 py-2.5 rounded-xl text-sm font-semibold border border-white/10 text-white/60 hover:bg-white/5 transition-all"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={deleteFetcher.state !== "idle"}
+                                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition-all disabled:opacity-50"
+                            >
+                                {deleteFetcher.state !== "idle" ? "Eliminando…" : "Eliminar"}
+                            </button>
+                        </deleteFetcher.Form>
+                    </div>
+                </div>
+            )}
 
             {/* ── Modal: Asignar / Renovar Membresía ── */}
             {assignMembershipFor && (() => {

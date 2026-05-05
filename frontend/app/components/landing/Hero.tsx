@@ -1,31 +1,11 @@
-// app/components/landing/Hero.tsx
-// Adapted from tailark's HeroSection for React Router 7.
-// Removed: next/link, 'use client', framer-motion.
-// Added: Grind Project branding, Spanish copy, scroll-aware navbar, product screenshot.
-
 import React from "react";
 import { Link } from "react-router";
-import { ArrowRight, ChevronRight, Menu, X, Accessibility, Dumbbell, Zap, Building2, Swords, Activity, Music, Flower2 } from "lucide-react";
+import { ArrowRightIcon, ChevronRight, Menu, X, PhoneCallIcon } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { AnimatedGroup } from "~/components/ui/animated-group";
 import { ScrollReveal } from "~/components/ui/scroll-reveal";
 import { cn } from "~/lib/utils";
 import ImageHaloCarousel from "./ImageHaloCarousel";
-
-// ── Transition config (mirrors the framer-motion variants API) ────
-import { motion, type PanInfo } from "framer-motion";
-
-const transitionVariants = {
-    item: {
-        hidden: { opacity: 0, filter: "blur(12px)", y: 12 },
-        visible: {
-            opacity: 1,
-            filter: "blur(0px)",
-            y: 0,
-            transition: { type: "spring", bounce: 0.3, duration: 1.5 },
-        },
-    },
-};
 
 // ─── Nav items ─────────────────────────────────────────────────────
 const menuItems = [
@@ -38,14 +18,13 @@ const menuItems = [
 
 // ── Grind Project wordmark ────────────────────────────────────────
 export const Logo = ({ className }: { className?: string }) => (
-    <span
-        className={cn(
-            "text-white font-semibold tracking-tight text-xl select-none font-display",
-            className
-        )}
-    >
-        PROJECT<span className="text-white/40">STUDIO</span>
-    </span>
+    <div className={cn("relative flex items-center h-8 w-32", className)}>
+        <img
+            src="/images/Logo_Project_Studio_Blanco.png"
+            alt="Project Studio"
+            className="absolute left-0 top-1/2 -translate-y-1/2 h-28 w-auto object-contain max-w-none"
+        />
+    </div>
 );
 
 // ── Scroll-aware navbar ───────────────────────────────────────────
@@ -62,7 +41,6 @@ export const HeroHeader = () => {
 
             setIsScrolled(currentY > 50);
 
-            // Hide when scrolling DOWN past 100px; show when scrolling UP
             if (currentY > 100 && diff > 6) {
                 setIsHidden(true);
             } else if (diff < -4) {
@@ -196,7 +174,7 @@ export const HeroHeader = () => {
     );
 };
 
-// ── Vertical Image Stack for Disciplines ──────────────────────────
+// ── Discipline images for carousel ───────────────────────────────
 const DISCIPLINE_IMAGES = [
     { id: 1, src: "/images/landing/pilates.png", label: "Pilates", alt: "Pilates studio" },
     { id: 2, src: "/images/landing/yoga.png", label: "Yoga", alt: "Yoga session" },
@@ -207,6 +185,46 @@ const DISCIPLINE_IMAGES = [
     { id: 8, src: "/images/landing/dance.png", label: "Dance Studio", alt: "Dance practice" },
 ];
 
+// ── Fade-in wrapper for individual mockup cards ───────────────────
+function MockupFade({
+    children,
+    delay = 0,
+    className,
+}: {
+    children: React.ReactNode;
+    delay?: number;
+    className?: string;
+}) {
+    const ref = React.useRef<HTMLDivElement>(null);
+    const [visible, setVisible] = React.useState(false);
+
+    React.useEffect(() => {
+        const el = ref.current;
+        if (!el) return;
+        const observer = new IntersectionObserver(
+            ([entry]) => { if (entry.isIntersecting) { setVisible(true); observer.disconnect(); } },
+            { threshold: 0.1 }
+        );
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
+
+    return (
+        <div
+            ref={ref}
+            className={className}
+            style={{
+                opacity: visible ? 1 : 0,
+                transform: visible ? "translateY(0)" : "translateY(24px)",
+                filter: visible ? "blur(0px)" : "blur(6px)",
+                transition: "opacity 0.8s ease, transform 0.8s ease, filter 0.8s ease",
+                transitionDelay: `${delay}ms`,
+            }}
+        >
+            {children}
+        </div>
+    );
+}
 
 // ── Main Hero section ─────────────────────────────────────────────
 export default function Hero() {
@@ -215,187 +233,119 @@ export default function Hero() {
             <HeroHeader />
 
             <main className="overflow-hidden">
-                {/* Subtle diagonal light beams (decorative) */}
-                <div
-                    aria-hidden
-                    className="z-[2] absolute inset-0 pointer-events-none isolate opacity-40 contain-strict hidden lg:block"
-                >
-                    <div className="w-[35rem] h-[80rem] -translate-y-[350px] absolute left-0 top-0 -rotate-45 rounded-full bg-[radial-gradient(68.54%_68.72%_at_55.02%_31.46%,hsla(0,0%,85%,.08)_0,hsla(0,0%,55%,.02)_50%,hsla(0,0%,45%,0)_80%)]" />
-                    <div className="h-[80rem] absolute left-0 top-0 w-56 -rotate-45 rounded-full bg-[radial-gradient(50%_50%_at_50%_50%,hsla(0,0%,85%,.06)_0,hsla(0,0%,45%,.02)_80%,transparent_100%)] [translate:5%_-50%]" />
-                    <div className="h-[80rem] -translate-y-[350px] absolute left-0 top-0 w-56 -rotate-45 bg-[radial-gradient(50%_50%_at_50%_50%,hsla(0,0%,85%,.04)_0,hsla(0,0%,45%,.02)_80%,transparent_100%)]" />
-                </div>
+                <section className="mx-auto w-full max-w-6xl pt-32 md:pt-40 px-6">
+                    {/* Radial background shade */}
+                    <div aria-hidden="true" className="absolute inset-0 size-full overflow-hidden pointer-events-none">
+                        <div className="absolute inset-0 isolate -z-10 bg-[radial-gradient(20%_80%_at_20%_0%,rgba(255,255,255,0.07),transparent)]" />
+                    </div>
 
-                <section>
-                    <div className="relative pt-24 md:pt-36">
-                        {/* Background radial fade removed completely */}
-
-                        <div className="mx-auto max-w-7xl px-6">
-                            <div className="text-center sm:mx-auto lg:mr-auto lg:mt-0">
-
-                                {/* Animated announcement badge + headline + sub-text */}
-                                <AnimatedGroup
-                                    variants={{
-                                        container: {
-                                            visible: {
-                                                transition: {
-                                                    staggerChildren: 0.12,
-                                                    delayChildren: 0.3,
-                                                },
-                                            },
-                                        },
-                                        ...transitionVariants,
-                                    }}
-                                >
-                                    {/* Pill badge */}
-                                    <Link
-                                        to="/onboarding"
-                                        className="hover:bg-white/5 group mx-auto flex w-fit items-center gap-4 rounded-full border border-white/10 bg-white/[0.04] p-1 pl-4 shadow-md shadow-black/30 transition-all duration-300 backdrop-blur-sm"
-                                    >
-                                        <span className="text-white/70 text-sm">
-                                            🚀 Tu estudio, en piloto automático · Únete a la nueva era
-                                        </span>
-                                        <span className="block h-4 w-px bg-white/10" />
-                                        <div className="bg-white/5 group-hover:bg-white/10 size-6 overflow-hidden rounded-full duration-500">
-                                            <div className="flex w-12 -translate-x-1/2 duration-500 ease-in-out group-hover:translate-x-0">
-                                                <span className="flex size-6">
-                                                    <ArrowRight className="m-auto size-3 text-white" />
-                                                </span>
-                                                <span className="flex size-6">
-                                                    <ArrowRight className="m-auto size-3 text-white" />
-                                                </span>
-                                            </div>
-                                        </div>
-                                    </Link>
-
-                                    {/* H1 */}
-                                    <h1 className="mt-8 max-w-4xl mx-auto text-balance text-5xl font-semibold md:text-7xl lg:mt-16 xl:text-[5.25rem] text-white leading-[1.05] tracking-tight font-display">
-                                        El software que potencia tu estudio de fitness
-                                    </h1>
-
-                                    {/* Sub-headline */}
-                                    <p className="mx-auto mt-8 max-w-2xl text-balance text-lg text-white/50">
-                                        Reservas online, control de acceso QR, facturación fiscal automática y CRM.
-                                        Todo en un solo panel. Para Pilates, Yoga, Barre y más en LATAM.
-                                    </p>
-                                </AnimatedGroup>
-
-                                {/* CTA buttons */}
-                                <AnimatedGroup
-                                    variants={{
-                                        container: {
-                                            visible: {
-                                                transition: {
-                                                    staggerChildren: 0.08,
-                                                    delayChildren: 0.7,
-                                                },
-                                            },
-                                        },
-                                        ...transitionVariants,
-                                    }}
-                                    className="mt-12 flex flex-col items-center justify-center gap-3 md:flex-row"
-                                >
-                                    {/* Primary CTA */}
-                                    <div className="bg-white/5 rounded-[14px] border border-white/10 p-0.5">
-                                        <Button asChild size="lg" className="rounded-xl px-6 text-base">
-                                            <Link to="/onboarding">
-                                                <span className="text-nowrap">Empieza ahora</span>
-                                            </Link>
-                                        </Button>
-                                    </div>
-
-                                    {/* Secondary CTA */}
-                                    <Button
-                                        asChild
-                                        size="lg"
-                                        variant="ghost"
-                                        className="rounded-xl px-6"
-                                    >
-                                        <a href="#pricing">
-                                            <span className="text-nowrap">Ver planes y precios</span>
-                                        </a>
-                                    </Button>
-                                </AnimatedGroup>
-                            </div>
-                        </div>
-
-                        {/* Product screenshot */}
-                        <AnimatedGroup
-                            variants={{
-                                container: {
-                                    visible: {
-                                        transition: {
-                                            delayChildren: 0.9,
-                                        },
-                                    },
-                                },
-                                ...transitionVariants,
-                            }}
+                    {/* Left-aligned text content — staggered entrance */}
+                    <AnimatedGroup
+                        className="relative z-10 flex max-w-2xl flex-col gap-5"
+                        delayMs={200}
+                        staggerMs={120}
+                    >
+                        {/* Badge */}
+                        <Link
+                            to="/onboarding"
+                            className="group flex w-fit items-center gap-3 rounded-sm border border-white/10 bg-white/[0.04] p-1 shadow-sm transition-all"
                         >
-                            <div className="relative mt-12 overflow-hidden px-2 sm:mt-16 md:mt-24">
-                                {/* Gradient fade removed completely */}
-                                <div className="relative mx-auto max-w-6xl overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-3 shadow-2xl shadow-black/50 ring-1 ring-white/5 backdrop-blur-sm">
-                                    {/* Admin dashboard screenshot */}
-                                    <img
-                                        className="w-full rounded-xl aspect-[15/8] object-cover object-top border border-white/10"
-                                        src="https://tailark.com/_next/image?url=%2Fmail2.png&w=3840&q=75"
-                                        alt="Project Studio — dashboard de gestión de studio"
-                                        width="2700"
-                                        height="1440"
-                                        onError={(e) => {
-                                            // Fallback: placeholder gradient if image fails
-                                            const el = e.currentTarget as HTMLImageElement;
-                                            el.style.display = "none";
-                                            const sibling = el.nextElementSibling as HTMLElement;
-                                            if (sibling) sibling.style.display = "flex";
-                                        }}
-                                    />
-                                    {/* Fallback dashboard preview */}
-                                    <div
-                                        className="w-full rounded-xl aspect-[15/8] hidden items-center justify-center relative overflow-hidden"
-                                        style={{
-                                            background: "rgba(0,0,0,0.2)",
-                                        }}
-                                    >
-                                        <style>{`
-                                            @keyframes fallback-orbit {
-                                                0%   { transform: translate(0, 0) scale(1); }
-                                                50%  { transform: translate(10px, -10px) scale(1.1); }
-                                                100% { transform: translate(0, 0) scale(1); }
-                                            }
-                                        `}</style>
-                                        <div style={{
-                                            position: "absolute",
-                                            top: "-20%",
-                                            left: "-10%",
-                                            width: "70%",
-                                            height: "70%",
-                                            background: "radial-gradient(circle, rgba(200,110,20,0.15) 0%, transparent 70%)",
-                                            filter: "blur(40px)",
-                                            animation: "fallback-orbit 10s ease-in-out infinite",
-                                        }} />
-                                        <div style={{
-                                            position: "absolute",
-                                            bottom: "-20%",
-                                            right: "-10%",
-                                            width: "60%",
-                                            height: "60%",
-                                            background: "radial-gradient(circle, rgba(15,130,130,0.12) 0%, transparent 70%)",
-                                            filter: "blur(40px)",
-                                            animation: "fallback-orbit 14s ease-in-out infinite reverse",
-                                        }} />
-                                        
-                                        <div className="text-center relative z-10">
-                                            <div className="text-4xl mb-4">📊</div>
-                                            <p className="text-white font-bold text-xl">Panel de Administración</p>
-                                            <p className="text-white/40 text-sm mt-1">Grind Project · Vista en vivo</p>
-                                        </div>
-                                    </div>
-                                </div>
+                            <div className="rounded-sm border border-white/10 bg-white/5 px-1.5 py-0.5 shadow-sm">
+                                <p className="font-mono text-xs text-white/60">NUEVO</p>
                             </div>
-                        </AnimatedGroup>
+                            <span className="text-xs text-white/60">Tu estudio, en piloto automático · Únete a la nueva era</span>
+                            <span className="block h-5 border-l border-white/10" />
+                            <div className="pr-1">
+                                <ArrowRightIcon className="size-3 text-white/50 -translate-x-0.5 duration-150 ease-out group-hover:translate-x-0.5" />
+                            </div>
+                        </Link>
+
+                        {/* H1 */}
+                        <h1 className="text-balance font-semibold text-4xl text-white leading-tight md:text-5xl xl:text-6xl tracking-tight">
+                            El software que potencia tu estudio de fitness
+                        </h1>
+
+                        {/* Sub-headline */}
+                        <p className="text-white/50 text-sm tracking-wide sm:text-lg">
+                            Reservas online, control de acceso QR, facturación fiscal automática y CRM.
+                            <br />
+                            Todo en un solo panel. Para Pilates, Yoga, Barre y más en LATAM.
+                        </p>
+
+                        {/* CTA buttons */}
+                        <div className="flex w-fit items-center gap-3 pt-2">
+                            <Button asChild variant="outline" size="lg" className="rounded-xl">
+                                <Link to="/auth/login">
+                                    <PhoneCallIcon className="size-4 mr-2" />
+                                    Ingresar
+                                </Link>
+                            </Button>
+                            <Button asChild size="lg" className="rounded-xl">
+                                <Link to="/onboarding">
+                                    Empieza ahora
+                                    <ArrowRightIcon className="size-4 ml-2" />
+                                </Link>
+                            </Button>
+                        </div>
+                    </AnimatedGroup>
+
+                    {/* Split-view mockups (PC & Mobile) */}
+                    <div className="relative mt-16 md:mt-24">
+                        {/* Radial glow behind mockups */}
+                        <div
+                            aria-hidden="true"
+                            className={cn(
+                                "absolute -inset-x-20 inset-y-0 -translate-y-1/3 scale-125 rounded-full pointer-events-none",
+                                "bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.06),transparent,transparent)]",
+                                "blur-[50px]"
+                            )}
+                        />
+
+                        <div className="flex flex-col md:flex-row gap-8 items-end">
+                            {/* Left: Admin / PC */}
+                            <MockupFade
+                                delay={600}
+                                className="flex-[1.2] bg-white/5 border border-white/10 rounded-2xl p-4 md:p-6 backdrop-blur-md shadow-2xl relative order-2 md:order-1"
+                            >
+                                <div className="absolute -top-4 left-6 bg-[#111] border border-white/10 text-white/70 text-xs px-3 py-1 rounded-full z-20">
+                                    Vista del Admin
+                                </div>
+                                <div className="relative aspect-video rounded-xl overflow-hidden bg-black/20 border border-white/5">
+                                    <video
+                                        src="/mi-video-hero.mp4.mp4"
+                                        autoPlay
+                                        loop
+                                        muted
+                                        playsInline
+                                        className="w-full h-full object-contain"
+                                    />
+                                </div>
+                            </MockupFade>
+
+                            {/* Right: Member / Mobile */}
+                            <MockupFade
+                                delay={800}
+                                className="w-full md:w-[260px] bg-black border-4 border-white/20 rounded-[40px] p-2 shadow-2xl relative z-10 mx-auto md:mx-0 order-1 md:order-2 flex-shrink-0"
+                            >
+                                <div className="absolute -top-4 right-10 md:-right-4 bg-blue-600 text-white text-xs px-3 py-1 rounded-full shadow-lg z-20">
+                                    Vista del usuario
+                                </div>
+                                <div className="bg-[#0a0a0a] w-full h-[480px] rounded-[32px] overflow-hidden relative border border-white/5">
+                                    <video
+                                        src="/mi-Video-Movil.mp4.mp4"
+                                        autoPlay
+                                        loop
+                                        muted
+                                        playsInline
+                                        className="w-full h-full object-contain"
+                                    />
+                                </div>
+                            </MockupFade>
+                        </div>
                     </div>
                 </section>
 
+                {/* Disciplines carousel section */}
                 <section className="py-24">
                     <div className="mx-auto max-w-7xl px-6">
                         <ScrollReveal className="text-center mb-16">

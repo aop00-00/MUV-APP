@@ -273,7 +273,7 @@ export default function ImageHaloCarousel({
   }
 
   return (
-    <div className="relative flex h-[600px] w-full items-center justify-center overflow-hidden">
+    <div className="relative flex h-[750px] w-full items-center justify-center overflow-hidden">
       {/* Ambient glow */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute left-1/2 top-1/2 h-[700px] w-[700px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/[0.02] blur-3xl" />
@@ -335,16 +335,18 @@ export default function ImageHaloCarousel({
         ))}
       </div>
 
-      {/* Counter */}
-      <div className="absolute left-8 top-1/2 -translate-y-1/2">
-        <div className="flex flex-col items-center">
-          <span className="tabular-nums text-4xl font-light text-white">
-            {String(activeIndex + 1).padStart(2, "0")}
-          </span>
-          <div className="my-2 h-px w-8 bg-white/20" />
-          <span className="tabular-nums text-sm text-neutral-400">{String(total).padStart(2, "0")}</span>
+      {/* Counter — hidden on mobile */}
+      {!isMobile && (
+        <div className="absolute left-8 top-1/2 -translate-y-1/2">
+          <div className="flex flex-col items-center">
+            <span className="tabular-nums text-4xl font-light text-white">
+              {String(activeIndex + 1).padStart(2, "0")}
+            </span>
+            <div className="my-2 h-px w-8 bg-white/20" />
+            <span className="tabular-nums text-sm text-neutral-400">{String(total).padStart(2, "0")}</span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

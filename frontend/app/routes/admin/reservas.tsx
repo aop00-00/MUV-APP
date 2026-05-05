@@ -97,7 +97,28 @@ export async function action({ request }: Route.ActionArgs) {
     const bookingId = formData.get("booking_id") as string;
 
     if (intent === "mark_completed") {
+        // Fetch booking to get user_id and class info for fitcoin award
+        const { data: booking } = await supabaseAdmin
+            .from("bookings")
+            .select("user_id, class_id, classes(title)")
+            .eq("id", bookingId)
+            .single();
+
         await supabaseAdmin.from("bookings").update({ status: "completed" }).eq("id", bookingId);
+
+        // Award fitcoins for attendance (silently — never block the action)
+        if (booking?.user_id) {
+            try {
+                const { applyFitCoinRule } = await import("~/services/fitcoin-rules.server");
+                const classTitle = (booking as any).classes?.title ?? "clase";
+                await applyFitCoinRule("attendance", booking.user_id, gymId, {
+                    description: `Asistencia: ${classTitle}`,
+                    referenceId: bookingId,
+                });
+            } catch (e) {
+                console.error("[reservas] fitcoin award failed:", e);
+            }
+        }
     }
     if (intent === "mark_cancelled") {
         await supabaseAdmin.from("bookings").update({ status: "cancelled" }).eq("id", bookingId);

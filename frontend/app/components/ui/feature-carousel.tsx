@@ -22,70 +22,70 @@ const FEATURES: { id: string; label: string; icon: LucideIcon; image: string; de
     id: "checkin",
     label: "Check-in QR",
     icon: QrCode,
-    image: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?q=80&w=1200",
+    image: "/images/landing/feature_checkin_.png",
     description: "Acceso rápido y seguro con código QR dinámico de 30 segundos.",
   },
   {
     id: "members",
     label: "Membresías",
     icon: Users,
-    image: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1200",
+    image: "/images/landing/feature_members_.png",
     description: "Gestiona alumnos, planes y renovaciones automáticas.",
   },
   {
     id: "schedule",
     label: "Calendario",
     icon: Calendar,
-    image: "https://images.unsplash.com/photo-1571731956672-f2b94d7dd0cb?q=80&w=1200",
+    image: "/images/landing/feature_schedule_.png",
     description: "Programa clases y gestiona aforo en tiempo real.",
   },
   {
     id: "pos",
     label: "Punto de Venta",
     icon: ShoppingBag,
-    image: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?q=80&w=1200",
+    image: "/images/landing/feature_pos_1.png",
     description: "Vende suplementos, bebidas y paquetes desde recepción.",
   },
   {
     id: "crm",
     label: "CRM de Leads",
     icon: Search,
-    image: "https://images.unsplash.com/photo-1552664730-d307ca884978?q=80&w=1200",
+    image: "/images/landing/feature_crm_.png",
     description: "Convierte prospectos en socios con seguimiento automático.",
   },
   {
     id: "analytics",
     label: "Reportes",
     icon: BarChart2,
-    image: "https://images.unsplash.com/photo-1551288049-bbda38a10ad5?q=80&w=1200",
+    image: "/images/landing/feature_analytics_.png",
     description: "KPIs financieros y de operación en un solo vistazo.",
   },
   {
     id: "payments",
     label: "Pagos Online",
     icon: CreditCard,
-    image: "https://images.unsplash.com/photo-1563013544-824ae1b704d3?q=80&w=1200",
+    image: "/images/landing/feature_payments_1777499743579.png",
     description: "Cobra con Mercado Pago, tarjeta o efectivo sin fricción.",
   },
   {
     id: "app",
     label: "App del Alumno",
     icon: Smartphone,
-    image: "https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?q=80&w=1200",
+    image: "/images/landing/feature_app_.png",
     description: "Portal móvil para reservas, historial y FitCoins.",
   },
   {
     id: "fitcoins",
     label: "FitCoins",
     icon: Award,
-    image: "https://images.unsplash.com/photo-1571902943202-507ec2618e8f?q=80&w=1200",
+    image: "/images/landing/feature_fitcoins_.png",
     description: "Programa de lealtad que retiene y premia a tus socios.",
   },
   {
     id: "invoicing",
     label: "Facturación",
     icon: FileText,
-    image: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?q=80&w=1200",
+    image: "/images/landing/feature_invoicing_1777499785529.png",
     description: "CFDI automático y reportes fiscales sin complicaciones.",
   },
 ];
@@ -150,11 +150,11 @@ export function FeatureCarousel() {
 
   return (
     <div className="w-full max-w-7xl mx-auto md:p-8">
-      <div className="relative overflow-hidden rounded-[2.5rem] lg:rounded-[4rem] flex flex-col lg:flex-row min-h-[600px] lg:aspect-video border border-border/40">
+      <div className="relative overflow-hidden rounded-[2.5rem] lg:rounded-[4rem] flex flex-col lg:flex-row min-h-[600px] lg:aspect-video">
 
         {/* LEFT: Scrolling pill selector */}
         <div
-          className="w-full lg:w-[40%] min-h-[350px] md:min-h-[450px] lg:h-full relative z-30 flex flex-col items-start justify-center overflow-hidden px-8 md:px-16 lg:pl-16 border-r border-white/10"
+          className="w-full lg:w-[40%] min-h-[350px] md:min-h-[450px] lg:h-full relative z-30 flex flex-col items-start justify-center overflow-hidden px-8 md:px-16 lg:pl-16"
           style={{
             background: "rgba(255,255,255,0.04)",
             backdropFilter: "blur(24px)",
@@ -220,7 +220,7 @@ export function FeatureCarousel() {
         </div>
 
         {/* RIGHT: Stacked image cards */}
-        <div className="flex-1 min-h-[500px] md:min-h-[600px] lg:h-full relative bg-secondary/30 flex flex-col items-center justify-center py-16 md:py-24 lg:py-16 px-6 md:px-12 lg:px-10 overflow-hidden border-t lg:border-t-0 lg:border-l border-border/20 gap-6">
+        <div className="flex-1 min-h-[500px] md:min-h-[600px] lg:h-full relative bg-secondary/30 flex flex-col items-center justify-center py-16 md:py-24 lg:py-16 px-6 md:px-12 lg:px-10 overflow-hidden gap-6">
           <div className="relative w-full max-w-[420px] aspect-[4/5] flex items-center justify-center">
             {FEATURES.map((feature, index) => {
               const status = getCardStatus(index);

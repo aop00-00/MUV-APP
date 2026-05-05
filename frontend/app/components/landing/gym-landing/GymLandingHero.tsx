@@ -31,8 +31,8 @@ export function GymLandingHero({ gym }: { gym: GymLandingData }) {
                 <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-4">
                     {/* Logo */}
                     <a href="#hero" className="flex items-center gap-3">
-                        {gym.logo_url ? (
-                            <img src={gym.logo_url} alt={gym.name} className="h-10 w-10 rounded-xl object-cover" />
+                        {gym.logo_url && (gym.logo_url.startsWith("http") || gym.logo_url.startsWith("data:") || gym.logo_url.startsWith("/")) ? (
+                            <img src={gym.logo_url} alt={gym.name} className="h-14 w-14 rounded-xl object-cover" />
                         ) : (
                             <div
                                 className="h-10 w-10 rounded-xl flex items-center justify-center text-xl font-black text-white"
@@ -125,7 +125,7 @@ export function GymLandingHero({ gym }: { gym: GymLandingData }) {
                         <img
                             src={gym.logo_url}
                             alt={gym.name}
-                            className="w-20 h-20 rounded-2xl mx-auto mb-6 object-cover shadow-2xl"
+                            className="w-28 h-28 rounded-2xl mx-auto mb-6 object-cover shadow-2xl"
                         />
                     )}
                     <h1 className="text-5xl md:text-7xl font-black tracking-tight text-white leading-[1.05]">

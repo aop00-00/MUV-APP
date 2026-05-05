@@ -12,7 +12,6 @@ import type { BookingMode } from "~/types/database";
 
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
-    const { supabaseAdmin } = await import("~/services/supabase.server");
     const { updateOnboardingStep, completeOnboarding } = await import("~/services/onboarding.server");
     const { gymId } = await requireGymAdmin(request);
 
@@ -25,28 +24,33 @@ export async function action({ request }: Route.ActionArgs) {
             const plansJson = formData.get("plans") as string;
             const plans: PlanFormData[] = JSON.parse(plansJson || "[]");
 
-            // Billing type mapping
-            const billingTypeMap: Record<string, string> = {
-                monthly: "recurring_monthly",
-                pack: "class_pack",
-                single: "drop_in",
+            const { createPlan } = await import("~/services/plan.server");
+
+            // plan_type mapping: onboarding types → products metadata plan_type
+            const planTypeMap: Record<string, "creditos" | "membresia" | "ilimitado"> = {
+                monthly: "ilimitado",
+                pack: "creditos",
+                single: "creditos",
             };
 
             for (const plan of plans) {
                 if (!plan.name?.trim()) continue;
-
-                await supabaseAdmin.from("memberships").insert({
-                    gym_id: gymId,
+                const planType = planTypeMap[plan.type] || "ilimitado";
+                const credits = plan.type === "pack" ? (plan.classCount || 8) : null;
+                await createPlan({
+                    gymId,
                     name: plan.name.trim(),
                     price: plan.price || 0,
-                    billing_type: billingTypeMap[plan.type] || "recurring_monthly",
-                    credits_included: plan.type === "pack" ? (plan.classCount || 8) : null,
-                    is_active: true,
+                    credits,
+                    validityDays: plan.type === "monthly" ? 30 : plan.type === "pack" ? 90 : 30,
+                    planType,
+                    isPopular: false,
                 });
             }
         }
 
         // Check booking_mode to determine next step
+        const { supabaseAdmin } = await import("~/services/supabase.server");
         const { data: gym } = await supabaseAdmin
             .from("gyms")
             .select("booking_mode")

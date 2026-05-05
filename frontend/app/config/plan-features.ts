@@ -49,7 +49,6 @@ const STARTER_ROUTES = new Set([
     "/admin/schedule",
     "/admin/horarios",
     "/admin/periodos",
-    "/admin/sustituciones",
     "/admin/reservas",
     "/admin/users",
     "/admin/subscriptions",
@@ -71,6 +70,7 @@ const PRO_ROUTES = new Set([
     "/admin/cupones",
     "/admin/ingresos",
     "/admin/nomina",
+    "/admin/finanzas",
     "/admin/operaciones",
 ]);
 
@@ -100,7 +100,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         label:          "Starter",
         allowedRoutes:  STARTER_ROUTES,
         maxLocations:   1,
-        maxMembers:     80,
+        maxMembers:     100,
         maxCoaches:     null,
         maxPosProducts: null,
         maxClassTypes:  null,
@@ -122,7 +122,7 @@ export const PLAN_FEATURES: Record<PlanId, PlanDefinition> = {
         maxClassTypes:  null,
         apiEnabled:     true,
         exportEnabled:  true,
-        whatsappEnabled: true,
+        whatsappEnabled: false,
         crmEnabled:     true,
         fitcoinsEnabled: true,
         cfdiEnabled:    false,

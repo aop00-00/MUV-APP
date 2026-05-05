@@ -1,24 +1,13 @@
 // app/services/gamification.server.ts
-// FitCoins ledger operations using the real Supabase fitcoins table.
+// FitCoins ledger — balance, history, and awarding.
+// Reward catalog and rule logic live in fitcoin-rules.server.ts.
 
 import { supabaseAdmin } from "./supabase.server";
-import type { FitCoin, FitCoinReward } from "~/types/database";
+import type { FitCoin, FitCoinSource } from "~/types/database";
 
-// ── Reward catalog (stored in-process; move to DB in production) ──
-export const REWARD_CATALOG: FitCoinReward[] = [
-    { id: "rwd-001", name: "Clase gratis", cost: 100, description: "Canjea por 1 crédito de clase", icon: "🎯", available: true },
-    { id: "rwd-002", name: "Proteína Whey", cost: 200, description: "1 scoop en cafetería", icon: "💪", available: true },
-    { id: "rwd-003", name: "Camiseta Grind", cost: 500, description: "Talla a elegir en tienda", icon: "👕", available: true },
-    { id: "rwd-004", name: "Mes premium gratis", cost: 800, description: "30 días del plan Elite", icon: "⭐", available: true },
-    { id: "rwd-005", name: "Sesión nutricionista", cost: 300, description: "1 hora de asesoría nutricional", icon: "🥗", available: true },
-    { id: "rwd-006", name: "Guantes de entreno", cost: 250, description: "Guantes oficiales Grind Project", icon: "🥊", available: true },
-];
-
-// ── Get user's FitCoin balance ────────────────────────────────────
+// ── Balance ───────────────────────────────────────────────────────────────────
 export async function getFitCoinBalance(userId: string, gymId: string): Promise<number> {
-    if (!gymId) {
-        throw new Error("gymId is required for getFitCoinBalance");
-    }
+    if (!gymId) throw new Error("gymId is required for getFitCoinBalance");
 
     const { data, error } = await supabaseAdmin
         .from("fitcoins")
@@ -30,15 +19,13 @@ export async function getFitCoinBalance(userId: string, gymId: string): Promise<
     return (data ?? []).reduce((sum, row) => sum + row.amount, 0);
 }
 
-// ── Get transaction history ───────────────────────────────────────
+// ── History ───────────────────────────────────────────────────────────────────
 export async function getFitCoinHistory(
     userId: string,
     gymId: string,
     limit = 20
 ): Promise<FitCoin[]> {
-    if (!gymId) {
-        throw new Error("gymId is required for getFitCoinHistory");
-    }
+    if (!gymId) throw new Error("gymId is required for getFitCoinHistory");
 
     const { data, error } = await supabaseAdmin
         .from("fitcoins")
@@ -52,79 +39,55 @@ export async function getFitCoinHistory(
     return (data ?? []) as FitCoin[];
 }
 
-// ── Award FitCoins ────────────────────────────────────────────────
+// ── Award ─────────────────────────────────────────────────────────────────────
 export async function awardFitCoins(
     userId: string,
     amount: number,
-    source: FitCoin["source"],
+    source: FitCoinSource,
     description: string,
-    gymId: string
+    gymId: string,
+    referenceId?: string
 ): Promise<void> {
-    if (!gymId) {
-        throw new Error("gymId is required for awardFitCoins");
-    }
+    if (!gymId) throw new Error("gymId is required for awardFitCoins");
 
-    const currentBalance = await getFitCoinBalance(userId, gymId);
-    const newBalance = currentBalance + amount;
-
-    const { error } = await supabaseAdmin.from("fitcoins").insert({
+    const payload: Record<string, unknown> = {
         gym_id: gymId,
         user_id: userId,
         amount,
         source,
         description,
-        balance_after: newBalance,
-    });
+    };
+    if (referenceId) payload.reference_id = referenceId;
+
+    const { error } = await supabaseAdmin.from("fitcoins").insert(payload);
     if (error) throw new Error(`Error awarding FitCoins: ${error.message}`);
 }
 
-// ── Redeem a reward ───────────────────────────────────────────────
-export async function redeemReward(
-    userId: string,
-    rewardId: string,
-    gymId: string
-): Promise<{ success: boolean; message: string }> {
-    if (!gymId) {
-        throw new Error("gymId is required for redeemReward");
-    }
+// ── Backward-compat aliases ───────────────────────────────────────────────────
+/** @deprecated Use getFitCoinHistory */
+export const getTransactionHistory = getFitCoinHistory;
 
-    const reward = REWARD_CATALOG.find((r) => r.id === rewardId);
-    if (!reward) return { success: false, message: "Recompensa no encontrada" };
-
-    const balance = await getFitCoinBalance(userId, gymId);
-    if (balance < reward.cost) {
-        return { success: false, message: `Necesitas ${reward.cost - balance} FitCoins más` };
-    }
-
-    const newBalance = balance - reward.cost;
-
-    const { error } = await supabaseAdmin.from("fitcoins").insert({
-        gym_id: gymId,
-        user_id: userId,
-        amount: -reward.cost,
-        source: "redemption",
-        description: `Canje: ${reward.name}`,
-        balance_after: newBalance,
-    });
-
-    if (error) return { success: false, message: "Error al procesar el canje" };
-    return { success: true, message: `¡${reward.name} canjeado exitosamente!` };
+/** @deprecated Use listFitCoinRewards from fitcoin-rules.server.ts */
+export async function listRewards() {
+    return [];
 }
 
-// ── Award on attendance (called by webhook-payment or booking hook) ──
+/** @deprecated Use applyFitCoinRule('attendance', ...) from fitcoin-rules.server.ts */
 export async function awardAttendanceFitCoins(
     userId: string,
     className: string,
     gymId: string
 ): Promise<void> {
-    if (!gymId) {
-        throw new Error("gymId is required for awardAttendanceFitCoins");
-    }
-    await awardFitCoins(userId, 10, "attendance", `Asistencia: ${className}`, gymId);
+    const { applyFitCoinRule } = await import("./fitcoin-rules.server");
+    await applyFitCoinRule("attendance", userId, gymId, { description: `Asistencia: ${className}` });
 }
 
-// ── Backward-compat aliases ────────────────────────────────────────
-/** @deprecated Use getFitCoinHistory */
-export const getTransactionHistory = getFitCoinHistory;
-/** @deprecated Use REWARD_CATALOG directly */
-export const listRewards = async () => REWARD_CATALOG;
+/** @deprecated Use redeemFitCoinReward from fitcoin-rules.server.ts */
+export async function redeemReward(
+    userId: string,
+    rewardId: string,
+    gymId: string
+): Promise<{ success: boolean; message: string }> {
+    const { redeemFitCoinReward } = await import("./fitcoin-rules.server");
+    return redeemFitCoinReward(userId, rewardId, gymId);
+}

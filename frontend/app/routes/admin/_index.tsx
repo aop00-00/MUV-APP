@@ -7,7 +7,7 @@ import {
     CheckCircle2, Circle, ArrowRight, UserPlus, MessageCircle, Phone
 } from "lucide-react";
 import { useFetcher, Link, useRouteLoaderData } from "react-router";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
     ChevronLeft, ChevronRight, LayoutGrid, Calendar as CalendarIcon,
     Clock, MapPin, User, X, Trash2
@@ -234,6 +234,22 @@ export async function action({ request }: Route.ActionArgs) {
         return { success: true, intent };
     }
 
+    if (intent === "class_attendees") {
+        const { supabaseAdmin } = await import("~/services/supabase.server");
+        const classId = formData.get("classId") as string;
+
+        const { data } = await supabaseAdmin
+            .from("bookings")
+            .select("id, profiles!user_id(id, full_name, email, phone)")
+            .eq("class_id", classId)
+            .eq("gym_id", gymId)
+            .eq("status", "confirmed")
+            .order("created_at", { ascending: true });
+
+        const attendees = (data ?? []).map((b: any) => b.profiles).filter(Boolean);
+        return { intent: "class_attendees", attendees };
+    }
+
     return { success: true, intent };
 }
 
@@ -434,6 +450,18 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
     const today = new Date();
     const [viewDate, setViewDate] = useState(new Date());
     const [dayModalItems, setDayModalItems] = useState<{date: Date, classes: any[]} | null>(null);
+    const [selectedClass, setSelectedClass] = useState<any | null>(null);
+    const attendeesFetcher = useFetcher<{ intent: string; attendees: any[] }>();
+
+    // Fetch attendees whenever a non-event class is selected
+    useEffect(() => {
+        if (!selectedClass || selectedClass.isEvent) return;
+        attendeesFetcher.submit(
+            { intent: "class_attendees", classId: selectedClass.id },
+            { method: "post" }
+        );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedClass?.id]);
 
     // Filter classes for the current week or month
     const filteredClasses = useMemo(() => {
@@ -528,7 +556,7 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                                     </div>
                                     <div className="space-y-2 min-h-[200px]">
                                         {dayClasses.map(cls => (
-                                            <div key={cls.id} className={`p-2.5 rounded-xl border group transition-all cursor-default ${cls.isEvent ? "bg-violet-500/10 border-violet-500/30 hover:border-violet-500/50" : "bg-white/5 border-white/10 hover:border-purple-500/30"}`}>
+                                            <div key={cls.id} onClick={() => setSelectedClass(cls)} className={`p-2.5 rounded-xl border group transition-all cursor-pointer ${cls.isEvent ? "bg-violet-500/10 border-violet-500/30 hover:border-violet-500/50" : "bg-white/5 border-white/10 hover:border-purple-500/30"}`}>
                                                 <p className={`text-xs font-black leading-tight transition-colors line-clamp-1 ${cls.isEvent ? "text-violet-300 group-hover:text-violet-200" : "text-white group-hover:text-purple-400"}`}>{cls.title}</p>
                                                 <div className="flex flex-col gap-1 mt-2">
                                                     <div className="flex items-center gap-1 text-[9px] font-bold text-white/30 uppercase">
@@ -579,7 +607,7 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                                     </div>
                                     <div className="space-y-1">
                                         {dayClasses.slice(0, 2).map(cls => (
-                                            <div key={cls.id} className={`text-[9px] font-bold truncate px-1.5 py-0.5 rounded-md border ${cls.isEvent ? "bg-violet-500/10 text-violet-300 border-violet-500/30" : "bg-white/5 text-white/60 border-white/5"}`}>
+                                            <div key={cls.id} onClick={() => setSelectedClass(cls)} className={`text-[9px] font-bold truncate px-1.5 py-0.5 rounded-md border cursor-pointer ${cls.isEvent ? "bg-violet-500/10 text-violet-300 border-violet-500/30 hover:border-violet-400/50" : "bg-white/5 text-white/60 border-white/5 hover:border-purple-500/30"}`}>
                                                 {new Date(cls.start_time).getHours()}:00 {cls.title}
                                             </div>
                                         ))}
@@ -605,6 +633,175 @@ function ScheduleDashboard({ classes }: { classes: any[] }) {
                     <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-1" />
                 </Link>
             </div>
+
+            {/* ── Modal: Detalle de Sesión ── */}
+            {selectedClass && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" onClick={() => setSelectedClass(null)}>
+                    <div className="relative w-full max-w-sm bg-slate-900 rounded-2xl border border-white/10 shadow-2xl text-white overflow-hidden" onClick={e => e.stopPropagation()}>
+                        {/* Header */}
+                        <div className={`p-5 border-b border-white/10 ${selectedClass.isEvent ? "bg-violet-500/10" : "bg-purple-500/10"}`}>
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    {selectedClass.isEvent && (
+                                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 font-bold uppercase tracking-widest border border-violet-500/30 mb-2 inline-block">
+                                            Evento
+                                        </span>
+                                    )}
+                                    <h3 className={`text-lg font-black leading-tight ${selectedClass.isEvent ? "text-violet-200" : "text-white"}`}>
+                                        {selectedClass.title}
+                                    </h3>
+                                    <p className="text-xs text-white/40 mt-0.5 capitalize">
+                                        {new Date(selectedClass.start_time).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })}
+                                    </p>
+                                </div>
+                                <button onClick={() => setSelectedClass(null)} className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0">
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Body */}
+                        <div className="p-5 space-y-4">
+                            {/* Horario */}
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/[0.06] flex items-center justify-center shrink-0">
+                                    <Clock className="w-4 h-4 text-white/40" />
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-white/30 uppercase tracking-wider font-bold">Horario</p>
+                                    <p className="text-sm font-bold text-white">
+                                        {new Date(selectedClass.start_time).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}
+                                        {selectedClass.duration ? ` · ${selectedClass.duration} min` : ""}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Coach */}
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/[0.06] flex items-center justify-center shrink-0">
+                                    <User className="w-4 h-4 text-white/40" />
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-white/30 uppercase tracking-wider font-bold">Coach</p>
+                                    <p className="text-sm font-bold text-white">
+                                        {selectedClass.coach_name || selectedClass.coach?.name || "Sin asignar"}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Salón / Ubicación */}
+                            {(selectedClass.room_name || selectedClass.location) && (
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/[0.06] flex items-center justify-center shrink-0">
+                                        <MapPin className="w-4 h-4 text-white/40" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] text-white/30 uppercase tracking-wider font-bold">Salón</p>
+                                        <p className="text-sm font-bold text-white">
+                                            {selectedClass.room_name || selectedClass.location}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Ocupación */}
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/[0.06] flex items-center justify-center shrink-0">
+                                    <Users className="w-4 h-4 text-white/40" />
+                                </div>
+                                <div className="flex-1">
+                                    <p className="text-[10px] text-white/30 uppercase tracking-wider font-bold mb-1.5">Ocupación</p>
+                                    <div className="flex items-center gap-2">
+                                        <div className="flex-1 bg-white/10 rounded-full h-1.5">
+                                            <div
+                                                className={`h-1.5 rounded-full transition-all ${
+                                                    selectedClass.current_enrolled / selectedClass.capacity >= 0.9
+                                                        ? "bg-red-500"
+                                                        : selectedClass.current_enrolled / selectedClass.capacity >= 0.7
+                                                        ? "bg-amber-500"
+                                                        : "bg-green-500"
+                                                }`}
+                                                style={{ width: `${Math.min(100, (selectedClass.current_enrolled / selectedClass.capacity) * 100)}%` }}
+                                            />
+                                        </div>
+                                        <span className="text-xs font-black text-white/60 shrink-0">
+                                            {selectedClass.current_enrolled}/{selectedClass.capacity} pax
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Descripción */}
+                            {selectedClass.description && (
+                                <div className="p-3 bg-white/5 rounded-xl border border-white/[0.06]">
+                                    <p className="text-xs text-white/50 leading-relaxed">{selectedClass.description}</p>
+                                </div>
+                            )}
+
+                            {/* Asistentes */}
+                            {!selectedClass.isEvent && (
+                                <div className="pt-1">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <p className="text-[10px] text-white/30 uppercase tracking-wider font-bold">Asistentes confirmados</p>
+                                        {attendeesFetcher.data?.intent === "class_attendees" && (
+                                            <span className="text-[9px] font-black text-white/20">
+                                                {attendeesFetcher.data.attendees.length} / {selectedClass.capacity}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {attendeesFetcher.state !== "idle" ? (
+                                        <div className="flex items-center justify-center py-4 gap-2 text-white/20">
+                                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                            <span className="text-[10px] font-bold uppercase tracking-wider">Cargando…</span>
+                                        </div>
+                                    ) : attendeesFetcher.data?.attendees?.length ? (
+                                        <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+                                            {attendeesFetcher.data.attendees.map((a: any, i: number) => (
+                                                <div key={a.id ?? i} className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/[0.08] transition-colors">
+                                                    <div className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-500/20 flex items-center justify-center shrink-0">
+                                                        <span className="text-[9px] font-black text-purple-300">
+                                                            {a.full_name?.slice(0, 1).toUpperCase() ?? "?"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <p className="text-xs font-semibold text-white/90 truncate">{a.full_name || "Sin nombre"}</p>
+                                                        {a.email && <p className="text-[9px] text-white/30 truncate">{a.email}</p>}
+                                                    </div>
+                                                    {a.phone && (
+                                                        <a
+                                                            href={`https://wa.me/${a.phone.replace(/\D/g, "")}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="shrink-0 p-1 rounded-md hover:bg-green-500/20 text-white/20 hover:text-green-400 transition-colors"
+                                                            title="WhatsApp"
+                                                        >
+                                                            <Phone className="w-3 h-3" />
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-xs text-white/20 italic px-1 py-2">Sin reservaciones confirmadas.</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="px-5 pb-5">
+                            <Link
+                                to="/admin/schedule"
+                                onClick={() => setSelectedClass(null)}
+                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300 text-xs font-bold rounded-xl transition-all"
+                            >
+                                Ver calendario completo
+                                <ArrowRight className="w-3.5 h-3.5" />
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {dayModalItems && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" onClick={() => setDayModalItems(null)}>

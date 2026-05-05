@@ -16,9 +16,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     const { data: products } = await supabaseAdmin
         .from("products")
-        .select("id, name, price, category, stock, is_available")
+        .select("id, name, price, category, stock, is_active")
         .eq("gym_id", gymId)
-        .eq("is_available", true)
+        .eq("is_active", true)
         .order("category", { ascending: true })
         .order("name", { ascending: true });
 

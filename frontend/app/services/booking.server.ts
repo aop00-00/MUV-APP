@@ -157,21 +157,24 @@ export async function getUserBookings(userId: string, gymId: string): Promise<Us
 export async function bookClass(
     classId: string,
     userId: string,
-    gymId: string
-): Promise<{ success: boolean; booking_id?: string; credits_remaining?: number; error?: string }> {
+    gymId: string,
+    resourceId?: string | null
+): Promise<{ success: boolean; booking_id?: string; credits_remaining?: number; plan_type?: string; resource_id?: string; error?: string }> {
     if (!gymId) {
         throw new Error("gymId is required for bookClass");
     }
 
-    const { data, error } = await supabaseAdmin
-        .rpc("book_class", {
-            p_class_id: classId,
-            p_user_id: userId,
-            p_gym_id: gymId,
-        });
+    const params: Record<string, string> = {
+        p_class_id: classId,
+        p_user_id: userId,
+        p_gym_id: gymId,
+    };
+    if (resourceId) params.p_resource_id = resourceId;
+
+    const { data, error } = await supabaseAdmin.rpc("book_class", params);
 
     if (error) throw new Error(`RPC error: ${error.message}`);
-    return data as { success: boolean; booking_id?: string; credits_remaining?: number; error?: string };
+    return data as { success: boolean; booking_id?: string; credits_remaining?: number; plan_type?: string; resource_id?: string; error?: string };
 }
 
 // ── Cancel a booking (atomic RPC, refund if >2h before) ──────────
@@ -373,12 +376,12 @@ export async function handleBookingAction(request: Request) {
 
     if (intent === "book") {
         const classId = formData.get("classId") as string;
-        const result = await bookClass(classId, profile.id, gymId);
+        const resourceId = (formData.get("resource_id") as string) || null;
+        const result = await bookClass(classId, profile.id, gymId, resourceId);
         if (result.error === "class_full") {
-            // Auto-join waitlist if class is full
             return joinWaitlist(classId, profile.id, gymId);
         }
-        return result;
+        return { ...result, class_id: classId };
     }
 
     if (intent === "cancel") {

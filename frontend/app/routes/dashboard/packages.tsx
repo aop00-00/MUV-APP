@@ -3,7 +3,7 @@ import type { Route } from "./+types/packages";
 import { useDashboardTheme } from "~/hooks/useDashboardTheme";
 import { useState } from "react";
 import { useNavigate, useFetcher } from "react-router";
-import { X, Sparkles, Users, MapPin, Clock, Calendar, CreditCard, CheckCircle, Lock, ChevronRight } from "lucide-react";
+import { X, Sparkles, Users, MapPin, Clock, Calendar, CreditCard, CheckCircle, Lock, ChevronRight, Tag } from "lucide-react";
 
 // ─── Action ─────────────────────────────────────────────────────
 export async function action({ request }: Route.ActionArgs) {
@@ -12,6 +12,112 @@ export async function action({ request }: Route.ActionArgs) {
     const { profile, gymId } = await requireGymAuth(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
+
+    // ── Validate coupon code ──────────────────────────────────────
+    if (intent === "validate_coupon") {
+        const code = (formData.get("code") as string)?.trim().toUpperCase();
+        const planPrice = Number(formData.get("planPrice") ?? 0);
+
+        const { data: coupon, error } = await supabaseAdmin
+            .from("coupons")
+            .select("id, code, discount_type, value, uses, max_uses, expires_at, is_active")
+            .eq("gym_id", gymId)
+            .eq("code", code)
+            .single();
+
+        if (error || !coupon) return { couponError: "Cupón no encontrado." };
+        if (!coupon.is_active) return { couponError: "Este cupón está inactivo." };
+        if (coupon.expires_at && new Date(coupon.expires_at) < new Date())
+            return { couponError: "Este cupón ha expirado." };
+        if (coupon.max_uses !== null && coupon.uses >= coupon.max_uses)
+            return { couponError: "Este cupón ya alcanzó su límite de usos." };
+
+        const discount = coupon.discount_type === "porcentaje"
+            ? Math.round(planPrice * coupon.value / 100)
+            : Math.min(coupon.value, planPrice);
+
+        return {
+            couponValid: true,
+            couponId: coupon.id,
+            couponCode: coupon.code,
+            discount,
+            finalPrice: Math.max(0, planPrice - discount),
+            discountLabel: coupon.discount_type === "porcentaje"
+                ? `${coupon.value}% de descuento`
+                : `$${coupon.value} de descuento`,
+        };
+    }
+
+    // ── Buy package ───────────────────────────────────────────────
+    if (intent === "buy_package") {
+        const { createMembership } = await import("~/services/subscription.server");
+        const { getGymPlans } = await import("~/services/plan.server");
+
+        const planId = formData.get("planId") as string;
+        const couponId = formData.get("couponId") as string | null;
+
+        const gymPlans = await getGymPlans(gymId);
+        const plan = gymPlans.find(p => p.id === planId);
+        if (!plan) return { purchaseError: "Plan no encontrado." };
+
+        let finalPrice = plan.price;
+
+        // Apply coupon if provided
+        if (couponId) {
+            const { data: coupon } = await supabaseAdmin
+                .from("coupons")
+                .select("id, discount_type, value, uses, max_uses, expires_at, is_active")
+                .eq("id", couponId)
+                .eq("gym_id", gymId)
+                .single();
+
+            if (coupon && coupon.is_active &&
+                !(coupon.expires_at && new Date(coupon.expires_at) < new Date()) &&
+                !(coupon.max_uses !== null && coupon.uses >= coupon.max_uses)
+            ) {
+                const discount = coupon.discount_type === "porcentaje"
+                    ? Math.round(plan.price * coupon.value / 100)
+                    : Math.min(coupon.value, plan.price);
+                finalPrice = Math.max(0, plan.price - discount);
+
+                // Increment uses
+                await supabaseAdmin
+                    .from("coupons")
+                    .update({ uses: coupon.uses + 1 })
+                    .eq("id", couponId)
+                    .eq("gym_id", gymId);
+            }
+        }
+
+        try {
+            const planType = (plan.plan_type ?? "creditos") as "creditos" | "membresia" | "ilimitado";
+            const creditsToAssign = planType === "creditos" ? (plan.credits ?? 0) : 0;
+
+            await createMembership({
+                userId: profile.id,
+                gymId,
+                planName: plan.name,
+                price: finalPrice,
+                credits: creditsToAssign,
+                planType,
+                validityDays: plan.validity_days,
+                paymentMethod: "card",
+                customerName: profile.full_name ?? null,
+            });
+
+            if (planType === "creditos" && creditsToAssign > 0) {
+                await supabaseAdmin
+                    .from("profiles")
+                    .update({ credits: creditsToAssign })
+                    .eq("id", profile.id)
+                    .eq("gym_id", gymId);
+            }
+        } catch (err: any) {
+            return { purchaseError: err.message };
+        }
+
+        return { purchaseSuccess: true, intent: "buy_package" };
+    }
 
     if (intent === "register_event") {
         const eventId = formData.get("eventId") as string;
@@ -412,12 +518,284 @@ function EventPurchaseModal({
     );
 }
 
+// ─── Package Purchase Modal ──────────────────────────────────────
+function PackagePurchaseModal({
+    pkg,
+    brandColor,
+    onClose,
+}: {
+    pkg: any;
+    brandColor: string;
+    onClose: () => void;
+}) {
+    const fetcher = useFetcher<any>();
+    const couponFetcher = useFetcher<any>();
+    const [step, setStep] = useState<"detail" | "payment" | "success">("detail");
+    const [couponCode, setCouponCode] = useState("");
+    const [appliedCoupon, setAppliedCoupon] = useState<{ id: string; label: string; discount: number; finalPrice: number } | null>(null);
+    const [couponError, setCouponError] = useState("");
+    const [isProcessing, setIsProcessing] = useState(false);
+
+    const displayPrice = appliedCoupon ? appliedCoupon.finalPrice : pkg.price;
+
+    function handleApplyCoupon() {
+        if (!couponCode.trim()) return;
+        setCouponError("");
+        const fd = new FormData();
+        fd.set("intent", "validate_coupon");
+        fd.set("code", couponCode.trim().toUpperCase());
+        fd.set("planPrice", String(pkg.price));
+        couponFetcher.submit(fd, { method: "post" });
+    }
+
+    // React to coupon validation response
+    useState(() => {});
+    if (couponFetcher.state === "idle" && couponFetcher.data) {
+        const d = couponFetcher.data;
+        if (d.couponValid && !appliedCoupon) {
+            setAppliedCoupon({ id: d.couponId, label: d.discountLabel, discount: d.discount, finalPrice: d.finalPrice });
+            setCouponError("");
+        } else if (d.couponError && !appliedCoupon) {
+            setCouponError(d.couponError);
+        }
+    }
+
+    function handlePay(e: React.FormEvent) {
+        e.preventDefault();
+        setIsProcessing(true);
+        setTimeout(() => {
+            const fd = new FormData();
+            fd.set("intent", "buy_package");
+            fd.set("planId", pkg.id);
+            if (appliedCoupon) fd.set("couponId", appliedCoupon.id);
+            fetcher.submit(fd, { method: "post" });
+            setIsProcessing(false);
+            setStep("success");
+        }, 1500);
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-4 pb-20 md:pb-0" onClick={onClose}>
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+            <div
+                className="relative w-full md:max-w-md bg-gray-950 md:rounded-2xl rounded-t-2xl shadow-2xl border border-white/10 overflow-hidden"
+                onClick={e => e.stopPropagation()}
+                style={{ maxHeight: "min(92dvh, 92vh)" }}
+            >
+                {/* Detail step */}
+                {step === "detail" && (
+                    <>
+                        <div className="p-5 border-b border-white/10" style={{ background: `linear-gradient(135deg, ${brandColor}25, ${brandColor}08)` }}>
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: brandColor }}>Paquete de clases</p>
+                                    <h2 className="text-xl font-black text-white">{pkg.name}</h2>
+                                </div>
+                                <button onClick={onClose} className="p-1.5 text-white/40 hover:text-white flex-shrink-0">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="p-5 space-y-4 overflow-y-auto" style={{ maxHeight: "55vh" }}>
+                            {/* Features */}
+                            <ul className="space-y-2">
+                                {pkg.features.map((f: string, i: number) => (
+                                    <li key={i} className="flex items-center gap-2 text-sm text-white/70">
+                                        <CheckCircle className="w-4 h-4 shrink-0" style={{ color: brandColor }} />
+                                        {f}
+                                    </li>
+                                ))}
+                            </ul>
+
+                            {/* Coupon field */}
+                            <div className="space-y-2">
+                                <p className="text-xs font-semibold text-white/50 uppercase tracking-wider flex items-center gap-1.5">
+                                    <Tag className="w-3.5 h-3.5" /> Cupón de descuento
+                                </p>
+                                {appliedCoupon ? (
+                                    <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-2.5">
+                                        <div>
+                                            <p className="text-xs font-bold text-green-400">{appliedCoupon.label} aplicado</p>
+                                            <p className="text-[10px] text-green-400/60">Código: {couponCode.toUpperCase()}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => { setAppliedCoupon(null); setCouponCode(""); }}
+                                            className="text-white/30 hover:text-white"
+                                        >
+                                            <X className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="flex gap-2">
+                                        <input
+                                            value={couponCode}
+                                            onChange={e => { setCouponCode(e.target.value.toUpperCase()); setCouponError(""); }}
+                                            placeholder="Ej. BIENVENIDA20"
+                                            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-amber-400 uppercase"
+                                            onKeyDown={e => e.key === "Enter" && handleApplyCoupon()}
+                                        />
+                                        <button
+                                            onClick={handleApplyCoupon}
+                                            disabled={!couponCode.trim() || couponFetcher.state !== "idle"}
+                                            className="px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-black font-bold rounded-xl text-sm disabled:opacity-50 transition-all"
+                                        >
+                                            {couponFetcher.state !== "idle" ? "..." : "Aplicar"}
+                                        </button>
+                                    </div>
+                                )}
+                                {couponError && <p className="text-xs text-red-400">{couponError}</p>}
+                            </div>
+
+                            {/* Order summary */}
+                            <div className="bg-white/5 rounded-xl p-4 border border-white/10 space-y-2">
+                                <p className="text-xs font-semibold text-white/50 uppercase tracking-wider">Resumen</p>
+                                <div className="flex items-center justify-between text-sm">
+                                    <span className="text-white/70">{pkg.name}</span>
+                                    <span className="font-bold text-white">${pkg.price.toLocaleString("es-MX")} MXN</span>
+                                </div>
+                                {appliedCoupon && (
+                                    <div className="flex items-center justify-between text-sm text-green-400">
+                                        <span>Descuento ({appliedCoupon.label})</span>
+                                        <span>−${appliedCoupon.discount.toLocaleString("es-MX")}</span>
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between text-sm border-t border-white/10 pt-2">
+                                    <span className="font-bold text-white">Total</span>
+                                    <span className="text-xl font-black text-white">${displayPrice.toLocaleString("es-MX")} MXN</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-5 border-t border-white/10">
+                            <button
+                                onClick={() => setStep("payment")}
+                                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90 active:scale-95"
+                                style={{ backgroundColor: brandColor }}
+                            >
+                                <CreditCard className="w-4 h-4" />
+                                Continuar al pago
+                                <ChevronRight className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </>
+                )}
+
+                {/* Payment step */}
+                {step === "payment" && (
+                    <>
+                        <div className="p-5 border-b border-white/10 flex items-center gap-3">
+                            <button onClick={() => setStep("detail")} className="p-1.5 text-white/40 hover:text-white">
+                                <ChevronRight className="w-4 h-4 rotate-180" />
+                            </button>
+                            <div className="flex-1">
+                                <h2 className="text-base font-black text-white">Datos de pago</h2>
+                                <p className="text-xs text-white/40 flex items-center gap-1 mt-0.5">
+                                    <Lock className="w-3 h-3" /> Pago simulado — entorno de pruebas
+                                </p>
+                            </div>
+                            <button onClick={onClose} className="p-1.5 text-white/40 hover:text-white">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <form onSubmit={handlePay}>
+                            <div className="p-5 space-y-4 overflow-y-auto" style={{ maxHeight: "55vh" }}>
+                                <div className="flex items-center justify-between rounded-xl px-4 py-3 border"
+                                    style={{ background: `${brandColor}15`, borderColor: `${brandColor}30` }}>
+                                    <div>
+                                        <p className="text-xs font-medium" style={{ color: `${brandColor}99` }}>{pkg.name}</p>
+                                        <p className="text-lg font-black text-white">${displayPrice.toLocaleString("es-MX")} MXN</p>
+                                    </div>
+                                    {appliedCoupon && (
+                                        <span className="text-xs bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-1 rounded-full font-bold">
+                                            {appliedCoupon.label}
+                                        </span>
+                                    )}
+                                </div>
+
+                                {[
+                                    { label: "Número de tarjeta", placeholder: "1234 5678 9012 3456", type: "text", required: true },
+                                    { label: "Nombre en la tarjeta", placeholder: "JUAN PÉREZ", type: "text", required: true },
+                                ].map(({ label, placeholder, type, required }) => (
+                                    <div key={label}>
+                                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">{label}</label>
+                                        <input type={type} placeholder={placeholder} required={required}
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-violet-400" />
+                                    </div>
+                                ))}
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">Vencimiento</label>
+                                        <input type="text" placeholder="MM/AA" required maxLength={5}
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-violet-400" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-1.5">CVV</label>
+                                        <input type="text" placeholder="•••" required maxLength={4}
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-violet-400" />
+                                    </div>
+                                </div>
+                                <p className="text-[11px] text-white/30 text-center flex items-center justify-center gap-1">
+                                    <Lock className="w-3 h-3" /> Este es un flujo simulado. No se realizará ningún cargo real.
+                                </p>
+                            </div>
+                            <div className="p-5 border-t border-white/10">
+                                <button type="submit" disabled={isProcessing}
+                                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-60"
+                                    style={{ backgroundColor: brandColor }}>
+                                    {isProcessing ? (
+                                        <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Procesando...</>
+                                    ) : (
+                                        <><Lock className="w-4 h-4" /> Pagar ${displayPrice.toLocaleString("es-MX")} MXN</>
+                                    )}
+                                </button>
+                            </div>
+                        </form>
+                    </>
+                )}
+
+                {/* Success step */}
+                {step === "success" && (
+                    <div className="p-8 text-center space-y-5">
+                        <div className="relative mx-auto w-20 h-20">
+                            <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ backgroundColor: `${brandColor}25` }}>
+                                <CheckCircle className="w-10 h-10" style={{ color: brandColor }} />
+                            </div>
+                            <span className="absolute -top-1 -right-1 text-2xl">✨</span>
+                        </div>
+                        <div>
+                            <h2 className="text-2xl font-black text-white mb-1">¡Paquete activado!</h2>
+                            <p className="text-white/60 text-sm">Ya puedes reservar tus clases.</p>
+                        </div>
+                        <div className="rounded-2xl p-5 text-left space-y-2 border" style={{ background: `${brandColor}10`, borderColor: `${brandColor}30` }}>
+                            <p className="font-black text-white text-lg">{pkg.name}</p>
+                            <p className="text-sm text-white/60">
+                                {pkg.classes >= 999 ? "Clases ilimitadas" : `${pkg.classes} créditos de clase`}
+                            </p>
+                            <div className="flex items-center justify-between border-t border-white/10 pt-3">
+                                <span className="text-xs text-white/40">Total pagado</span>
+                                <span className="font-black text-white">${displayPrice.toLocaleString("es-MX")} MXN</span>
+                            </div>
+                        </div>
+                        <button onClick={onClose}
+                            className="w-full py-3 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90"
+                            style={{ backgroundColor: brandColor }}>
+                            Ver mis clases
+                        </button>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 // ─── Main Component ─────────────────────────────────────────────
 export default function Packages({ loaderData }: Route.ComponentProps) {
     const { packages, events, brandColor, gymName } = loaderData as any;
     const brand = brandColor || "#7c3aed";
     const t = useDashboardTheme();
     const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
+    const [selectedPackage, setSelectedPackage] = useState<any | null>(null);
 
     return (
         <div className="space-y-12">
@@ -472,13 +850,13 @@ export default function Packages({ loaderData }: Route.ComponentProps) {
                                 ))}
                             </ul>
 
-                            <a
-                                href={`/dashboard/checkout/${pkg.id}`}
-                                className="w-full text-center py-2.5 rounded-xl font-bold text-sm transition-all text-white hover:opacity-90"
+                            <button
+                                onClick={() => setSelectedPackage(pkg)}
+                                className="w-full text-center py-2.5 rounded-xl font-bold text-sm transition-all text-white hover:opacity-90 active:scale-95"
                                 style={{ backgroundColor: brand }}
                             >
                                 Adquirir Paquete
-                            </a>
+                            </button>
                         </div>
                     ))}
                 </div>
@@ -573,13 +951,22 @@ export default function Packages({ loaderData }: Route.ComponentProps) {
                 </section>
             )}
 
-            {/* ── Purchase Modal ── */}
+            {/* ── Event Purchase Modal ── */}
             {selectedEvent && (
                 <EventPurchaseModal
                     event={selectedEvent}
                     brandColor={brand}
                     gymName={gymName}
                     onClose={() => setSelectedEvent(null)}
+                />
+            )}
+
+            {/* ── Package Purchase Modal ── */}
+            {selectedPackage && (
+                <PackagePurchaseModal
+                    pkg={selectedPackage}
+                    brandColor={brand}
+                    onClose={() => setSelectedPackage(null)}
                 />
             )}
         </div>

@@ -67,7 +67,6 @@ export default [
             route("schedule", "routes/admin/schedule.tsx"),
             route("horarios", "routes/admin/horarios.tsx"),
             route("periodos", "routes/admin/periodos.tsx"),
-            route("sustituciones", "routes/admin/sustituciones.tsx"),
             route("events", "routes/admin/events.tsx"),
             route("reservas", "routes/admin/reservas.tsx"),
             // ── Negocio ───────────────────────────────────────────
@@ -75,6 +74,7 @@ export default [
             route("cupones", "routes/admin/cupones.tsx"),
             route("ingresos", "routes/admin/ingresos.tsx"),
             route("nomina", "routes/admin/nomina.tsx"),
+            route("finanzas", "routes/admin/finanzas.tsx"),
             route("pos", "routes/admin/pos.tsx"),
             // ── Otros ─────────────────────────────────────────────
             route("crm", "routes/admin/crm.tsx"),

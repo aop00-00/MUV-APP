@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
 import { motion } from "framer-motion";
-import { 
-    Calendar, QrCode, ShoppingBag, Users, ClipboardList, Receipt, 
+import {
+    Calendar, QrCode, ShoppingBag, Users, ClipboardList, Receipt,
     CalendarCheck, Award, TrendingUp, CreditCard, ArrowRight,
     CheckCircle2, ShieldCheck, PlayCircle
 } from "lucide-react";
@@ -16,7 +16,7 @@ import { cn } from "~/lib/utils";
 import ParticleBackground from "~/components/landing/ParticleBackground";
 
 // ─── Meta ────────────────────────────────────────────────────────
-export function meta({}: Route.MetaArgs) {
+export function meta({ }: Route.MetaArgs) {
     return [
         { title: "La Plataforma — Project Studio" },
         {
@@ -56,70 +56,44 @@ function PageHero() {
                 </AnimatedGroup>
 
                 {/* Mockup Split */}
-                <motion.div 
+                <motion.div
                     initial={{ opacity: 0, y: 40 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.8, delay: 0.4 }}
-                    className="mt-20 relative max-w-5xl mx-auto"
+                    className="mt-20 relative max-w-6xl mx-auto"
                 >
-                    <div className="flex flex-col md:flex-row gap-6 items-end">
+                    <div className="flex flex-col md:flex-row gap-8 items-end">
                         {/* Left: Admin */}
-                        <div className="flex-1 bg-white/5 border border-white/10 rounded-2xl p-4 md:p-6 backdrop-blur-md shadow-2xl relative translate-y-4 md:translate-y-8">
+                        <div className="flex-[1.2] bg-white/5 border border-white/10 rounded-2xl p-4 md:p-6 backdrop-blur-md shadow-2xl relative translate-y-4 md:translate-y-8">
                             <div className="absolute -top-4 left-6 bg-[#111] border border-white/10 text-white text-xs px-3 py-1 rounded-full text-white/70">
                                 Vista del Admin
                             </div>
-                            {/* Dummy Admin UI */}
-                            <div className="space-y-4 opacity-80 pointer-events-none">
-                                <div className="flex justify-between items-center mb-6">
-                                    <div className="h-6 w-32 bg-white/10 rounded-md"></div>
-                                    <div className="flex gap-2">
-                                        <div className="size-8 rounded-full bg-white/10"></div>
-                                        <div className="size-8 rounded-full bg-blue-500/50"></div>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4 mb-4">
-                                    <div className="h-20 bg-white/5 rounded-xl border border-white/5 flex flex-col justify-center p-4">
-                                        <div className="h-3 w-16 bg-white/10 rounded mb-2"></div>
-                                        <div className="h-6 w-24 bg-white/20 rounded"></div>
-                                    </div>
-                                    <div className="h-20 bg-white/5 rounded-xl border border-white/5 flex flex-col justify-center p-4">
-                                        <div className="h-3 w-16 bg-white/10 rounded mb-2"></div>
-                                        <div className="h-6 w-24 bg-white/20 rounded"></div>
-                                    </div>
-                                </div>
-                                <div className="h-40 bg-white/5 rounded-xl border border-white/5 p-4 flex flex-col gap-2">
-                                    <div className="h-4 w-32 bg-white/10 rounded mb-2"></div>
-                                    {[1,2,3].map(i => <div key={i} className="flex gap-2"><div className="w-12 h-6 bg-white/10 rounded"></div><div className="flex-1 h-6 bg-white/5 rounded"></div></div>)}
-                                </div>
+                            <div className="relative aspect-video rounded-xl overflow-hidden bg-black/20 border border-white/5">
+                                <video
+                                    src="/mi-video-hero.mp4.mp4"
+                                    autoPlay
+                                    loop
+                                    muted
+                                    playsInline
+                                    className="w-full h-full object-cover"
+                                />
                             </div>
                         </div>
 
                         {/* Right: Member Phone */}
-                        <div className="w-full md:w-[320px] bg-black border-4 border-white/20 rounded-[40px] p-2 shadow-2xl relative z-10 mx-auto md:mx-0">
+                        <div className="w-full md:w-[260px] bg-black border-4 border-white/20 rounded-[40px] p-2 shadow-2xl relative z-10 mx-auto md:mx-0">
                             <div className="absolute -top-4 right-10 md:-right-4 bg-blue-600 text-white text-xs px-3 py-1 rounded-full shadow-lg">
                                 Vista del Socio
                             </div>
-                            <div className="bg-[#0a0a0a] w-full h-[500px] rounded-[32px] overflow-hidden p-5 flex flex-col border border-white/5">
-                                <div className="h-8 w-full flex justify-between items-center mb-6">
-                                    <div className="h-4 w-20 bg-white/10 rounded-full"></div>
-                                    <div className="h-8 w-8 bg-blue-500/20 rounded-full flex items-center justify-center text-blue-400 text-xs font-bold">120</div>
-                                </div>
-                                <div className="h-32 bg-gradient-to-br from-blue-900/40 to-blue-600/10 rounded-2xl mb-4 p-4 border border-blue-500/20">
-                                    <div className="h-4 w-24 bg-white/20 rounded mb-2"></div>
-                                    <div className="h-5 w-40 bg-white/40 rounded"></div>
-                                </div>
-                                <div className="space-y-3 flex-1 overflow-hidden">
-                                     <div className="h-4 w-32 bg-white/10 rounded mb-2 mt-4"></div>
-                                     {[1,2,3].map(i => (
-                                         <div key={i} className="h-16 w-full bg-white/5 rounded-xl border border-white/5 flex items-center p-3 gap-3">
-                                             <div className="size-10 rounded-lg bg-white/10"></div>
-                                             <div className="flex flex-col gap-1.5 flex-1">
-                                                 <div className="h-3 w-1/2 bg-white/20 rounded"></div>
-                                                 <div className="h-2 w-1/3 bg-white/10 rounded"></div>
-                                             </div>
-                                         </div>
-                                     ))}
-                                </div>
+                            <div className="bg-[#0a0a0a] w-full h-[480px] rounded-[32px] overflow-hidden relative border border-white/5">
+                                <video
+                                    src="/mi-Video-Movil.mp4.mp4"
+                                    autoPlay
+                                    loop
+                                    muted
+                                    playsInline
+                                    className="w-full h-full object-cover"
+                                />
                             </div>
                         </div>
                     </div>
@@ -254,7 +228,7 @@ function Disciplines() {
         { id: "capacity", name: "Capacidad por clase", disc: "Yoga, Barre, Dance", desc: "Reserva por cupo disponible. El sistema gestiona lista de espera automáticamente.", img: "/images/landing/yoga.png" },
         { id: "open", name: "Acceso abierto", disc: "HIIT, Funcional, Box", desc: "Sin asignación fija. Confirma asistencia y el sistema registra ocupación.", img: "/images/landing/hiit.png" },
     ];
-    
+
     return (
         <section className="py-24 border-y border-white/5 px-6 relative">
             <div className="max-w-7xl mx-auto">
@@ -328,9 +302,9 @@ function IntegrationsAndTech() {
 function CtaBottom() {
     return (
         <section className="py-24 px-6 relative border-t border-white/10 overflow-hidden">
-             <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[600px] bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.15),transparent_70%)] pointer-events-none" />
-             <div className="max-w-4xl mx-auto text-center relative z-10">
-                 <ScrollReveal>
+            <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[600px] bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.15),transparent_70%)] pointer-events-none" />
+            <div className="max-w-4xl mx-auto text-center relative z-10">
+                <ScrollReveal>
                     <h2 className="text-5xl md:text-6xl font-bold text-white tracking-tight mb-6">
                         ¿Listo para ver cómo funciona?
                     </h2>
@@ -350,8 +324,8 @@ function CtaBottom() {
                         <span className="flex items-center gap-2"><ShieldCheck className="size-4" /> Servidores LATAM</span>
                         <span className="flex items-center gap-2"><ShieldCheck className="size-4" /> Cumple SAT / AFIP</span>
                     </div>
-                 </ScrollReveal>
-             </div>
+                </ScrollReveal>
+            </div>
         </section>
     );
 }

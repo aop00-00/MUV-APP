@@ -1,69 +1,73 @@
 // app/routes/dashboard/fitcoins.tsx
-// User FitCoins wallet – balance, rewards catalog, transaction history, referral code.
+// Member FitCoins wallet — balance, rewards (DB-driven), transaction history, referral code.
 
 import type { Route } from "./+types/fitcoins";
 import { useFetcher } from "react-router";
 import { useState } from "react";
 import {
     Zap, Gift, ArrowDownLeft, ArrowUpRight, Star,
-    Copy, Check, Users, ShoppingBag, Award, Sparkles
+    Copy, Check, Users, ShoppingBag, Award, Sparkles, CalendarDays, RefreshCw
 } from "lucide-react";
-// Auth and Gamification services moved to dynamic imports inside loader/action
-import type { FitCoin, FitCoinReward, FitCoinSource } from "~/types/database";
+import type { FitCoin, FitCoinReward, FitCoinRule, FitCoinSource } from "~/types/database";
 
-// ─── Loader & Action ─────────────────────────────────────────────
+// ─── Loader ───────────────────────────────────────────────────────────────────
 export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAuth } = await import("~/services/gym.server");
-    const { getFitCoinBalance, getTransactionHistory, listRewards } = await import("~/services/gamification.server");
+    const { getFitCoinBalance, getTransactionHistory } = await import("~/services/gamification.server");
+    const { listFitCoinRewards, listFitCoinRules } = await import("~/services/fitcoin-rules.server");
+
     const { profile, gymId } = await requireGymAuth(request);
-    const [balance, transactions, rewards] = await Promise.all([
+
+    const [balance, transactions, rewards, rules] = await Promise.all([
         getFitCoinBalance(profile.id, gymId),
         getTransactionHistory(profile.id, gymId),
-        listRewards(),
+        listFitCoinRewards(gymId, true),   // only active rewards
+        listFitCoinRules(gymId),
     ]);
 
-    // Referral code (deterministic from user id)
     const referralCode = `GRIND-${profile.id.slice(0, 6).toUpperCase()}`;
 
-    return { profile, balance, transactions, rewards, referralCode };
+    return { profile, balance, transactions, rewards, rules, referralCode };
 }
 
+// ─── Action ───────────────────────────────────────────────────────────────────
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAuth } = await import("~/services/gym.server");
-    const { redeemReward } = await import("~/services/gamification.server");
+    const { redeemFitCoinReward } = await import("~/services/fitcoin-rules.server");
     const { profile, gymId } = await requireGymAuth(request);
     const formData = await request.formData();
     const intent = formData.get("intent") as string;
-    const rewardId = formData.get("rewardId") as string;
 
     if (intent === "redeem") {
-        const result = await redeemReward(profile.id, rewardId, gymId);
-        return result;
+        const rewardId = formData.get("rewardId") as string;
+        return redeemFitCoinReward(profile.id, rewardId, gymId);
     }
     return { success: false, message: "Acción no soportada" };
 }
 
-// ─── Source Config ────────────────────────────────────────────────
+// ─── Source config ────────────────────────────────────────────────────────────
 const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; color: string }> = {
-    attendance: { label: "Asistencia", icon: Zap, color: "text-blue-500" },
-    referral: { label: "Referido", icon: Users, color: "text-violet-500" },
-    purchase: { label: "Compra", icon: ShoppingBag, color: "text-amber-500" },
-    streak_bonus: { label: "Racha", icon: Star, color: "text-orange-500" },
-    redemption: { label: "Canje", icon: Gift, color: "text-green-500" },
-    bonus: { label: "Bonificación", icon: Sparkles, color: "text-pink-500" },
-    admin_grant: { label: "Ajuste", icon: Award, color: "text-gray-500" },
+    attendance:          { label: "Asistencia",    icon: Zap,         color: "text-blue-500" },
+    referral:            { label: "Referido",      icon: Users,       color: "text-violet-500" },
+    purchase:            { label: "Compra",        icon: ShoppingBag, color: "text-amber-500" },
+    streak_bonus:        { label: "Racha",         icon: Star,        color: "text-orange-500" },
+    redemption:          { label: "Canje",         icon: Gift,        color: "text-green-500" },
+    bonus:               { label: "Bonificación",  icon: Sparkles,    color: "text-pink-500" },
+    birthday:            { label: "Cumpleaños",    icon: Sparkles,    color: "text-pink-400" },
+    membership_renewal:  { label: "Renovación",   icon: RefreshCw,   color: "text-teal-500" },
+    admin_grant:         { label: "Ajuste",        icon: Award,       color: "text-gray-500" },
 };
 
 const CATEGORY_ICONS: Record<string, React.ElementType> = {
-    discount: Zap,
-    merch: ShoppingBag,
-    access: Users,
+    discount:   Zap,
+    merch:      ShoppingBag,
+    access:     Users,
     experience: Star,
 };
 
-// ─── Components ───────────────────────────────────────────────────
+// ─── Components ───────────────────────────────────────────────────────────────
 function TransactionRow({ tx }: { tx: FitCoin }) {
-    const cfg = SOURCE_CONFIG[tx.source];
+    const cfg = SOURCE_CONFIG[tx.source] ?? SOURCE_CONFIG.bonus;
     const Icon = cfg.icon;
     const isPositive = tx.amount > 0;
     return (
@@ -99,7 +103,7 @@ function TransactionRow({ tx }: { tx: FitCoin }) {
 function RewardCard({ reward, balance }: { reward: FitCoinReward; balance: number }) {
     const fetcher = useFetcher();
     const canRedeem = balance >= reward.cost;
-    const Icon = CATEGORY_ICONS[reward.category ?? "discount"] ?? Zap;
+    const Icon = CATEGORY_ICONS[reward.category ?? "experience"] ?? Star;
     const isLoading = fetcher.state !== "idle";
     const didRedeem = fetcher.data?.success;
 
@@ -139,9 +143,9 @@ function RewardCard({ reward, balance }: { reward: FitCoinReward; balance: numbe
     );
 }
 
-// ─── Main Component ───────────────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
-    const { profile, balance, transactions, rewards, referralCode } = loaderData;
+    const { profile, balance, transactions, rewards, rules, referralCode } = loaderData;
     const [copied, setCopied] = useState(false);
     const [activeTab, setActiveTab] = useState<"rewards" | "history">("rewards");
 
@@ -156,15 +160,34 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
     const nextMilestone = milestones.find((m) => m > balance) ?? milestones[milestones.length - 1];
     const progressPct = Math.min((balance / nextMilestone) * 100, 100);
 
+    // Build "how to earn" from active base rules
+    const activeBaseRules = (rules as FitCoinRule[]).filter(r => !r.is_custom && r.is_active);
+    const iconByEvent: Record<string, React.ElementType> = {
+        attendance: Zap,
+        referral: Users,
+        purchase: ShoppingBag,
+        birthday: Sparkles,
+        membership_renewal: RefreshCw,
+    };
+    const colorByEvent: Record<string, string> = {
+        attendance: "bg-blue-50 text-blue-600",
+        referral: "bg-violet-50 text-violet-600",
+        purchase: "bg-amber-50 text-amber-600",
+        birthday: "bg-pink-50 text-pink-500",
+        membership_renewal: "bg-teal-50 text-teal-600",
+    };
+
+    // Find referral rule for the referral card copy text
+    const referralRule = (rules as FitCoinRule[]).find(r => r.event_type === "referral" && r.is_active);
+
     return (
         <div className="space-y-6">
             <h1 className="text-2xl font-bold text-white">Mis FitCoins</h1>
+
             {/* ── Hero Balance ─────────────────────────── */}
             <div className="relative bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-700 rounded-2xl p-8 text-white overflow-hidden shadow-xl">
-                {/* Background decorations */}
                 <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/3 translate-x-1/4" />
                 <div className="absolute bottom-0 left-0 w-40 h-40 bg-white/5 rounded-full translate-y-1/3 -translate-x-1/4" />
-
                 <div className="relative z-10">
                     <div className="flex items-center gap-2 text-violet-200 text-sm font-medium mb-2">
                         <Zap className="w-4 h-4" />
@@ -175,18 +198,13 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
                         <p className="text-violet-300 text-xl font-medium">pts</p>
                     </div>
                     <p className="text-violet-200 text-sm mt-1">Hola, {profile.full_name.split(" ")[0]} 👋</p>
-
-                    {/* Progress to next milestone */}
                     <div className="mt-6">
                         <div className="flex justify-between text-xs text-violet-300 mb-1.5">
                             <span>{balance.toLocaleString()} pts</span>
                             <span>Próxima recompensa: {nextMilestone.toLocaleString()} pts</span>
                         </div>
                         <div className="h-2 bg-white/20 rounded-full overflow-hidden">
-                            <div
-                                className="h-full bg-white rounded-full transition-all duration-700"
-                                style={{ width: `${progressPct}%` }}
-                            />
+                            <div className="h-full bg-white rounded-full transition-all duration-700" style={{ width: `${progressPct}%` }} />
                         </div>
                     </div>
                 </div>
@@ -212,35 +230,39 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
                 })}
             </div>
 
-            {/* ── Referral Card ────────────────────────── */}
-            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-5">
-                <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                            <Users className="w-4 h-4 text-amber-600" />
-                            <h3 className="font-bold text-amber-900 text-sm">Invita amigos, gana FitCoins</h3>
-                        </div>
-                        <p className="text-xs text-amber-700 mb-3">
-                            Tú ganas <strong>100 pts</strong> y tu amigo <strong>50 pts</strong> cuando se registre con tu código.
-                        </p>
-                        <div className="flex items-center gap-2">
-                            <div className="flex-1 bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-amber-800 tracking-wider">
-                                {referralCode}
+            {/* ── Referral Card (only if referral rule is active) ── */}
+            {referralRule && (
+                <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-5">
+                    <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                                <Users className="w-4 h-4 text-amber-600" />
+                                <h3 className="font-bold text-amber-900 text-sm">Invita amigos, gana FitCoins</h3>
                             </div>
-                            <button
-                                onClick={handleCopyCode}
-                                className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-xs font-medium transition-all hover:scale-105 active:scale-95"
-                            >
-                                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                                {copied ? "Copiado!" : "Copiar"}
-                            </button>
+                            <p className="text-xs text-amber-700 mb-3">
+                                Tú ganas <strong>{referralRule.points} pts</strong>
+                                {referralRule.points_referee ? <> y tu amigo <strong>{referralRule.points_referee} pts</strong></> : null}
+                                {" "}cuando se registre con tu código.
+                            </p>
+                            <div className="flex items-center gap-2">
+                                <div className="flex-1 bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm font-mono font-bold text-amber-800 tracking-wider">
+                                    {referralCode}
+                                </div>
+                                <button
+                                    onClick={handleCopyCode}
+                                    className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-xs font-medium transition-all hover:scale-105 active:scale-95"
+                                >
+                                    {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                                    {copied ? "Copiado!" : "Copiar"}
+                                </button>
+                            </div>
                         </div>
+                        <Sparkles className="w-10 h-10 text-amber-400 flex-shrink-0 mt-1" />
                     </div>
-                    <Sparkles className="w-10 h-10 text-amber-400 flex-shrink-0 mt-1" />
                 </div>
-            </div>
+            )}
 
-            {/* ── Tabs: Rewards / History ──────────────── */}
+            {/* ── Tabs ─────────────────────────────────── */}
             <div className="flex bg-gray-100 p-1 rounded-lg w-fit">
                 <button
                     onClick={() => setActiveTab("rewards")}
@@ -258,13 +280,20 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
                 </button>
             </div>
 
-            {/* ── Rewards Catalog ──────────────────────── */}
+            {/* ── Rewards Catalog (DB-driven) ──────────── */}
             {activeTab === "rewards" && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {rewards.map((reward: FitCoinReward) => (
-                        <RewardCard key={reward.id} reward={reward} balance={balance} />
-                    ))}
-                </div>
+                rewards.length === 0 ? (
+                    <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-12 text-center">
+                        <Gift className="w-10 h-10 mx-auto mb-2 text-gray-200" />
+                        <p className="text-sm text-gray-400">Tu estudio aún no ha configurado recompensas. ¡Pronto habrá algo genial!</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {rewards.map((reward: FitCoinReward) => (
+                            <RewardCard key={reward.id} reward={reward} balance={balance} />
+                        ))}
+                    </div>
+                )
             )}
 
             {/* ── Transaction History ──────────────────── */}
@@ -284,29 +313,30 @@ export default function FitCoinsPage({ loaderData }: Route.ComponentProps) {
                 </div>
             )}
 
-            {/* ── How to Earn ──────────────────────────── */}
-            <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-6">
-                <h2 className="text-lg font-bold text-gray-900 mb-4">¿Cómo ganar FitCoins?</h2>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {[
-                        { icon: Zap, label: "Asistir a clase", value: "+10 pts", color: "bg-blue-50   text-blue-600" },
-                        { icon: Users, label: "Referir un amigo", value: "+100 pts", color: "bg-violet-50 text-violet-600" },
-                        { icon: ShoppingBag, label: "Comprar en tienda", value: "+5/$ pts", color: "bg-amber-50  text-amber-600" },
-                        { icon: Star, label: "Racha de 7 días", value: "+50 pts", color: "bg-orange-50 text-orange-500" },
-                    ].map((item) => {
-                        const Icon = item.icon;
-                        return (
-                            <div key={item.label} className="text-center p-4 rounded-xl bg-gray-50">
-                                <div className={`w-10 h-10 rounded-xl ${item.color} flex items-center justify-center mx-auto mb-2`}>
-                                    <Icon className="w-5 h-5" />
+            {/* ── How to Earn (from gym's active rules) ── */}
+            {activeBaseRules.length > 0 && (
+                <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-6">
+                    <h2 className="text-lg font-bold text-gray-900 mb-4">¿Cómo ganar FitCoins?</h2>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {activeBaseRules.map((rule: FitCoinRule) => {
+                            const Icon = iconByEvent[rule.event_type] ?? CalendarDays;
+                            const color = colorByEvent[rule.event_type] ?? "bg-gray-50 text-gray-600";
+                            const valueLabel = rule.points_mode === "fixed"
+                                ? `+${rule.points} pts`
+                                : `+${rule.points} pt/$${rule.amount_unit}`;
+                            return (
+                                <div key={rule.id} className="text-center p-4 rounded-xl bg-gray-50">
+                                    <div className={`w-10 h-10 rounded-xl ${color} flex items-center justify-center mx-auto mb-2`}>
+                                        <Icon className="w-5 h-5" />
+                                    </div>
+                                    <p className="text-xs font-semibold text-gray-700">{rule.label}</p>
+                                    <p className="text-sm font-black text-gray-900 mt-1">{valueLabel}</p>
                                 </div>
-                                <p className="text-xs font-semibold text-gray-700">{item.label}</p>
-                                <p className="text-sm font-black text-gray-900 mt-1">{item.value}</p>
-                            </div>
-                        );
-                    })}
+                            );
+                        })}
+                    </div>
                 </div>
-            </div>
+            )}
         </div>
     );
 }

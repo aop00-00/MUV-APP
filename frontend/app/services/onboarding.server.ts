@@ -164,8 +164,8 @@ export async function saveRoomLayout(
     .from("gyms")
     .update({
       layout_config: layout,
-      default_capacity: layout.resources?.length || 0, // Capacity = number of resources
-      onboarding_step: 4, // Advance to Classes step
+      default_capacity: layout.resources?.length || 0,
+      onboarding_step: 4,
     })
     .eq("id", gymId);
 
@@ -176,9 +176,36 @@ export async function saveRoomLayout(
 
   // 2. Create resource records in resources table
   if (layout.resources && layout.resources.length > 0) {
+    // Ensure a default room exists so resources can be joined and displayed in the admin dashboard
+    let targetRoomId = roomId;
+    if (!targetRoomId) {
+      const { data: existingRoom } = await supabaseAdmin
+        .from("rooms")
+        .select("id")
+        .eq("gym_id", gymId)
+        .limit(1)
+        .single();
+
+      if (existingRoom) {
+        targetRoomId = existingRoom.id;
+      } else {
+        const { data: newRoom, error: roomError } = await supabaseAdmin
+          .from("rooms")
+          .insert({ gym_id: gymId, name: "Sala Principal", capacity: layout.resources.length, is_active: true })
+          .select("id")
+          .single();
+
+        if (roomError) {
+          console.error(`[onboarding.server] Failed to create default room for gym ${gymId}:`, roomError);
+          throw new Error(`Failed to create default room: ${roomError.message}`);
+        }
+        targetRoomId = newRoom.id;
+      }
+    }
+
     const resourceRecords = layout.resources.map(r => ({
       gym_id: gymId,
-      room_id: roomId,
+      room_id: targetRoomId,
       name: r.name,
       resource_type: r.type,
       position_row: r.row,
@@ -192,7 +219,6 @@ export async function saveRoomLayout(
       .delete()
       .eq("gym_id", gymId);
 
-    // Insert new resources
     const { error: resourceError } = await supabaseAdmin
       .from("resources")
       .insert(resourceRecords);
@@ -202,7 +228,7 @@ export async function saveRoomLayout(
       throw new Error(`Failed to create resources: ${resourceError.message}`);
     }
 
-    console.log(`[onboarding.server] Gym ${gymId} created ${resourceRecords.length} resources`);
+    console.log(`[onboarding.server] Gym ${gymId} created ${resourceRecords.length} resources in room ${targetRoomId}`);
   }
 }
 

@@ -14,12 +14,17 @@ import { LogoCloud } from "./LogoCloud";
 import FAQ from "./FAQ";
 import CallToAction from "./CallToAction";
 
-const trustedLogos = [
-    { src: "/images/landing/logo-apple.svg", alt: "Apple" },
-    { src: "/images/landing/logo-spotify.svg", alt: "Spotify" },
-    { src: "/images/landing/logo-nike.svg", alt: "Nike" },
-    { src: "/images/landing/logo-amazon.svg", alt: "Amazon" },
-    { src: "/images/landing/logo-google.svg", alt: "Google" },
+const studioLogos = [
+    { src: "/images/landing/logos/logo-yoga.png", alt: "Zenith Yoga" },
+    { src: "/images/landing/logos/logo-crossfit.png", alt: "Iron Forge" },
+    { src: "/images/landing/logos/logo-pilates.png", alt: "Serene Pilates" },
+    { src: "/images/landing/logos/logo-cycling.png", alt: "Pulse Cycling" },
+    { src: "/images/landing/logos/logo-boxing.png", alt: "Apex Boxing" },
+    { src: "/images/landing/logos/logo-barre.png", alt: "Flow Barre" },
+    { src: "/images/landing/logos/logo-hiit.png", alt: "Velocity HIIT" },
+    { src: "/images/landing/logos/logo-yoga.png", alt: "Soul Yoga" },
+    { src: "/images/landing/logos/logo-crossfit.png", alt: "Titan Strength" },
+    { src: "/images/landing/logos/logo-pilates.png", alt: "Core Balance" },
 ];
 
 export default function SaasLanding() {
@@ -33,7 +38,7 @@ export default function SaasLanding() {
                 <Testimonials />
                 <Pricing />
                 <FeatureCarousel />
-                <LogoCloud logos={trustedLogos} />
+                <LogoCloud logos={studioLogos} />
                 <FAQ />
                 <CallToAction />
             </div>

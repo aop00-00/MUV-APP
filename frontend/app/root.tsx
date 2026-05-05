@@ -43,7 +43,7 @@ type TenantConfig = {
 const DEFAULT_TENANT: TenantConfig = {
   id: "default",
   name: "GRIND PROJECT",
-  logo: "💪",
+  logo: "/images/Logo_Project_Studio_Blanco.png",
   primaryColor: "#3b82f6",
   accentColor: "#8b5cf6",
   taxRegion: "MX",

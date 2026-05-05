@@ -125,12 +125,14 @@ export default function Login({ actionData }: Route.ComponentProps) {
             
             <div className="relative w-full max-w-md space-y-8 z-10 my-auto">
                 {/* Header */}
-                <div className="text-center">
-                    <h1 className="text-4xl font-black text-gray-900 tracking-tight uppercase font-display">
-                        PROJECT STUDIO
-                    </h1>
-                    <p className="text-gray-500 mt-2 text-sm italic font-medium">
-                        POWERED BY PROJECT STUDIO
+                <div className="text-center flex flex-col items-center">
+                    <img 
+                        src="/images/Logo_Project_Studio_Negro.png" 
+                        alt="Project Studio" 
+                        className="h-52 w-auto object-contain"
+                    />
+                    <p className="text-gray-500 mt-4 text-[10px] uppercase tracking-widest font-bold opacity-40">
+                        Acceso a la plataforma
                     </p>
                 </div>
 

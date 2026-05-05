@@ -26,9 +26,10 @@ export async function loader({ request }: Route.LoaderArgs) {
             .select("id", { count: "exact", head: true })
             .eq("gym_id", gymId),
         supabaseAdmin
-            .from("memberships")
+            .from("products")
             .select("id", { count: "exact", head: true })
-            .eq("gym_id", gymId),
+            .eq("gym_id", gymId)
+            .eq("category", "plan"),
         supabaseAdmin
             .from("resources")
             .select("id", { count: "exact", head: true })

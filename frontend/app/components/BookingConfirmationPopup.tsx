@@ -1,6 +1,6 @@
 // app/components/BookingConfirmationPopup.tsx
 import { Check, Calendar, Clock, CreditCard, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface BookingConfirmationPopupProps {
     isOpen: boolean;
@@ -21,19 +21,19 @@ export function BookingConfirmationPopup({
     planType = "creditos",
 }: BookingConfirmationPopupProps) {
     const [isVisible, setIsVisible] = useState(false);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
 
     useEffect(() => {
         if (isOpen) {
             setIsVisible(true);
-            // Auto-close after 5 seconds
-            const timer = setTimeout(() => {
-                onClose();
-            }, 5000);
+            const timer = setTimeout(() => onCloseRef.current(), 5000);
             return () => clearTimeout(timer);
         } else {
-            setTimeout(() => setIsVisible(false), 300);
+            const t = setTimeout(() => setIsVisible(false), 300);
+            return () => clearTimeout(t);
         }
-    }, [isOpen, onClose]);
+    }, [isOpen]);
 
     if (!isVisible && !isOpen) return null;
 

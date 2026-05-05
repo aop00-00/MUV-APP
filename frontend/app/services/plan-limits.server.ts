@@ -65,7 +65,7 @@ const LIMITS_BY_PLAN: Record<PlanId, PlanLimits> = {
     cfdi_enabled:        false,
   },
   starter: {
-    max_members:         80,
+    max_members:         100,
     max_class_types:     null,
     max_coaches:         null,
     max_products:        null,
@@ -89,7 +89,7 @@ const LIMITS_BY_PLAN: Record<PlanId, PlanLimits> = {
     report_history_days: null,
     api_enabled:         true,
     export_enabled:      true,
-    whatsapp_enabled:    true,
+    whatsapp_enabled:    false,
     crm_enabled:         true,
     fitcoins_enabled:    true,
     cfdi_enabled:        false,

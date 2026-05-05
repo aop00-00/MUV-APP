@@ -214,9 +214,37 @@ export async function syncStravaActivities(
     let fitcoinsAwarded = 0;
 
     for (const act of activities) {
+        // Check if activity already exists
+        const { data: existing } = await supabaseAdmin
+            .from("strava_activities")
+            .select("id, fitcoins_awarded")
+            .eq("profile_id", profileId)
+            .eq("strava_activity_id", act.id)
+            .single();
+
+        if (existing) {
+            // Already in DB — award fitcoins if not yet done
+            if (!existing.fitcoins_awarded) {
+                await awardFitCoins(
+                    profileId,
+                    STRAVA_FITCOINS_PER_ACTIVITY,
+                    "bonus",
+                    `Actividad Strava: ${act.name}`,
+                    gymId
+                );
+                await supabaseAdmin
+                    .from("strava_activities")
+                    .update({ fitcoins_awarded: true })
+                    .eq("id", existing.id);
+                fitcoinsAwarded += STRAVA_FITCOINS_PER_ACTIVITY;
+            }
+            continue;
+        }
+
+        // New activity — insert it
         const { error, data } = await supabaseAdmin
             .from("strava_activities")
-            .upsert({
+            .insert({
                 profile_id:         profileId,
                 gym_id:             gymId,
                 strava_activity_id: act.id,
@@ -229,14 +257,12 @@ export async function syncStravaActivities(
                 has_heartrate:      act.has_heartrate,
                 average_heartrate:  act.average_heartrate ?? null,
                 max_heartrate:      act.max_heartrate ?? null,
-            }, {
-                onConflict: "profile_id,strava_activity_id",
-                ignoreDuplicates: true,
+                fitcoins_awarded:   false,
             })
-            .select("id, fitcoins_awarded")
+            .select("id")
             .single();
 
-        if (!error && data && !data.fitcoins_awarded) {
+        if (!error && data) {
             await awardFitCoins(
                 profileId,
                 STRAVA_FITCOINS_PER_ACTIVITY,

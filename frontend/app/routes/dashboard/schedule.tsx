@@ -19,6 +19,7 @@ import {
     Ticket,
 } from "lucide-react";
 import { BookingConfirmationPopup } from "~/components/BookingConfirmationPopup";
+import { AlreadyBookedPopup } from "~/components/AlreadyBookedPopup";
 import { ReadOnlySeatMap, type SeatResource } from "~/components/SeatMap";
 import { useDashboardTheme } from "~/hooks/useDashboardTheme";
 
@@ -206,6 +207,15 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
         }
     }, [searchParams, events]);
 
+    // Auto-open class from ?class=<id> query param (from dashboard mini-calendar for seat-selection studios)
+    useEffect(() => {
+        const classId = searchParams.get("class");
+        if (classId && classes.length > 0) {
+            const target = classes.find((c: ClassWithSocial) => c.id === classId);
+            if (target) setSelectedClass(target);
+        }
+    }, [searchParams, classes]);
+
     // Navigation & Filter state
     const [viewYear, setViewYear] = useState(today.getFullYear());
     const [viewMonth, setViewMonth] = useState(today.getMonth());
@@ -223,8 +233,22 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
         planType: "creditos" | "membresia" | "ilimitado";
     } | null>(null);
 
+    // Already booked popup state
+    const [showAlreadyBooked, setShowAlreadyBooked] = useState(false);
+    const [alreadyBookedClass, setAlreadyBookedClass] = useState<{ title: string; startTime: string } | null>(null);
+
     // Monitor booking success
     useEffect(() => {
+        if (fetcher.data && (fetcher.data as any).error === "already_booked") {
+            const bookedClassId = (fetcher.data as any).class_id || selectedClass?.id;
+            const bookedClass = classes.find((c: ClassWithSocial) => c.id === bookedClassId) || selectedClass;
+            if (bookedClass) {
+                setAlreadyBookedClass({ title: bookedClass.title, startTime: bookedClass.start_time });
+                setShowAlreadyBooked(true);
+                setSelectedClass(null);
+            }
+        }
+
         if (fetcher.data && (fetcher.data as any).success && (fetcher.data as any).booking_id) {
             // Find the class that was recently booked
             const bookedClassId = (fetcher.data as any).class_id || selectedClass?.id;
@@ -818,6 +842,7 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                     fetcher={fetcher}
                     gym={gymContext}
                     classTypes={classTypes}
+                    membershipPlanType={membership?.planType ?? null}
                 />
             )}
 
@@ -842,6 +867,15 @@ export default function Schedule({ loaderData }: Route.ComponentProps) {
                     startTime={confirmedBooking.startTime}
                     creditsRemaining={confirmedBooking.creditsRemaining}
                     planType={confirmedBooking.planType}
+                />
+            )}
+
+            {/* ── Already Booked Popup ── */}
+            {showAlreadyBooked && alreadyBookedClass && (
+                <AlreadyBookedPopup
+                    classTitle={alreadyBookedClass.title}
+                    startTime={alreadyBookedClass.startTime}
+                    onClose={() => setShowAlreadyBooked(false)}
                 />
             )}
 
@@ -929,12 +963,14 @@ function ClassDetailModal({
     fetcher,
     gym,
     classTypes,
+    membershipPlanType,
 }: {
     cls: ClassWithSocial;
     onClose: () => void;
     fetcher: ReturnType<typeof useFetcher>;
     gym: { brandColor: string; studioType: string | null; bookingMode: string };
     classTypes: GymClassType[];
+    membershipPlanType: "creditos" | "membresia" | "ilimitado" | null;
 }) {
     const typeObj = classTypes.find((t: GymClassType) => t.name === cls.type);
     const styles = getClassStyles(typeObj?.color || DEFAULT_COLOR);
@@ -1119,7 +1155,9 @@ function ClassDetailModal({
                                         ? "Reservando…"
                                         : needsSeatMap && resources.length > 0 && !selectedResourceId
                                             ? "Elige tu lugar primero"
-                                            : "Reservar clase (1 crédito)"}
+                                            : membershipPlanType === "creditos" || membershipPlanType === null
+                                                ? "Reservar clase (1 crédito)"
+                                                : "Reservar clase"}
                                 </button>
                             </>
                         )}

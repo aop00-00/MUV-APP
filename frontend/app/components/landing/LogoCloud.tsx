@@ -37,6 +37,7 @@ export function LogoCloud({ className, logos, ...props }: LogoCloudProps) {
             <img
               alt={logo.alt}
               className="pointer-events-none h-6 select-none md:h-8 opacity-40 grayscale hover:opacity-100 hover:grayscale-0 transition-all duration-500"
+              style={{ mixBlendMode: "screen" }}
               height={logo.height || "auto"}
               key={`logo-${logo.alt}-${idx}`}
               loading="lazy"

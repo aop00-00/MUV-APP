@@ -69,19 +69,19 @@ const PLANS: Plan[] = [
         monthlyPrice: 999,
         quarterlyPrice: 899,
         annualPrice: 799,
-        badge: "7 días de prueba gratuita",
+        badge: null,
         desc: "Para estudios pequeños o entrenadores independientes que operan su primera sede.",
         featureGroups: [
             {
                 features: [
                     "1 sede física",
-                    "Hasta 80 alumnos activos",
+                    "Hasta 100 alumnos activos",
                     "Reservas y calendario de clases",
                     "Check-in con código QR",
                     "Punto de Venta (POS) básico",
                     "Pagos con Mercado Pago / Kueski Pay",
                     "Gestión de planes y membresías",
-                    "App/portal para alumnos",
+                    "App/Portal & Front Desk",
                     "Reportes básicos de operación",
                     "Notificaciones por email",
                 ]
@@ -107,11 +107,8 @@ const PLANS: Plan[] = [
                     "Todo lo incluido en Starter",
                     "CRM de leads y socios inactivos",
                     "Integración con Strava (Métricas)",
-                    "Sesiones grabadas on-demand",
                     "FitCoins: Fidelización y lealtad",
                     "Campañas de email marketing",
-                    "Automatizaciones de marketing",
-                    "Notificaciones push y WhatsApp",
                     "Soporte prioritario (24h)",
                 ]
             },
@@ -133,9 +130,9 @@ const PLANS: Plan[] = [
         id: "elite",
         name: "Elite",
         icon: <Rocket className="w-5 h-5" />,
-        monthlyPrice: 4099,
-        quarterlyPrice: 3689,
-        annualPrice: 3279,
+        monthlyPrice: 3499,
+        quarterlyPrice: 3149,
+        annualPrice: 2799,
         badge: null,
         desc: "Para dueños que quieren que la tecnología sea una extensión de su propia marca corporativa.",
         featureGroups: [
@@ -145,8 +142,6 @@ const PLANS: Plan[] = [
                     "Todo lo incluido en el plan Pro",
                     "Facturación automática (CFDI/SII)",
                     "Reportería financiera avanzada",
-                    "Control de acceso por roles (Staff)",
-                    "Integraciones con hardware",
                     "Soporte dedicado + Onboarding VIP",
                     "Migración de datos asistida",
                     "Infraestructura de alta disponibilidad",
@@ -241,7 +236,7 @@ export default function Pricing() {
             </div>
 
             {/* ── Cards grid ── */}
-            <div className="flex overflow-x-auto snap-x snap-mandatory gap-6 items-stretch max-w-7xl mx-auto px-4 lg:px-8 pt-8 pb-8 md:pb-0 md:grid md:grid-cols-2 xl:grid-cols-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            <div className="flex overflow-x-auto snap-x snap-mandatory gap-6 items-stretch max-w-7xl mx-auto px-4 lg:px-8 pt-4 pb-2 md:pb-0 md:grid md:grid-cols-2 xl:grid-cols-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 {PLANS.map((plan, i) => (
                     <ScrollReveal
                         key={plan.id}
@@ -254,7 +249,7 @@ export default function Pricing() {
             </div>
 
             {/* Mobile Swipe Hint */}
-            <div className="md:hidden flex flex-col items-center gap-2 text-white/70 mt-4 h-12">
+            <div className="md:hidden flex flex-col items-center gap-2 text-white/70 mt-2 h-8">
                 <motion.div
                     animate={{ x: [0, 10, 0] }}
                     transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
@@ -304,7 +299,7 @@ function PricingCard({
 
     return (
         <div
-            className={`relative flex flex-col h-full rounded-2xl backdrop-blur-sm p-7 transition-all duration-300 group
+            className={`relative flex flex-col h-full rounded-2xl backdrop-blur-sm p-5 transition-all duration-300 group
         ${plan.featured
                     ? "border-2 border-white/40 bg-white/10 shadow-[0_0_60px_rgba(255,255,255,0.06)]"
                     : plan.enterprise
@@ -325,7 +320,7 @@ function PricingCard({
             )}
 
             {/* Icon + name */}
-            <div className="flex items-center gap-2.5 mb-4">
+            <div className="flex items-center gap-2.5 mb-3">
                 <span
                     className={`${plan.featured
                         ? "text-white"
@@ -340,10 +335,10 @@ function PricingCard({
             </div>
 
             {/* Description */}
-            <p className="text-white/40 text-sm leading-relaxed mb-6">{plan.desc}</p>
+            <p className="text-white/40 text-sm leading-relaxed mb-4">{plan.desc}</p>
 
             {/* Price block */}
-            <div className="mb-6 min-h-[4.5rem]">
+            <div className="mb-4 min-h-[3rem]">
                 {plan.enterprise ? (
                     <div className="flex flex-col gap-1">
                         <span className="text-4xl font-black text-white tracking-tight">
@@ -394,18 +389,18 @@ function PricingCard({
 
             {/* Divider */}
             <div
-                className={`w-full h-px mb-6 ${plan.featured ? "bg-white/20" : "bg-white/[0.08]"
+                className={`w-full h-px mb-4 ${plan.featured ? "bg-white/20" : "bg-white/[0.08]"
                     }`}
             />
 
             {/* Features */}
-            <div className="flex-1 space-y-6 mb-8">
+            <div className="flex-1 space-y-4 mb-5">
                 {plan.featureGroups.map((group, groupIdx) => (
                     <div key={groupIdx} className="space-y-3">
                         {group.title && (
                             <h4 className="text-white text-sm font-semibold mb-2">{group.title}</h4>
                         )}
-                        <ul className="space-y-3">
+                        <ul className="space-y-2">
                             {group.features.map((f, i) => (
                                 <li key={i} className="flex items-start gap-3 text-sm">
                                     <Check
