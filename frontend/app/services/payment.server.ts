@@ -17,6 +17,44 @@ import type { Product } from "~/types/database";
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
 
+// ── Fuente única de verdad para precios SaaS ──────────────────────────────
+// NUNCA leer el precio desde el cliente. Siempre calcularlo aquí en el servidor.
+export type SaasPlanId = "starter" | "pro" | "elite";
+export type SaasCycle = "monthly" | "quarterly" | "annual";
+
+export const SAAS_PLAN_PRICES: Record<SaasPlanId, Record<SaasCycle, number>> = {
+    starter: { monthly: 999,  quarterly: 2697,  annual: 9588  },
+    pro:     { monthly: 2099, quarterly: 5667,  annual: 20148 },
+    elite:   { monthly: 3499, quarterly: 9447,  annual: 33588 },
+};
+
+export const SAAS_CYCLE_MONTHS: Record<SaasCycle, number> = {
+    monthly: 1,
+    quarterly: 3,
+    annual: 12,
+};
+
+/**
+ * Retorna el precio exacto para un plan+ciclo SaaS.
+ * Lanza si la combinación no existe — nunca devuelve un precio inventado.
+ */
+export function getSaasPlanPrice(plan: string, cycle: string): number {
+    const planPrices = SAAS_PLAN_PRICES[plan as SaasPlanId];
+    if (!planPrices) throw new Error(`Plan SaaS no reconocido: "${plan}"`);
+    const price = planPrices[cycle as SaasCycle];
+    if (price === undefined) throw new Error(`Ciclo no reconocido para ${plan}: "${cycle}"`);
+    return price;
+}
+
+/**
+ * Retorna el número de meses para un ciclo dado.
+ */
+export function getSaasCycleMonths(cycle: string): number {
+    const months = SAAS_CYCLE_MONTHS[cycle as SaasCycle];
+    if (!months) throw new Error(`Ciclo inválido: "${cycle}"`);
+    return months;
+}
+
 interface MercadoPagoPreference {
     id: string;
     init_point: string;
@@ -121,7 +159,7 @@ export async function createPreference(
         },
         auto_return: "approved" as const,
         external_reference: externalRef,
-        notification_url: process.env.N8N_WEBHOOK_MP_URL ?? `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
+        notification_url: `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
         statement_descriptor: "GRINDPROJECT",
     };
 

@@ -35,7 +35,7 @@
 // ══════════════════════════════════════════════════════════════════
 
 import React, { useState, useEffect } from "react";
-import { useSearchParams, Form, useNavigation } from "react-router";
+import { useSearchParams, Form, useNavigation, useLoaderData } from "react-router";
 import {
     LayoutGrid, Clock, Zap, QrCode, Building2, ShieldCheck,
     FileText, Users, TrendingUp, Trophy, BarChart3, Headphones,
@@ -45,13 +45,42 @@ import {
 } from "lucide-react";
 import type { Route } from "./+types/_index";
 
+// ── Server loader — expone la MP public key al cliente ────────────
+export async function loader() {
+    return { mpPublicKey: process.env.MP_PUBLIC_KEY_SAAS ?? null };
+}
+
+// ── Parsear errores de MP a mensajes legibles ──────────────────────
+function parseMpError(errBody: string): string {
+    try {
+        const err = JSON.parse(errBody);
+        const causeCode = err?.cause?.[0]?.code ?? err?.error ?? "";
+        const MP_ERRORS: Record<string, string> = {
+            "cc_rejected_insufficient_amount": "Fondos insuficientes. Verifica tu saldo e intenta de nuevo.",
+            "cc_rejected_bad_filled_card_number": "Número de tarjeta incorrecto. Verifica y vuelve a intentar.",
+            "cc_rejected_bad_filled_security_code": "Código de seguridad incorrecto.",
+            "cc_rejected_bad_filled_date": "Fecha de vencimiento incorrecta.",
+            "cc_rejected_high_risk": "Pago rechazado por seguridad. Intenta con otra tarjeta o contacta a tu banco.",
+            "cc_rejected_call_for_authorize": "Tu banco requiere autorización. Llama al número en tu tarjeta.",
+            "cc_rejected_card_disabled": "Tarjeta desactivada. Contacta a tu banco.",
+            "cc_rejected_card_error": "Error en la tarjeta. Verifica los datos.",
+            "cc_rejected_blacklist": "Tarjeta no permitida. Intenta con otra tarjeta.",
+            "cc_rejected_other_reason": "Tarjeta rechazada. Intenta con otra tarjeta.",
+            "cc_rejected_duplicated_payment": "Pago duplicado detectado. Espera unos minutos e intenta de nuevo.",
+        };
+        return MP_ERRORS[causeCode] ?? "Error al procesar tu tarjeta. Verifica los datos e intenta de nuevo.";
+    } catch {
+        return "Error al procesar tu tarjeta. Verifica los datos e intenta de nuevo.";
+    }
+}
+
 // ── Server action ─────────────────────────────────────────────────
 export async function action({ request }: Route.ActionArgs) {
     const formData = await request.formData();
     const intent = formData.get("intent");
 
     const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout: La operación tardó demasiado tiempo.")), 15000)
+        setTimeout(() => reject(new Error("Timeout: La operación tardó demasiado tiempo.")), 25000)
     );
 
     try {
@@ -64,18 +93,17 @@ export async function action({ request }: Route.ActionArgs) {
                     const ownerName = formData.get("ownerName") as string;
                     const plan = formData.get("plan") as string;
                     const cycle = formData.get("cycle") as string;
-                    const msi = formData.get("msi") as string;
                     const country = formData.get("country") as string;
                     const city = formData.get("city") as string;
                     const phone = formData.get("phone") as string;
                     const studioType = formData.get("studioType") as string;
-                    // BUG 13: landingPageUpsell llega como string desde hidden input
                     const landingPageUpsell = formData.get("landingPageUpsell") === "true";
 
                     const { supabaseAdmin } = await import("~/services/supabase.server");
+                    const isFreePlan = plan === "emprendedor";
 
                     // ── REG-003: IP-based anti-abuse (Emprendedor plan only) ──────────
-                    if (plan === "emprendedor") {
+                    if (isFreePlan) {
                         const { checkIpRegistrationLimit, getClientIp, logAbuseEvent } = await import("~/services/abuse-control.server");
                         const ip = getClientIp(request);
                         const ipCheck = await checkIpRegistrationLimit(ip);
@@ -89,186 +117,388 @@ export async function action({ request }: Route.ActionArgs) {
                         }
                     }
 
-                    console.log("[Onboarding] ========== INICIO DE ONBOARDING ==========");
+                    // ── Verificar email duplicado ────────────────────────────────────
+                    const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
+                    const existingUser = existingUsers?.users?.find(u => u.email === email);
+                    if (existingUser) {
+                        const { data: profile } = await supabaseAdmin
+                            .from("profiles")
+                            .select("gym_id")
+                            .eq("id", existingUser.id)
+                            .single();
+                        if (profile?.gym_id) {
+                            return { error: "Este email ya está registrado. Por favor inicia sesión." };
+                        }
+                        // Usuario sin gym (registro incompleto previo) → limpiar
+                        await supabaseAdmin.auth.admin.deleteUser(existingUser.id);
+                    }
 
-                    console.log("[Onboarding] Email:", email);
-                    console.log("[Onboarding] Studio Name:", studioName);
-                    console.log("[Onboarding] Owner Name:", ownerName);
-                    console.log("[Onboarding] Plan:", plan);
-                    console.log("[Onboarding] Country:", country);
-                    console.log("[Onboarding] City:", city);
+                    // ── PLAN GRATUITO: crear user + gym directo ──────────────────────
+                    if (isFreePlan) {
+                        const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+                            email, password, email_confirm: true,
+                            user_metadata: { full_name: ownerName, role: "admin" },
+                        });
+                        if (authError || !authData.user) {
+                            return { error: "Error al crear tu cuenta: " + (authError?.message ?? "intenta de nuevo") };
+                        }
+                        const userId = authData.user.id;
+                        const { isSlugReserved } = await import("~/services/gym-lookup.server");
+                        let slug = studioName.toLowerCase().trim()
+                            .replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '')
+                            + '-' + Math.random().toString(36).substring(2, 6);
+                        if (isSlugReserved(slug)) slug += '-' + Math.random().toString(36).substring(2, 6);
 
-                    // PASO 1: Verificar si el usuario ya existe
-                    console.log("[Onboarding] 🔍 Verificando si el email ya existe...");
-                    const { data: existingUsers, error: checkError } = await supabaseAdmin.auth.admin.listUsers();
+                        const { data: gymData, error: gymError } = await supabaseAdmin
+                            .from("gyms")
+                            .insert({
+                                name: studioName, slug, owner_id: userId, plan_id: plan,
+                                plan_status: "active", tax_region: country, country_code: country,
+                                city: city || null, studio_type: studioType || null,
+                                timezone: "America/Mexico_City", currency: country === "MX" ? "MXN" : "USD",
+                                features: { fiscal: true, fitcoins: true, qrAccess: true, waitlist: true },
+                                primary_color: "#7c3aed", accent_color: "#2563eb",
+                                metadata: { landingPageUpsell },
+                            })
+                            .select().single();
 
-                    if (checkError) {
-                        console.error("[Onboarding] ❌ Error al verificar usuarios existentes:", checkError);
-                    } else {
-                        const existingUser = existingUsers?.users?.find(u => u.email === email);
-                        if (existingUser) {
-                            console.warn("[Onboarding] ⚠️ Usuario ya existe con este email!");
-                            const { data: profile } = await supabaseAdmin
-                                .from("profiles")
-                                .select("gym_id")
-                                .eq("id", existingUser.id)
-                                .single();
+                        if (gymError) {
+                            await supabaseAdmin.auth.admin.deleteUser(userId);
+                            return { error: "Error al crear el estudio: " + gymError.message };
+                        }
 
-                            if (!profile?.gym_id) {
-                                console.warn("[Onboarding] ⚠️ Usuario existe pero NO tiene gym asociado — limpiando...");
-                                const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(existingUser.id);
-                                if (deleteError) {
-                                    console.error("[Onboarding] ❌ Error al eliminar usuario incompleto:", deleteError);
-                                    return { error: "Este email ya está registrado pero el registro está incompleto. Por favor contacta a soporte." };
-                                }
-                                console.log("[Onboarding] ✅ Usuario incompleto eliminado, continuando...");
-                            } else {
-                                return { error: "Este email ya está registrado. Por favor inicia sesión." };
+                        await supabaseAdmin.from("profiles").upsert({
+                            id: userId, email, full_name: ownerName, phone: phone || null,
+                            role: "admin", gym_id: gymData.id, credits: 0,
+                        }, { onConflict: "id" });
+
+                        const { recordRegistration, getClientIp } = await import("~/services/abuse-control.server");
+                        recordRegistration({ gymId: gymData.id, email, ipAddress: getClientIp(request) })
+                            .catch(() => {});
+
+                        const { getSession: getSess, sessionStorage: ss } = await import("~/services/auth.server");
+                        const session = await getSess(request);
+                        session.set("user_id", userId);
+                        session.set("role", "admin");
+                        return new Response(JSON.stringify({ success: true, slug }), {
+                            status: 200,
+                            headers: { "Content-Type": "application/json", "Set-Cookie": await ss.commitSession(session) },
+                        });
+                    }
+
+                    // ── PLANES DE PAGO: guardar en pending_registrations → pagar primero ──
+                    const saasToken = process.env.MERCADO_PAGO_ACCESS_TOKEN_SAAS;
+                    if (!saasToken) {
+                        // Modo dev sin token: crear user+gym directo (solo local)
+                        console.warn("[Onboarding] ⚠️ Sin MERCADO_PAGO_ACCESS_TOKEN_SAAS — modo dev, activando sin pago");
+                        const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+                            email, password, email_confirm: true,
+                            user_metadata: { full_name: ownerName, role: "admin" },
+                        });
+                        if (authError || !authData.user) {
+                            return { error: "Error al crear tu cuenta: " + (authError?.message ?? "intenta de nuevo") };
+                        }
+                        const userId = authData.user.id;
+                        const { isSlugReserved } = await import("~/services/gym-lookup.server");
+                        let slug = studioName.toLowerCase().trim()
+                            .replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '')
+                            + '-' + Math.random().toString(36).substring(2, 6);
+                        if (isSlugReserved(slug)) slug += '-' + Math.random().toString(36).substring(2, 6);
+                        const { data: gymData } = await supabaseAdmin.from("gyms").insert({
+                            name: studioName, slug, owner_id: userId, plan_id: plan,
+                            plan_status: "active", tax_region: country, country_code: country,
+                            city: city || null, studio_type: studioType || null,
+                            timezone: "America/Mexico_City", currency: country === "MX" ? "MXN" : "USD",
+                            features: { fiscal: true, fitcoins: true, qrAccess: true, waitlist: true },
+                            primary_color: "#7c3aed", accent_color: "#2563eb",
+                            metadata: { landingPageUpsell },
+                        }).select().single();
+                        if (gymData) {
+                            await supabaseAdmin.from("profiles").upsert({
+                                id: userId, email, full_name: ownerName, phone: phone || null,
+                                role: "admin", gym_id: gymData.id, credits: 0,
+                            }, { onConflict: "id" });
+                        }
+                        const { getSession: getSess, sessionStorage: ss } = await import("~/services/auth.server");
+                        const session = await getSess(request);
+                        session.set("user_id", userId);
+                        session.set("role", "admin");
+                        return new Response(JSON.stringify({ success: true, slug: gymData?.slug ?? slug }), {
+                            status: 200,
+                            headers: { "Content-Type": "application/json", "Set-Cookie": await ss.commitSession(session) },
+                        });
+                    }
+
+                    // Validación server-side de campos clave
+                    const VALID_PLANS = ["emprendedor", "starter", "pro", "elite"];
+                    const VALID_CYCLES = ["monthly", "quarterly", "annual"];
+                    const VALID_COUNTRIES = ["MX", "AR", "CL", "CO", "PE", "otro"];
+                    if (!VALID_PLANS.includes(plan)) return { error: "Plan inválido." };
+                    if (!VALID_CYCLES.includes(cycle)) return { error: "Ciclo de pago inválido." };
+                    if (!VALID_COUNTRIES.includes(country)) return { error: "País inválido." };
+                    if (!studioName?.trim()) return { error: "El nombre del estudio es obligatorio." };
+
+                    const TIMEZONE_MAP: Record<string, string> = {
+                        MX: "America/Mexico_City", AR: "America/Argentina/Buenos_Aires",
+                        CL: "America/Santiago", CO: "America/Bogota",
+                        PE: "America/Lima", otro: "UTC",
+                    };
+                    const gymTimezone = TIMEZONE_MAP[country] ?? "America/Mexico_City";
+                    // Mercado Pago (Mexico account) requires MXN for all transactions. The bank will handle the conversion for foreign cards.
+                    const currency = "MXN";
+                    const APP_URL = process.env.APP_URL ?? "https://grindproject.vercel.app";
+
+                    // Precios calculados siempre en el servidor — nunca desde el cliente
+                    const { getSaasPlanPrice, getSaasCycleMonths } = await import("~/services/payment.server");
+
+                    // ── FLUJO MENSUAL: Preapproval ───────────────────────────────────
+                    // IMPORTANTE: MP primero, Supabase después — el cardToken expira en segundos
+                    if (cycle === "monthly") {
+                        const cardToken = formData.get("cardToken") as string | null;
+                        const payMethod = formData.get("payMethod") as string;
+
+
+                        // Transferencia: crear pending y esperar activación manual
+                        if (payMethod === "transfer" || !cardToken) {
+                            const { data: pendingReg, error: pendingError } = await supabaseAdmin
+                                .from("pending_registrations")
+                                .insert({
+                                    email, password_hash: password, owner_name: ownerName,
+                                    studio_name: studioName.trim(), studio_type: studioType || null,
+                                    plan_id: plan, cycle, country_code: country,
+                                    city: city?.trim() || null, phone: phone?.trim() || null,
+                                    landing_page_upsell: landingPageUpsell,
+                                    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                                })
+                                .select("id").single();
+                            if (pendingError || !pendingReg) return { error: "Error al iniciar el registro." };
+                            return { pendingTransfer: true };
+                        }
+
+                        const monthlyPrice = getSaasPlanPrice(plan, "monthly");
+
+                        // 1. Llamar a MP PRIMERO — el token expira en segundos
+                        const tempRef = `flow:saas:sub:monthly:tmp:${Date.now()}:plan:${plan}`;
+                        const preapprovalBody: Record<string, unknown> = {
+                            payer_email: email,
+                            card_token_id: cardToken,
+                            reason: `Grind ${plan.charAt(0).toUpperCase() + plan.slice(1)} — Mensual`,
+                            external_reference: tempRef,
+                            auto_recurring: {
+                                frequency: 1,
+                                frequency_type: "months",
+                                transaction_amount: monthlyPrice,
+                                currency_id: currency,
+                            },
+                            back_url: `${APP_URL}/onboarding/success`,
+                            status: "authorized",
+                            notification_url: "https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago",
+                        };
+
+                        const mpRes = await fetch("https://api.mercadopago.com/preapproval", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                Authorization: `Bearer ${saasToken}`,
+                                "X-Idempotency-Key": `preapproval-${email}-${plan}`,
+                            },
+                            body: JSON.stringify(preapprovalBody),
+                        });
+
+                        if (!mpRes.ok) {
+                            const errBody = await mpRes.text();
+                            console.error("[Onboarding] ❌ MP preapproval error HTTP", mpRes.status, ":", errBody);
+                            const isDev = process.env.NODE_ENV !== "production";
+                            return {
+                                error: parseMpError(errBody),
+                                ...(isDev ? { mpDebug: errBody } : {}),
+                            };
+                        }
+
+                        const preapproval = await mpRes.json();
+                        console.log("[Onboarding] ✅ Preapproval creado:", preapproval.id, "status:", preapproval.status);
+
+                        // 2. Ahora sí crear pending_registration con el preapproval_id real
+                        const { data: pendingReg, error: pendingError } = await supabaseAdmin
+                            .from("pending_registrations")
+                            .insert({
+                                email, password_hash: password, owner_name: ownerName,
+                                studio_name: studioName.trim(), studio_type: studioType || null,
+                                plan_id: plan, cycle, country_code: country,
+                                city: city?.trim() || null, phone: phone?.trim() || null,
+                                landing_page_upsell: landingPageUpsell,
+                                mp_preapproval_id: preapproval.id,
+                                expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                            })
+                            .select("id").single();
+
+                        if (pendingError || !pendingReg) {
+                            console.error("[Onboarding] ❌ Error guardando pending_registration:", pendingError);
+                            return { error: "Error al registrar. Contacta a soporte con tu comprobante de pago." };
+                        }
+
+                        const pendingId = pendingReg.id;
+                        console.log("[Onboarding] ✅ pending_registration creado:", pendingId);
+
+                        // 3. Actualizar external_reference del preapproval con el pendingId real
+                        await fetch(`https://api.mercadopago.com/preapproval/${preapproval.id}`, {
+                            method: "PUT",
+                            headers: {
+                                "Content-Type": "application/json",
+                                Authorization: `Bearer ${saasToken}`,
+                            },
+                            body: JSON.stringify({
+                                external_reference: `flow:saas:sub:monthly:pending:${pendingId}:plan:${plan}`,
+                            }),
+                        });
+
+                        console.log("[Onboarding] ✅ Preapproval creado:", preapproval.id, "status:", preapproval.status);
+
+                        // Provisionar user+gym directamente — claim atómico primero
+                        try {
+                            const { data: claimed } = await supabaseAdmin
+                                .from("pending_registrations")
+                                .update({ status: "processing" })
+                                .eq("id", pendingId).eq("status", "pending")
+                                .select("*").single();
+
+                            if (!claimed) {
+                                // Otro proceso (webhook) ya lo reclamó
+                                return { pendingPayment: true };
                             }
+
+                            const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+                                email, password, email_confirm: true,
+                                user_metadata: { full_name: ownerName, role: "admin" },
+                            });
+                            if (authError || !authData.user) throw new Error(authError?.message ?? "createUser failed");
+
+                            const userId = authData.user.id;
+                            const slugBase = studioName.toLowerCase().trim()
+                                .replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
+                            let gymSlug = slugBase + "-" + Math.random().toString(36).substring(2, 7);
+                            const { data: slugExists } = await supabaseAdmin.from("gyms").select("id").eq("slug", gymSlug).maybeSingle();
+                            if (slugExists) gymSlug = slugBase + "-" + Math.random().toString(36).substring(2, 9);
+
+                            const { data: gymData, error: gymError } = await supabaseAdmin.from("gyms").insert({
+                                name: studioName.trim(), slug: gymSlug, owner_id: userId,
+                                plan_id: plan, plan_status: "active",
+                                tax_region: country, country_code: country,
+                                city: city?.trim() || null, studio_type: studioType || null,
+                                timezone: gymTimezone, currency,
+                                features: { fiscal: true, fitcoins: true, qrAccess: true, waitlist: true },
+                                primary_color: "#7c3aed", accent_color: "#2563eb",
+                                metadata: { landingPageUpsell },
+                                saas_mp_preapproval_id: preapproval.id,
+                            }).select().single();
+
+                            if (gymError) {
+                                await supabaseAdmin.auth.admin.deleteUser(userId);
+                                throw new Error(gymError.message);
+                            }
+
+                            await supabaseAdmin.from("profiles").upsert({
+                                id: userId, email, full_name: ownerName, phone: phone?.trim() || null,
+                                role: "admin", gym_id: gymData.id, credits: 0,
+                            }, { onConflict: "id" });
+
+                            await supabaseAdmin.from("pending_registrations")
+                                .update({ status: "completed" })
+                                .eq("id", pendingId);
+
+                            console.log("[Onboarding] ✅ User+gym provisionados:", userId, gymData.id);
+                            return { success: true, slug: gymSlug };
+                        } catch (provErr: any) {
+                            console.error("[Onboarding] ❌ Error provisionando:", provErr.message);
+                            await supabaseAdmin.from("pending_registrations")
+                                .update({ status: "pending" })
+                                .eq("id", pendingId);
+                            return { pendingPayment: true };
                         }
                     }
 
-                    // 1. Crear usuario en Auth
-                    console.log("[Onboarding] 📝 Creando usuario en Supabase Auth...");
-                    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-                        email,
-                        password,
-                        email_confirm: true,
-                        user_metadata: { full_name: ownerName, role: "admin" },
-                    });
+                    // ── FLUJO TRIMESTRAL / ANUAL: Checkout Pro ───────────────────────
+                    // Para trimestral/anual no hay cardToken — crear pending primero está bien
+                    const { data: pendingReg, error: pendingError } = await supabaseAdmin
+                        .from("pending_registrations")
+                        .insert({
+                            email, password_hash: password, owner_name: ownerName,
+                            studio_name: studioName.trim(), studio_type: studioType || null,
+                            plan_id: plan, cycle, country_code: country,
+                            city: city?.trim() || null, phone: phone?.trim() || null,
+                            landing_page_upsell: landingPageUpsell,
+                            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                        })
+                        .select("id").single();
 
-                    if (authError || !authData.user) {
-                        console.error("[Onboarding] ❌ Auth Error:", authError);
-                        return { error: "Error en Auth: " + (authError?.message ?? "No se pudo crear el usuario") };
+                    if (pendingError || !pendingReg) {
+                        console.error("[Onboarding] ❌ Error guardando pending_registration:", pendingError);
+                        return { error: "Error al iniciar el registro. Intenta de nuevo." };
                     }
 
-                    const userId = authData.user.id;
-                    console.log("[Onboarding] ✅ Usuario creado en Auth - ID:", userId);
+                    const pendingId = pendingReg.id;
+                    console.log("[Onboarding] ✅ pending_registration creado:", pendingId);
 
-                    // 1c. Crear perfil manualmente (trigger deshabilitado en Supabase)
-                    console.log("[Onboarding] 👤 Creando perfil manualmente...");
-                    const { error: insertProfileError } = await supabaseAdmin
-                        .from("profiles")
-                        .upsert({
-                            id: userId,
-                            email,
-                            full_name: ownerName,
-                            role: "admin",
-                            credits: 0,
-                            gym_id: null,
-                        }, { onConflict: "id" });
+                    const months = getSaasCycleMonths(cycle);
+                    const price = getSaasPlanPrice(plan, cycle);
+                    const msiCount = parseInt(formData.get("msi") as string ?? "1") || 1;
 
-                    if (insertProfileError) {
-                        console.error("[Onboarding] ❌ Profile Insert Error:", insertProfileError);
-                    } else {
-                        console.log("[Onboarding] ✅ Perfil creado manualmente");
-                    }
-
-                    // 2. Crear Gym
-                    console.log("[Onboarding] 🏢 Creando gym en la base de datos...");
-                    const { isSlugReserved } = await import("~/services/gym-lookup.server");
-                    let slug = studioName.toLowerCase().trim()
-                        .replace(/[^\w\s-]/g, '')
-                        .replace(/[\s_-]+/g, '-')
-                        .replace(/^-+|-+$/g, '')
-                        + '-' + Math.random().toString(36).substring(2, 6);
-
-                    if (isSlugReserved(slug)) {
-                        slug = slug + '-' + Math.random().toString(36).substring(2, 6);
-                    }
-
-                    const isFreePlan = plan === "emprendedor";
-                    const isTrialPlan = plan === "starter";
-                    const gymPayload = {
-                        name: studioName,
-                        slug,
-                        owner_id: userId,
-                        plan_id: plan,
-                        plan_status: isFreePlan || !isTrialPlan ? "active" : "trial",
-                        trial_ends_at: isTrialPlan ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : null,
-                        tax_region: country as any,
-                        country_code: country,
-                        city: city || null,
-                        studio_type: studioType || null,
-                        timezone: "America/Mexico_City",
-                        currency: country === "MX" ? "MXN" : "USD",
-                        features: { fiscal: true, fitcoins: true, qrAccess: true, waitlist: true },
-                        primary_color: "#7c3aed",
-                        accent_color: "#2563eb",
-                        metadata: { landingPageUpsell },
+                    const prefBody: Record<string, unknown> = {
+                        items: [{
+                            id: `plan-${plan}-${cycle}`,
+                            title: `Grind ${plan.charAt(0).toUpperCase() + plan.slice(1)} — ${cycle === "quarterly" ? "Trimestral" : "Anual"}`,
+                            quantity: 1,
+                            currency_id: currency,
+                            unit_price: price,
+                        }],
+                        payer: { email },
+                        back_urls: {
+                            success: `${APP_URL}/onboarding/success`,
+                            failure: `${APP_URL}/onboarding?error=pago_fallido`,
+                            pending: `${APP_URL}/onboarding/success`,
+                        },
+                        auto_return: "approved",
+                        external_reference: `flow:saas:plan:${cycle}:pending:${pendingId}:plan:${plan}:months:${months}`,
+                        notification_url: "https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago",
+                        statement_descriptor: "GRINDPROJECT",
+                        // MSI: forzar cuotas sin intereses si el usuario eligió 3 o 6
+                        ...(msiCount > 1 ? {
+                            payment_methods: {
+                                installments: msiCount,
+                                default_installments: msiCount,
+                            },
+                        } : {}),
                     };
 
-                    const { data: gymData, error: gymError } = await supabaseAdmin
-                        .from("gyms")
-                        .insert(gymPayload)
-                        .select()
-                        .single();
-
-                    if (gymError) {
-                        console.error("[Onboarding] ❌ Gym Error:", gymError);
-                        await supabaseAdmin.auth.admin.deleteUser(userId);
-                        return { error: "Error en Base de Datos: " + gymError.message };
-                    }
-
-                    console.log("[Onboarding] ✅ Gym creado - ID:", gymData.id, "Slug:", gymData.slug);
-
-                    // 3. Trigger n8n (no bloqueante)
-                    const { triggerOnboarding } = await import("~/services/n8n.server");
-                    triggerOnboarding(gymData.id, userId, {
-                        studioName, ownerName, email, phone, plan, cycle, msi, city, country, landingPageUpsell
-                    }).catch(err => console.error("[Onboarding] ⚠️ n8n error (no crítico):", err));
-
-                    // 3b. Registrar en abuse_controls (no bloqueante)
-                    if (plan === "emprendedor") {
-                        const { recordRegistration, getClientIp } = await import("~/services/abuse-control.server");
-                        const ip = getClientIp(request);
-                        recordRegistration({ gymId: gymData.id, email, ipAddress: ip })
-                            .catch(err => console.error("[Onboarding] ⚠️ recordRegistration error (no crítico):", err));
-                    }
-
-
-                    // 4. Vincular perfil con gym_id usando upsert para tolerar race con trigger auth
-                    const { error: profileError } = await supabaseAdmin
-                        .from("profiles")
-                        .upsert({
-                            id: userId,
-                            email,
-                            full_name: ownerName,
-                            phone: phone || null,
-                            role: "admin",
-                            gym_id: gymData.id,
-                            credits: 0,
-                        }, { onConflict: "id" });
-
-                    if (profileError) {
-                        console.error("[Onboarding] ❌ Profile Upsert Error:", profileError);
-                        // Roll back: delete gym and user to keep DB consistent
-                        await supabaseAdmin.from("gyms").delete().eq("id", gymData.id);
-                        await supabaseAdmin.auth.admin.deleteUser(userId);
-                        return { error: "Error al vincular tu perfil con el estudio. Por favor intenta de nuevo." };
-                    }
-                    console.log("[Onboarding] ✅ Perfil vinculado con gym_id:", gymData.id);
-
-                    // 5. Crear sesión (set cookie) y retornar slug para StepSuccess
-                    const { getSession: getSess, sessionStorage: ss } = await import("~/services/auth.server");
-                    const session = await getSess(request);
-                    session.unset("role");
-                    session.unset("user_id");
-                    session.set("user_id", userId);
-                    session.set("role", "admin");
-
-                    console.log("[Onboarding] ========== ONBOARDING COMPLETADO ==========");
-
-                    // BUG 6: el flow documentado dice "Redirect: /auth/login".
-                    // Retornamos slug para que StepSuccess lo muestre,
-                    // y el link de esa pantalla apunta a /auth/login.
-                    return new Response(JSON.stringify({ success: true, slug }), {
-                        status: 200,
+                    const mpRes = await fetch("https://api.mercadopago.com/checkout/preferences", {
+                        method: "POST",
                         headers: {
                             "Content-Type": "application/json",
-                            "Set-Cookie": await ss.commitSession(session),
+                            Authorization: `Bearer ${saasToken}`,
+                            "X-Idempotency-Key": `pref-${pendingId}-${cycle}`,
                         },
+                        body: JSON.stringify(prefBody),
                     });
+
+                    if (!mpRes.ok) {
+                        const errBody = await mpRes.text();
+                        console.error("[Onboarding] ❌ MP preference error:", errBody);
+                        await supabaseAdmin.from("pending_registrations").delete().eq("id", pendingReg.id);
+                        return { error: "Error al crear el pago. Intenta de nuevo." };
+                    }
+
+                    const pref = await mpRes.json();
+                    await supabaseAdmin.from("pending_registrations")
+                        .update({ mp_preference_id: pref.id })
+                        .eq("id", pendingId);
+
+                    const isDev = process.env.NODE_ENV !== "production";
+                    const checkoutUrl = isDev ? pref.sandbox_init_point : pref.init_point;
+
+                    return new Response(
+                        JSON.stringify({ redirectToPayment: true, checkoutUrl }),
+                        { status: 200, headers: { "Content-Type": "application/json" } }
+                    );
                 })(),
                 timeoutPromise
             ]);
@@ -305,6 +535,7 @@ interface FormState {
     cardName: string;
     termsAccepted: boolean;
     landingPageUpsell: boolean;
+    brickReady: boolean;
 }
 
 const INITIAL_FORM: FormState = {
@@ -327,6 +558,7 @@ const INITIAL_FORM: FormState = {
     cardName: "",
     termsAccepted: false,
     landingPageUpsell: false,
+    brickReady: false,
 };
 
 // ── Plans data ─────────────────────────────────────────────────────
@@ -353,12 +585,12 @@ const PLANS = [
         monthlyPrice: 999,
         quarterlyPrice: 899,
         annualPrice: 799,
-        desc: "1 sede · 80 alumnas",
+        desc: "1 sede · 100 alumnos",
         color: "border-blue-500/40 bg-blue-500/5",
         features: [
-            "80 alumnos activos",
+            "100 alumnos activos",
             "1 sede física",
-            "Control de acceso QR",
+            "App/Portal & Front Desk",
         ],
         badge: null,
     },
@@ -374,16 +606,15 @@ const PLANS = [
             "Hasta 3 sedes · 300 alumnos",
             "CRM de leads + Email marketing",
             "FitCoins + gamificación",
-            "Sesiones grabadas on-demand",
         ],
         badge: "Recomendado",
     },
     {
         id: "elite",
         name: "Elite",
-        monthlyPrice: 4099,
-        quarterlyPrice: 3689,
-        annualPrice: 3279,
+        monthlyPrice: 3499,
+        quarterlyPrice: 3149,
+        annualPrice: 2799,
         desc: "Multi-sede · VIP",
         color: "border-amber-500/40 bg-amber-500/5",
         features: [
@@ -551,11 +782,6 @@ const GET_BENTO_CARDS = (planId: string) => {
                     desc: "Sistema de recompensas nativo con streaks, leaderboards y premios canjeables. Aumenta la retención y la frecuencia de asistencia.",
                 },
                 {
-                    icon: BarChart3,
-                    title: "Sesiones Grabadas On-Demand",
-                    desc: "Crea tu propio catálogo de videos. Permite que tus alumnos entrenen desde casa, aumentando la retención y el valor de marca.",
-                },
-                {
                     icon: Zap,
                     title: "Expansión sin Límites",
                     desc: "Crece con libertad gestionando hasta 3 sedes y 300 alumnos activos. Escalabilidad real sin cargos ocultos ni penalizaciones.",
@@ -633,7 +859,7 @@ function OrderSummary({ form }: { form: FormState }) {
             <p className="text-gray-400 text-sm mb-6 pb-6 border-b border-white/10">
                 {form.studioName || "Tu estudio"}
                 {form.city ? ` · ${form.city}` : ""}
-                {form.plan === "starter" && " · 7 días gratis"}
+
             </p>
 
             <div className="space-y-4 mb-6 pb-6 border-b border-white/10">
@@ -680,13 +906,13 @@ function OrderSummary({ form }: { form: FormState }) {
                     </p>
                 </div>
             ) : (
-                <div className="mt-6 p-4 bg-amber-400/5 border border-amber-400/20 rounded-xl flex gap-3 text-left">
-                    <div className="w-5 h-5 rounded-full bg-amber-400/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <Clock className="w-3 h-3 text-amber-400" />
+                <div className="mt-6 p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl flex gap-3 text-left">
+                    <div className="w-5 h-5 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <Check className="w-3 h-3 text-blue-400" />
                     </div>
                     <p className="text-[11px] leading-relaxed text-gray-300">
-                        <span className="text-amber-400 font-bold">No se realizará ningún cargo hoy.</span>{" "}
-                        El cobro se procesará automáticamente al finalizar tu periodo de prueba de 7 días.
+                        <span className="text-blue-400 font-bold">Cobro inmediato al activar.</span>{" "}
+                        Tu suscripción se renueva automáticamente cada mes. Cancela cuando quieras.
                     </p>
                 </div>
             )}
@@ -719,7 +945,6 @@ function PlanComparisonTable() {
             features: [
                 { name: "CRM de leads + pipeline", emprendedor: false, starter: false, pro: true, elite: true },
                 { name: "Integración con Strava", emprendedor: false, starter: false, pro: true, elite: true },
-                { name: "Sesiones grabadas on-demand", emprendedor: false, starter: false, pro: true, elite: true },
                 { name: "Campañas de email marketing", emprendedor: false, starter: false, pro: true, elite: true },
                 { name: "FitCoins (gamificación/lealtad)", emprendedor: false, starter: false, pro: true, elite: true },
                 { name: "Automatizaciones (bienvenida, re-engagement)", emprendedor: false, starter: false, pro: true, elite: true },
@@ -931,9 +1156,7 @@ function StepPlan({ form, setForm, onNext }: { form: FormState; setForm: (f: For
                                     {selectedPlan.badge}
                                 </span>
                             )}
-                            {form.plan === "starter" && (
-                                <p className="text-amber-400 text-xs mt-2">● 7 días gratis</p>
-                            )}
+
 
                             {/* MSI selector — solo para quarterly y annual (no para emprendedor) */}
                             {form.plan !== "emprendedor" && (form.cycle === 'annual' || form.cycle === 'quarterly') && (
@@ -1430,39 +1653,101 @@ function StepConfirmFree({ form, onBack, isSubmitting }: {
 
 // ══════════════════════════════════════════════════════════════════
 // STEP 4 — Payment gateway
-// BUG 11: nota de contexto agregada — los datos de tarjeta son para referencia
-//         de MSI. El cargo real ocurre al finalizar el trial vía Stripe/Conekta.
-// BUG 15: canPay corregido — cardExpiry con formato "MM / YY" tiene 7 chars
+//
+// Flujos según plan + ciclo:
+//   mensual  → Checkout Bricks tokeniza tarjeta en-page → backend crea preapproval
+//              Cobro inmediato → mensual recurrente
+//   trimestral/anual → redirect al checkout externo de MP (pago único)
+//
+// La tarjeta NUNCA toca este servidor — solo el token de un solo uso generado por MP SDK.
 // ══════════════════════════════════════════════════════════════════
-function formatCardNumber(value: string) {
-    return value.replace(/\D/g, "").substring(0, 16).replace(/(.{4})/g, "$1 ").trim();
-}
-function formatExpiry(value: string) {
-    const digits = value.replace(/\D/g, "").substring(0, 4);
-    if (digits.length >= 3) return `${digits.slice(0, 2)} / ${digits.slice(2)}`;
-    return digits;
+
+// Carga dinámica del SDK de MP (solo en el browser)
+function useMercadoPago(publicKey: string | null) {
+    const [mp, setMp] = useState<any>(null);
+    useEffect(() => {
+        if (!publicKey || typeof window === "undefined") return;
+        const script = document.createElement("script");
+        script.src = "https://sdk.mercadopago.com/js/v2";
+        script.onload = () => {
+            setMp(new (window as any).MercadoPago(publicKey, { locale: "es-MX" }));
+        };
+        document.head.appendChild(script);
+        return () => { document.head.removeChild(script); };
+    }, [publicKey]);
+    return mp;
 }
 
-function StepPayment({ form, setForm, onBack, isSubmitting }: {
-    form: FormState; setForm: (f: FormState) => void; onBack: () => void; isSubmitting: boolean;
+function StepPayment({ form, setForm, onBack, isSubmitting, onTokenReady, mpPublicKey: mpPublicKeyProp }: {
+    form: FormState;
+    setForm: (f: FormState) => void;
+    onBack: () => void;
+    isSubmitting: boolean;
+    onTokenReady: (token: string) => void;
+    mpPublicKey: string | null;
 }) {
-    // BUG 15: el formato "MM / YY" con espacios tiene 7 chars para fecha completa
-    // Se verifica que haya 4 dígitos numéricos en la fecha de vencimiento
-    const expiryDigits = form.cardExpiry.replace(/\D/g, "");
-    const canPay = form.payMethod === "transfer"
-        || (
-            form.cardNumber.replace(/\s/g, "").length === 16
-            && expiryDigits.length === 4   // BUG 15 fix
-            && form.cardCvc.length >= 3
-            && form.cardName.trim().length >= 2
-        );
+    const selectedPlan = PLANS.find((p) => p.id === form.plan)!;
+    const upsellPrice = getUpsellPrice(form.plan);
+    const planTotal = getTotalAmount(selectedPlan, form.cycle);
+    const grandTotal = planTotal + (form.landingPageUpsell ? upsellPrice : 0);
+
+    const isMonthly = form.cycle === "monthly";
+    // Para ciclos no-mensuales la tarjeta no se necesita (redirect externo)
+    const canPay = !isMonthly || form.payMethod === "transfer" || form.brickReady;
+
+    // Checkout Bricks — solo para ciclo mensual con tarjeta
+    const mpPublicKey = isMonthly && form.payMethod === "card" ? mpPublicKeyProp : null;
+    const mp = useMercadoPago(mpPublicKey);
+    const brickRef = useEffect(() => {
+        if (!mp || !isMonthly || form.payMethod !== "card") return;
+        let brickController: any;
+        const container = document.getElementById("mp-card-brick");
+        if (!container) return;
+        container.innerHTML = "";
+
+        mp.bricks().create("cardPayment", "mp-card-brick", {
+            initialization: {
+                amount: grandTotal, // Monto real calculado en base al plan y ciclo
+                payer: { email: form.email },
+            },
+            customization: {
+                paymentMethods: { creditCard: "all", debitCard: "all" },
+                visual: {
+                    style: {
+                        theme: "dark",
+                        customVariables: {
+                            baseColor: "#f59e0b",
+                            borderRadiusFull: "12px",
+                        },
+                    },
+                    hideFormTitle: true,
+                    hidePaymentButton: true, // Usamos nuestro propio botón
+                },
+            },
+            callbacks: {
+                onReady: () => setForm({ ...form, brickReady: true }),
+                onSubmit: async (_data: any) => { /* handled via getFormData() return value */ },
+                onError: (err: any) => console.error("[Brick]", err),
+            },
+        }).then((controller: any) => {
+            brickController = controller;
+            (window as any).__mpBrick__ = controller;
+        });
+
+        return () => { brickController?.unmount?.(); };
+    }, [mp, form.payMethod, isMonthly]);
+
+    const trialLabel = isMonthly
+        ? "Cobro inmediato, luego renovación mensual automática."
+        : form.cycle === "quarterly"
+        ? "Cobro único hoy. Acceso por 3 meses."
+        : "Cobro único hoy. Acceso por 12 meses.";
 
     return (
         <div className="w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-            {/* Sidebar — BUG 4: OrderSummary compartida */}
+            {/* Sidebar */}
             <div className="lg:col-span-5 flex flex-col gap-6">
                 <OrderSummary form={form} />
-
                 <ul className="space-y-2 mb-4">
                     {GET_BENTO_CARDS(form.plan).slice(0, 4).map((c) => (
                         <li key={c.title} className="flex items-center gap-2 text-xs text-gray-300">
@@ -1476,121 +1761,118 @@ function StepPayment({ form, setForm, onBack, isSubmitting }: {
             {/* Right — form */}
             <div className="lg:col-span-7 bg-white/[0.02] border border-white/10 rounded-2xl p-8 lg:p-10">
                 <p className="text-amber-400 text-xs font-semibold tracking-widest uppercase mb-1">Paso 4 de 4 – Pago y activación</p>
-                <h2 className="text-3xl font-black text-white mb-6">Método de pago</h2>
+                <h2 className="text-3xl font-black text-white mb-4">Método de pago</h2>
 
-                {/* BUG 11: nota explicativa de cuándo ocurre el cargo */}
                 <div className="mb-6 p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl">
                     <p className="text-blue-300 text-xs leading-relaxed">
-                        <span className="font-bold">ℹ️ ¿Por qué pedimos tu tarjeta?</span> Para confirmar tu método de pago y activar el trial sin interrupciones. El cargo se realizará automáticamente el día 8. Cancela antes y no se cobra nada.
+                        <span className="font-bold">ℹ️</span> {trialLabel}
                     </p>
                 </div>
 
-                <div className="space-y-6">
-                    {/* Payment method tabs */}
-                    <div className="grid grid-cols-2 gap-3 p-1 bg-white/5 rounded-2xl border border-white/10">
+                {/* Selector de método — solo para ciclo mensual */}
+                {isMonthly && (
+                    <div className="grid grid-cols-2 gap-3 p-1 bg-white/5 rounded-2xl border border-white/10 mb-6">
                         <button
                             type="button"
-                            onClick={() => setForm({ ...form, payMethod: "card" })}
+                            onClick={() => setForm({ ...form, payMethod: "card", brickReady: false })}
                             className={`flex flex-col items-center gap-1 py-4 rounded-xl transition-all border ${form.payMethod === "card"
                                 ? "bg-amber-400 border-amber-400 text-white shadow-lg shadow-amber-400/20"
-                                : "text-gray-400 border-transparent hover:text-white"
-                                }`}
+                                : "text-gray-400 border-transparent hover:text-white"}`}
                         >
                             <span className="text-2xl">💳</span>
                             <span className="text-xs font-bold uppercase tracking-widest">Tarjeta</span>
                         </button>
                         <button
                             type="button"
-                            onClick={() => setForm({ ...form, payMethod: "transfer" })}
+                            onClick={() => setForm({ ...form, payMethod: "transfer", brickReady: false })}
                             className={`flex flex-col items-center gap-1 py-4 rounded-xl transition-all border ${form.payMethod === "transfer"
                                 ? "bg-amber-400 border-amber-400 text-white shadow-lg shadow-amber-400/20"
-                                : "text-gray-400 border-transparent hover:text-white"
-                                }`}
+                                : "text-gray-400 border-transparent hover:text-white"}`}
                         >
                             <span className="text-2xl">🏦</span>
                             <span className="text-xs font-bold uppercase tracking-widest">Transferencia</span>
                         </button>
                     </div>
+                )}
 
-                    {form.payMethod === "card" ? (
-                        <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                            <div>
-                                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Número de tarjeta</label>
-                                <input
-                                    type="text"
-                                    value={form.cardNumber}
-                                    onChange={(e) => setForm({ ...form, cardNumber: formatCardNumber(e.target.value) })}
-                                    placeholder="0000 0000 0000 0000"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 transition-colors"
-                                />
+                {/* Checkout Bricks — mensual + tarjeta */}
+                {isMonthly && form.payMethod === "card" && (
+                    <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        {!mp && (
+                            <div className="flex items-center justify-center h-32 text-white/40 text-sm gap-2">
+                                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Cargando formulario seguro...
                             </div>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Vencimiento</label>
-                                    <input
-                                        type="text"
-                                        value={form.cardExpiry}
-                                        onChange={(e) => setForm({ ...form, cardExpiry: formatExpiry(e.target.value) })}
-                                        placeholder="MM / YY"
-                                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 transition-colors"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">CVV</label>
-                                    <input
-                                        type="text"
-                                        value={form.cardCvc}
-                                        onChange={(e) => setForm({ ...form, cardCvc: e.target.value.replace(/\D/g, "").substring(0, 4) })}
-                                        placeholder="123"
-                                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 transition-colors"
-                                    />
-                                </div>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Nombre en la tarjeta</label>
-                                <input
-                                    type="text"
-                                    value={form.cardName}
-                                    onChange={(e) => setForm({ ...form, cardName: e.target.value })}
-                                    placeholder="TITULAR DE LA TARJETA"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 transition-colors uppercase"
-                                />
-                            </div>
+                        )}
+                        <div id="mp-card-brick" className="min-h-[200px]" />
+                        <p className="text-center text-[11px] text-amber-400/70 mt-2">
+                            Escribe tu nombre <strong>sin acentos ni ñ</strong>, tal como aparece en tu tarjeta (ej: Jose en vez de José).
+                        </p>
+                        <p className="text-center text-[10px] text-white/30 mt-1">
+                            🔒 Encriptado por MercadoPago — tus datos nunca tocan nuestros servidores
+                        </p>
+                    </div>
+                )}
+
+                {/* Transferencia */}
+                {isMonthly && form.payMethod === "transfer" && (
+                    <div className="p-6 bg-blue-500/5 border border-blue-500/20 rounded-2xl space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <p className="text-blue-300 text-xs leading-relaxed">
+                            Un asesor validará tu pago y activará tu cuenta. Te notificaremos por correo cuando tu acceso esté listo.
+                        </p>
+                        <div className="space-y-1">
+                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">Banco</p>
+                            <p className="text-sm text-white font-bold">BBVA Bancomer</p>
                         </div>
-                    ) : (
-                        <div className="p-6 bg-blue-500/5 border border-blue-500/20 rounded-2xl space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                            <div className="flex gap-3 text-blue-300">
-                                <span className="text-xl">ℹ️</span>
-                                <p className="text-xs leading-relaxed">
-                                    Al elegir transferencia, un asesor se pondrá en contacto contigo para validar el pago y activar tu cuenta. Podrás usar el sistema inmediatamente durante el periodo de prueba.
-                                </p>
-                            </div>
-                            <div className="space-y-1">
-                                <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">Banco</p>
-                                <p className="text-sm text-white font-bold">BBVA Bancomer</p>
-                            </div>
-                            <div className="space-y-1">
-                                <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">CLABE Interbancaria</p>
-                                <p className="text-sm text-white font-bold tracking-wider">0123 4567 8901 2345 67</p>
-                            </div>
+                        <div className="space-y-1">
+                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">CLABE Interbancaria</p>
+                            <p className="text-sm text-white font-bold tracking-wider">0123 4567 8901 2345 67</p>
                         </div>
-                    )}
-                </div>
+                    </div>
+                )}
+
+                {/* Trimestral / Anual — no requiere tarjeta aquí, se paga en MP */}
+                {!isMonthly && (
+                    <div className="p-6 bg-amber-500/5 border border-amber-500/20 rounded-2xl animate-in fade-in duration-300">
+                        <p className="text-amber-300 text-sm font-bold mb-2">Pago seguro con MercadoPago</p>
+                        <p className="text-white/50 text-xs">
+                            Al continuar serás redirigido a MercadoPago para completar el pago con tarjeta, transferencia o cualquier método disponible.
+                        </p>
+                    </div>
+                )}
 
                 <div className="flex gap-3 mt-8">
-                    <button type="button" onClick={onBack} disabled={isSubmitting} className="px-6 py-3 rounded-xl border border-white/10 text-gray-400 hover:text-white hover:border-white/20 transition-colors text-sm disabled:opacity-50">
+                    <button
+                        type="button"
+                        onClick={onBack}
+                        disabled={isSubmitting}
+                        className="px-6 py-3 rounded-xl border border-white/10 text-gray-400 hover:text-white hover:border-white/20 transition-colors text-sm disabled:opacity-50"
+                    >
                         ← Atrás
                     </button>
                     <button
-                        type="submit"
+                        type={isMonthly && form.payMethod === "card" ? "button" : "submit"}
                         disabled={!canPay || isSubmitting}
+                        onClick={isMonthly && form.payMethod === "card" ? async () => {
+                            const brick = (window as any).__mpBrick__;
+                            if (!brick) { console.error("[Brick] controller not found"); return; }
+                            try {
+                                const brickData = await brick.getFormData();
+                                if (brickData?.token) onTokenReady(brickData.token);
+                            } catch {
+                                // Brick muestra errores de validación en su propio UI
+                            }
+                        } : undefined}
                         className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white py-3 rounded-xl font-bold text-sm transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:scale-100 flex items-center justify-center gap-2"
                     >
                         {isSubmitting ? (
                             <>
                                 <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
                                 </svg>
                                 Activando estudio...
                             </>
@@ -1701,8 +1983,10 @@ function StepSuccess({ slug }: { slug?: string }) {
 //         para evitar race conditions con la navegación en curso
 // ══════════════════════════════════════════════════════════════════
 export default function Onboarding({ actionData }: Route.ComponentProps) {
+    const { mpPublicKey } = useLoaderData<typeof loader>();
     const [step, setStep] = useState(1);
     const [form, setForm] = useState<FormState>(INITIAL_FORM);
+    const formRef = React.useRef<HTMLFormElement>(null);
     const [searchParams] = useSearchParams();
     const navigation = useNavigation();
     const isSubmitting = navigation.state === "submitting";
@@ -1720,8 +2004,25 @@ export default function Onboarding({ actionData }: Route.ComponentProps) {
     //         que la respuesta del servidor ya fue procesada completamente
     //         antes de avanzar al step 5, evitando race conditions.
     useEffect(() => {
-        if (actionData && !(actionData as any).error && navigation.state === "idle") {
+        if (!actionData || (actionData as any).error || navigation.state !== "idle") return;
+        // Redirect al checkout externo de MP (trimestral/anual)
+        if ((actionData as any).redirectToPayment && (actionData as any).checkoutUrl) {
+            window.location.href = (actionData as any).checkoutUrl;
+            return;
+        }
+        // Plan gratuito o modo dev: avanzar a pantalla de éxito
+        if ((actionData as any).success) {
             setStep(5);
+            return;
+        }
+        // Mensual con tarjeta: preapproval creado, esperar webhook
+        if ((actionData as any).pendingPayment) {
+            window.location.href = "/onboarding/success?status=pending";
+            return;
+        }
+        // Mensual con transferencia: redirigir a pending
+        if ((actionData as any).pendingTransfer) {
+            window.location.href = "/onboarding/success?status=pending";
         }
     }, [actionData, navigation.state]);
 
@@ -1737,7 +2038,7 @@ export default function Onboarding({ actionData }: Route.ComponentProps) {
                 {step === 2 && <StepStudio form={form} setForm={setForm} onNext={next} onBack={back} />}
                 {step === 3 && <StepAccount form={form} setForm={setForm} onNext={next} onBack={back} />}
                 {step === 4 && (
-                    <Form method="post">
+                    <Form method="post" ref={formRef}>
                         {/* Campos ocultos que construyen el payload del action */}
                         <input type="hidden" name="intent" value="complete_onboarding" />
                         <input type="hidden" name="plan" value={form.plan} />
@@ -1754,6 +2055,10 @@ export default function Onboarding({ actionData }: Route.ComponentProps) {
                         <input type="hidden" name="payMethod" value={form.payMethod} />
                         {/* BUG 13: landingPageUpsell como string booleana explícita */}
                         <input type="hidden" name="landingPageUpsell" value={form.landingPageUpsell ? "true" : "false"} />
+                        {/* Token de un solo uso generado por Checkout Bricks — nunca datos de tarjeta */}
+                        {/* defaultValue en lugar de value: React no controla este campo,
+                            así la mutación directa del DOM en onTokenReady no se pisa con un re-render */}
+                        <input type="hidden" name="cardToken" defaultValue="" />
 
                         {(actionData as any)?.error && (
                             <div className="max-w-xl mx-auto mb-6 bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 animate-in fade-in slide-in-from-top-4">
@@ -1777,6 +2082,12 @@ export default function Onboarding({ actionData }: Route.ComponentProps) {
                                 setForm={setForm}
                                 onBack={back}
                                 isSubmitting={isSubmitting}
+                                mpPublicKey={mpPublicKey}
+                                onTokenReady={(token) => {
+                                    const input = formRef.current?.querySelector<HTMLInputElement>('input[name="cardToken"]');
+                                    if (input) input.value = token;
+                                    formRef.current?.requestSubmit();
+                                }}
                             />
                         )}
                     </Form>

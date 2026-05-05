@@ -69,22 +69,27 @@ export async function action({ request }: Route.ActionArgs) {
     }
 
     // ── Planes pagados: crear preferencia MercadoPago (Flow 1 SaaS) ─
-    const PLAN_PRICES: Record<string, number> = {
-        starter: 999,
-        pro: 2099,
-        elite: 4099,
-    };
+    // El precio siempre lo calcula el servidor desde la fuente única de verdad.
+    const { getSaasPlanPrice } = await import("~/services/payment.server");
     const PLAN_NAMES: Record<string, string> = {
         starter: "Plan Starter",
         pro: "Plan Pro",
         elite: "Plan Elite",
     };
 
+    let unitPrice: number;
+    try {
+        unitPrice = getSaasPlanPrice(planId, "monthly");
+    } catch {
+        return { error: "Plan no válido." };
+    }
+
     const mpToken = process.env.MERCADO_PAGO_ACCESS_TOKEN_SAAS;
     if (!mpToken) return { error: "Pagos no configurados. Contacta a soporte." };
 
     const appUrl = process.env.APP_URL ?? "https://grindproject.vercel.app";
-    const externalRef = `flow:saas:plan:pending:user:${profile.id}:gym:${profile.gym_id}:plan:${planId}`;
+    // Formato estandarizado compatible con el webhook: gym:upgrade:{gymId}:plan:{planId}:cycle:monthly
+    const externalRef = `flow:saas:upgrade:gym:${profile.gym_id}:plan:${planId}:cycle:monthly`;
 
     const body = {
         items: [{
@@ -94,7 +99,7 @@ export async function action({ request }: Route.ActionArgs) {
             category_id: "services",
             quantity: 1,
             currency_id: "MXN",
-            unit_price: PLAN_PRICES[planId],
+            unit_price: unitPrice,
         }],
         back_urls: {
             success: `${appUrl}/admin`,
@@ -103,7 +108,7 @@ export async function action({ request }: Route.ActionArgs) {
         },
         auto_return: "approved" as const,
         external_reference: externalRef,
-        notification_url: process.env.N8N_WEBHOOK_MP_URL ?? `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
+        notification_url: `https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago`,
         statement_descriptor: "GRINDPROJECT",
     };
 
@@ -168,11 +173,12 @@ const PLANS: UpgradePlan[] = [
         desc: "Para estudios pequenos o entrenadores independientes.",
         features: [
             "1 sede fisica",
-            "Hasta 80 alumnos activos",
+            "Hasta 100 alumnos activos",
             "Reservas y calendario de clases",
             "Check-in con codigo QR",
             "Punto de Venta (POS) basico",
             "Gestion de planes y membresias",
+            "App/Portal & Front Desk",
             "Reportes basicos de operacion",
             "Notificaciones por email",
         ],
@@ -192,7 +198,6 @@ const PLANS: UpgradePlan[] = [
             "Campanas de email marketing",
             "Cupones y promociones",
             "Nomina de coaches",
-            "Notificaciones push y WhatsApp",
             "Soporte prioritario (24h)",
         ],
         featured: true,
@@ -201,15 +206,13 @@ const PLANS: UpgradePlan[] = [
         id: "elite",
         name: "Elite",
         icon: <Rocket className="w-5 h-5" />,
-        price: 4099,
+        price: 3499,
         desc: "Para cadenas y franquicias que necesitan control total.",
         features: [
             "Todo lo de Pro",
             "Sedes y alumnos ilimitados",
             "Facturacion automatica (CFDI/SII)",
             "Reporteria financiera avanzada",
-            "Control de acceso por roles",
-            "Integraciones con hardware",
             "Soporte dedicado + Onboarding VIP",
             "Gerente de cuenta corporativo",
         ],
