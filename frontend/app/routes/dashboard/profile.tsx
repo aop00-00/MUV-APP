@@ -3,6 +3,7 @@
 import type { Route } from "./+types/profile";
 import { Wallet, Plus, CreditCard, Shield, LogOut } from "lucide-react";
 import { lazy, Suspense } from "react";
+import { Form, useActionData, useNavigation } from "react-router";
 
 // Lazy load QR component — avoids SSR issues with canvas
 const QRCodeSVG = lazy(() =>
@@ -40,8 +41,71 @@ export async function loader({ request }: Route.LoaderArgs) {
     return { profile, membership, orders: orders ?? [], walletBalance };
 }
 
+export async function action({ request }: Route.ActionArgs) {
+    const { requireGymAuth } = await import("~/services/gym.server");
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+
+    const { profile } = await requireGymAuth(request);
+
+    const formData = await request.formData();
+    const intent = formData.get("intent");
+
+    if (intent === "change_password") {
+        const currentPassword = formData.get("currentPassword") as string;
+        const newPassword = formData.get("newPassword") as string;
+        const confirmPassword = formData.get("confirmPassword") as string;
+
+        if (!currentPassword || !newPassword || !confirmPassword) {
+            return { error: "Todos los campos son requeridos." };
+        }
+
+        if (newPassword !== confirmPassword) {
+            return { error: "La nueva contraseña y la confirmación no coinciden." };
+        }
+
+        if (newPassword.length < 8) {
+            return { error: "La nueva contraseña debe tener al menos 8 caracteres." };
+        }
+
+        try {
+            // Verify current password by signing in with it
+            const { error: signInError } = await supabaseAdmin.auth.signInWithPassword({
+                email: profile.email,
+                password: currentPassword,
+            });
+
+            if (signInError) {
+                console.error("[profile.action] Password verification failed:", signInError.message);
+                return { error: "La contraseña actual es incorrecta." };
+            }
+
+            // Update to new password using supabaseAdmin auth.admin
+            const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+                profile.id,
+                { password: newPassword }
+            );
+
+            if (updateError) {
+                console.error("[profile.action] Password update failed:", updateError.message);
+                return { error: `Error al actualizar la contraseña: ${updateError.message}` };
+            }
+
+            return { success: "¡Contraseña actualizada con éxito!" };
+        } catch (err: any) {
+            console.error("[profile.action] Unexpected error during password update:", err);
+            return { error: "Ocurrió un error inesperado. Inténtalo de nuevo." };
+        }
+    }
+
+    return null;
+}
+
 export default function Profile({ loaderData }: Route.ComponentProps) {
     const { profile, membership, orders, walletBalance } = loaderData;
+    const actionData = useActionData() as { error?: string; success?: string } | undefined;
+    const navigation = useNavigation();
+    const isSubmitting = navigation.state === "submitting" && navigation.formData?.get("intent") === "change_password";
+
     const qrData = `GRIND:${profile.id}`;
 
     return (
@@ -179,7 +243,80 @@ export default function Profile({ loaderData }: Route.ComponentProps) {
                     </div>
                 )}
             </div>
-        {/* Account Settings */}
+
+            {/* Change Password */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-white mb-4">Actualizar contraseña</h2>
+                <Form method="post" key={actionData?.success ? "reset" : "active"} className="space-y-4 max-w-md">
+                    <input type="hidden" name="intent" value="change_password" />
+                    
+                    {actionData?.error && (
+                        <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded-lg">
+                            {actionData.error}
+                        </div>
+                    )}
+                    {actionData?.success && (
+                        <div className="p-3 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded-lg">
+                            {actionData.success}
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-2" htmlFor="currentPassword">
+                            Contraseña actual
+                        </label>
+                        <input
+                            type="password"
+                            id="currentPassword"
+                            name="currentPassword"
+                            required
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                            placeholder="••••••••"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-2" htmlFor="newPassword">
+                            Nueva contraseña (mín. 8 caracteres)
+                        </label>
+                        <input
+                            type="password"
+                            id="newPassword"
+                            name="newPassword"
+                            required
+                            minLength={8}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                            placeholder="••••••••"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-semibold text-white/50 uppercase tracking-wider mb-2" htmlFor="confirmPassword">
+                            Confirmar nueva contraseña
+                        </label>
+                        <input
+                            type="password"
+                            id="confirmPassword"
+                            name="confirmPassword"
+                            required
+                            minLength={8}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                            placeholder="••••••••"
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className="w-full sm:w-auto px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
+                    >
+                        <Shield className="w-4 h-4" />
+                        {isSubmitting ? "Actualizando..." : "Actualizar contraseña"}
+                    </button>
+                </Form>
+            </div>
+
+            {/* Account Settings */}
             <div className="bg-white/5 border border-white/10 rounded-xl p-6 shadow-sm">
                 <h2 className="text-lg font-semibold text-white mb-4">Ajustes de cuenta</h2>
                 <form action="/auth/logout" method="post">
