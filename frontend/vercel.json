@@ -4,6 +4,10 @@
         {
             "path": "/cron/inactivity-check",
             "schedule": "0 9 * * *"
+        },
+        {
+            "path": "/cron/membership-expiry",
+            "schedule": "0 9 * * *"
         }
     ]
 }

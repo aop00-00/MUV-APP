@@ -116,6 +116,7 @@ export default [
 
     // ─── Cron Jobs (Vercel Cron — protected by CRON_SECRET) ──────
     route("cron/inactivity-check", "routes/cron/inactivity-check.ts"),
+    route("cron/membership-expiry", "routes/cron/membership-expiry.ts"),
 
     // ─── Gym Portal (Slug-based branded login/register) ─────────
     // MUST be last — dynamic segment only matches when no static route does

@@ -70,7 +70,7 @@ function PageHero() {
                             </div>
                             <div className="relative aspect-video rounded-xl overflow-hidden bg-black/20 border border-white/5">
                                 <video
-                                    src="/mi-video-hero.mp4.mp4"
+                                    src="/video-hero.mp4"
                                     autoPlay
                                     loop
                                     muted
@@ -87,7 +87,7 @@ function PageHero() {
                             </div>
                             <div className="bg-[#0a0a0a] w-full h-[480px] rounded-[32px] overflow-hidden relative border border-white/5">
                                 <video
-                                    src="/mi-Video-Movil.mp4.mp4"
+                                    src="/video-movil.mp4"
                                     autoPlay
                                     loop
                                     muted

@@ -20,7 +20,7 @@ const menuItems = [
 export const Logo = ({ className }: { className?: string }) => (
     <div className={cn("relative flex items-center h-8 w-32", className)}>
         <img
-            src="/images/Logo_Project_Studio_Blanco.png"
+            src="/images/logo-white.png"
             alt="Project Studio"
             className="absolute left-0 top-1/2 -translate-y-1/2 h-28 w-auto object-contain max-w-none"
         />
@@ -174,7 +174,7 @@ export const HeroHeader = () => {
     );
 };
 
-// ── Discipline images for carousel ───────────────────────────────
+// ── c───────────────────────────────
 const DISCIPLINE_IMAGES = [
     { id: 1, src: "/images/landing/pilates.png", label: "Pilates", alt: "Pilates studio" },
     { id: 2, src: "/images/landing/yoga.png", label: "Yoga", alt: "Yoga session" },
@@ -312,7 +312,7 @@ export default function Hero() {
                                 </div>
                                 <div className="relative aspect-video rounded-xl overflow-hidden bg-black/20 border border-white/5">
                                     <video
-                                        src="/mi-video-hero.mp4.mp4"
+                                        src="/video-hero.mp4"
                                         autoPlay
                                         loop
                                         muted
@@ -332,7 +332,7 @@ export default function Hero() {
                                 </div>
                                 <div className="bg-[#0a0a0a] w-full h-[480px] rounded-[32px] overflow-hidden relative border border-white/5">
                                     <video
-                                        src="/mi-Video-Movil.mp4.mp4"
+                                        src="/video-movil.mp4"
                                         autoPlay
                                         loop
                                         muted

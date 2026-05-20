@@ -51,8 +51,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     ] = await Promise.all([
         // Gym branding & layout
         supabaseAdmin.from("gyms").select("name, primary_color, brand_color, studio_type, booking_mode, layout_config, default_capacity").eq("id", gymId).single(),
-        // Churn risk
-        supabaseAdmin.rpc("get_churn_risk_users", { days_threshold: 7 }),
+        // Churn risk — gym_id pushed into SQL, no client-side filtering needed
+        supabaseAdmin.rpc("get_churn_risk_users", { days_threshold: 7, p_gym_id: gymId }),
         // Setup step counts
         supabaseAdmin.from("locations").select("id", { count: "exact", head: true }).eq("gym_id", gymId),
         supabaseAdmin.from("rooms").select("id", { count: "exact", head: true }).eq("gym_id", gymId),
@@ -121,7 +121,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
     const nextClass = upcomingClasses.length > 0 ? upcomingClasses[0] : null;
 
-    const filteredChurn = churnUsers?.filter((u: any) => u.gym_id === gymId) || [];
+    const filteredChurn = churnUsers || [];
 
     // Build setup steps
     const setupSteps: SetupStep[] = [
@@ -228,10 +228,14 @@ export async function action({ request }: Route.ActionArgs) {
     }
 
     if (intent === "delete_room") {
-        const { deleteRoom } = await import("~/services/room.server");
-        const roomId = formData.get("roomId") as string;
-        await deleteRoom(roomId, gymId);
-        return { success: true, intent };
+        try {
+            const { deleteRoom } = await import("~/services/room.server");
+            const roomId = formData.get("roomId") as string;
+            await deleteRoom(roomId, gymId);
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al eliminar la sala", intent };
+        }
     }
 
     if (intent === "class_attendees") {

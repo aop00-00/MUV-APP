@@ -2,12 +2,12 @@
 // Admin – Weekly Calendar Grid + Live Class Attendance (Supabase).
 import type { Route } from "./+types/schedule";
 import { useFetcher } from "react-router";
-import { useState, useMemo, useEffect } from "react";
-import { Plus, X, Check, UserMinus, UserPlus, Clock, Filter, ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Plus, X, Check, UserMinus, UserPlus, Clock, Filter, ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Search, Trash2 } from "lucide-react";
 import type { ClassSlot } from "~/services/booking.server";
 
 // ─── Constants ───────────────────────────────────────────────────
-const HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+const HOURS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 const DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
 interface CalendarClass {
@@ -15,6 +15,7 @@ interface CalendarClass {
     title: string;
     day: number; // 0=Lun ... 5=Sáb
     hour: number;
+    minute: number;
     duration: number; // in hours
     coach: string;
     capacity: number;
@@ -41,6 +42,7 @@ function slotToCalendar(slot: ClassSlot): CalendarClass {
         title: slot.title,
         day,
         hour: start.getHours(),
+        minute: start.getMinutes(),
         duration: durationHours,
         coach: (slot as any).coach_name ?? (slot.coach as any)?.full_name ?? (slot.coach as any)?.name ?? "Staff",
         capacity: slot.capacity,
@@ -90,7 +92,98 @@ export async function loader({ request }: Route.LoaderArgs) {
         }
     }
 
-    return { classes, coaches, rooms, classTypes, bookingsByClass };
+    // Fetch active members of this gym with their active memberships
+    const { data: activeMembers } = await supabaseAdmin
+        .from("profiles")
+        .select("id, full_name, email, credits")
+        .eq("gym_id", gymId)
+        .in("role", ["member", "front_desk", "coach"])
+        .order("full_name", { ascending: true });
+
+    // Fetch active memberships for credits info
+    const memberIds = (activeMembers ?? []).map((m: any) => m.id);
+    let membershipsByUser: Record<string, { credits_included: number; plan_name: string; plan_type: string }> = {};
+    if (memberIds.length > 0) {
+        const { data: memberships } = await supabaseAdmin
+            .from("memberships")
+            .select("user_id, credits_included, plan_name, plan_type")
+            .eq("gym_id", gymId)
+            .eq("status", "active")
+            .in("user_id", memberIds);
+
+        for (const m of memberships ?? []) {
+            // Last active membership wins
+            membershipsByUser[m.user_id] = {
+                credits_included: m.credits_included ?? 0,
+                plan_name: m.plan_name ?? "",
+                plan_type: (m as any).plan_type ?? "creditos",
+            };
+        }
+    }
+
+    const membersWithCredits = (activeMembers ?? []).map((m: any) => ({
+        id: m.id,
+        name: m.full_name ?? m.email ?? "Sin nombre",
+        email: m.email,
+        credits: membershipsByUser[m.id]?.credits_included ?? 0,
+        planName: membershipsByUser[m.id]?.plan_name ?? null,
+        planType: membershipsByUser[m.id]?.plan_type ?? null,
+    }));
+
+    return { classes, coaches, rooms, classTypes, bookingsByClass, activeMembers: membersWithCredits };
+}
+
+// Helper to trigger class confirmation email (non-blocking)
+async function triggerClassConfirmationEmail(supabaseAdmin: any, gymId: string, userId: string, classId: string) {
+    try {
+        const { data: profileData } = await supabaseAdmin
+            .from("profiles")
+            .select("full_name, email")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        const { data: classData } = await supabaseAdmin
+            .from("classes")
+            .select("title, start_time, coach_name")
+            .eq("id", classId)
+            .single();
+
+        const { data: gymData } = await supabaseAdmin
+            .from("gyms")
+            .select("name")
+            .eq("id", gymId)
+            .single();
+
+        if (profileData?.email && classData) {
+            const { sendClassConfirmation } = await import("~/services/email.server");
+            
+            // Parse class time and date
+            const start = new Date(classData.start_time);
+            const formattedDate = start.toLocaleDateString("es-MX", {
+                weekday: "long",
+                day: "numeric",
+                month: "long"
+            });
+            const formattedTime = start.toLocaleTimeString("es-MX", {
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true
+            });
+
+            sendClassConfirmation({
+                to: profileData.email,
+                memberName: profileData.full_name ?? "Cliente",
+                studioName: gymData?.name ?? "tu estudio",
+                className: classData.title,
+                classDate: formattedDate,
+                classTime: formattedTime,
+                instructorName: classData.coach_name || undefined,
+            }).catch((err: any) => console.error("[email] class checkin send failed:", err?.message));
+        }
+    } catch (emailErr: any) {
+        console.error("[email] checkin email trigger failed:", emailErr?.message);
+    }
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -100,75 +193,234 @@ export async function action({ request }: Route.ActionArgs) {
     const intent = formData.get("intent") as string;
 
     if (intent === "create_class") {
-        const { createClass } = await import("~/services/booking.server");
-        const { supabaseAdmin } = await import("~/services/supabase.server");
-        const { checkResourceLimit, getUpgradeMessage } = await import("~/services/plan-limits.server");
+        try {
+            const { createClass } = await import("~/services/booking.server");
 
-        const { data: gymData } = await supabaseAdmin.from("gyms").select("plan_id").eq("id", gymId).single();
-        const planId = (gymData?.plan_id || "emprendedor") as any;
-        const check = await checkResourceLimit(gymId, planId, "max_class_types");
-        if (!check.allowed) {
-            return {
-                success: false,
-                intent,
-                error: getUpgradeMessage("max_class_types", check.limit!, planId),
-            };
+            const title = formData.get("title") as string;
+            const color = formData.get("color") as string || null;
+            const coach_id = formData.get("coach_id") as string;
+            const capacity = Number(formData.get("capacity") ?? 20);
+            const location = formData.get("location") as string;
+            const room_id = formData.get("room_id") as string;
+            const startDate = formData.get("start_iso") as string;
+            const endDate = new Date(new Date(startDate).getTime() + 3600000).toISOString();
+
+            await createClass({
+                gymId,
+                title,
+                color,
+                coach_id,
+                start_time: startDate,
+                end_time: endDate,
+                capacity,
+                location,
+                room_id: room_id || undefined,
+            });
+
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al crear la clase", intent };
         }
-
-        const title = formData.get("title") as string;
-        const color = formData.get("color") as string || null;
-        const coach_id = formData.get("coach_id") as string;
-        const capacity = Number(formData.get("capacity") ?? 20);
-        const location = formData.get("location") as string;
-        const room_id = formData.get("room_id") as string;
-        const startDate = formData.get("start_iso") as string;
-        const endDate = new Date(new Date(startDate).getTime() + 3600000).toISOString();
-
-        await createClass({
-            gymId,
-            title,
-            color,
-            coach_id,
-            start_time: startDate,
-            end_time: endDate,
-            capacity,
-            location,
-            room_id,
-        });
-
-        return { success: true, intent };
     }
 
     if (intent === "delete") {
-        const { deleteClass } = await import("~/services/booking.server");
-        const classId = formData.get("classId") as string;
-        await deleteClass(classId, gymId);
-        return { success: true, intent };
+        try {
+            const { deleteClass } = await import("~/services/booking.server");
+            const classId = formData.get("classId") as string;
+            await deleteClass(classId, gymId);
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al eliminar la clase", intent };
+        }
     }
 
     if (intent === "checkin" || intent === "no_show") {
-        const { supabaseAdmin } = await import("~/services/supabase.server");
-        const classId = formData.get("classId") as string;
-        const userId = formData.get("userId") as string;
-        const status = intent === "checkin" ? "completed" : "cancelled";
-        
-        await supabaseAdmin
-            .from("bookings")
-            .update({ status })
-            .eq("class_id", classId)
-            .eq("user_id", userId);
-            
-        return { success: true, intent };
+        try {
+            const { supabaseAdmin } = await import("~/services/supabase.server");
+            const classId = formData.get("classId") as string;
+            const userId = formData.get("userId") as string;
+            const status = intent === "checkin" ? "completed" : "cancelled";
+            const { error } = await supabaseAdmin
+                .from("bookings")
+                .update({ status })
+                .eq("class_id", classId)
+                .eq("user_id", userId);
+            if (error) return { success: false, error: error.message, intent };
+
+            // Deduct 1 credit on check-in if plan is credit-based
+            if (intent === "checkin") {
+                const { data: membership } = await supabaseAdmin
+                    .from("memberships")
+                    .select("id, credits_included, plan_type")
+                    .eq("user_id", userId)
+                    .eq("gym_id", gymId)
+                    .eq("status", "active")
+                    .order("created_at", { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (membership && (membership.plan_type === "creditos" || membership.plan_type === null) && membership.credits_included > 0) {
+                    await supabaseAdmin
+                        .from("memberships")
+                        .update({ credits_included: membership.credits_included - 1 })
+                        .eq("id", membership.id);
+                }
+
+                // Trigger Class Confirmation Email (non-blocking)
+                triggerClassConfirmationEmail(supabaseAdmin, gymId, userId, classId);
+            }
+
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al actualizar asistencia", intent };
+        }
+    }
+
+    // Add an active member to a class and immediately check them in
+    if (intent === "add_to_class") {
+        try {
+            const { supabaseAdmin } = await import("~/services/supabase.server");
+            const classId = formData.get("classId") as string;
+            const userId = formData.get("userId") as string;
+            const deductCredit = formData.get("deductCredit") === "true";
+
+            // Check if booking already exists
+            const { data: existing } = await supabaseAdmin
+                .from("bookings")
+                .select("id, status")
+                .eq("class_id", classId)
+                .eq("user_id", userId)
+                .single();
+
+            if (existing) {
+                // If already exists but cancelled, reactivate and check in
+                const { error: upErr } = await supabaseAdmin
+                    .from("bookings")
+                    .update({ status: "completed" })
+                    .eq("id", existing.id);
+                if (upErr) return { success: false, error: upErr.message, intent };
+            } else {
+                // Create new booking as completed (direct check-in)
+                const { error: insErr } = await supabaseAdmin
+                    .from("bookings")
+                    .insert({
+                        class_id: classId,
+                        user_id: userId,
+                        gym_id: gymId,
+                        status: "completed",
+                    });
+                if (insErr) return { success: false, error: insErr.message, intent };
+
+                // Update enrolled count
+                try {
+                    const { error: rpcErr } = await supabaseAdmin.rpc("increment_enrolled", { p_class_id: classId });
+                    if (rpcErr) throw rpcErr;
+                } catch {
+                    // Fallback if RPC doesn't exist or fails
+                    const { data: cls } = await supabaseAdmin
+                        .from("classes")
+                        .select("current_enrolled")
+                        .eq("id", classId)
+                        .single();
+                    if (cls) {
+                        await supabaseAdmin
+                            .from("classes")
+                            .update({ current_enrolled: (cls.current_enrolled ?? 0) + 1 })
+                            .eq("id", classId);
+                    }
+                }
+            }
+
+            // Deduct credit if plan is credit-based and user has credits
+            if (deductCredit) {
+                const { data: membership } = await supabaseAdmin
+                    .from("memberships")
+                    .select("id, credits_included, plan_type")
+                    .eq("user_id", userId)
+                    .eq("gym_id", gymId)
+                    .eq("status", "active")
+                    .order("created_at", { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (membership && (membership.plan_type === "creditos" || membership.plan_type === null) && membership.credits_included > 0) {
+                    await supabaseAdmin
+                        .from("memberships")
+                        .update({ credits_included: membership.credits_included - 1 })
+                        .eq("id", membership.id);
+                }
+            }
+
+            // Trigger Class Confirmation Email (non-blocking)
+            triggerClassConfirmationEmail(supabaseAdmin, gymId, userId, classId);
+
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al agregar miembro a la clase", intent };
+        }
     }
 
     if (intent === "drop_in") {
         const { supabaseAdmin } = await import("~/services/supabase.server");
         const classId = formData.get("classId") as string;
         const userName = formData.get("userName") as string;
-        
-        // Simplified drop-in: just record in a log or create a temporary booking
-        // For now, let's just return success as requested to unblock the UI
         return { success: true, intent };
+    }
+
+    // Remove a member from the attendance list and optionally refund their credit
+    if (intent === "remove_attendance") {
+        try {
+            const { supabaseAdmin } = await import("~/services/supabase.server");
+            const classId = formData.get("classId") as string;
+            const userId = formData.get("userId") as string;
+            const wasCheckedIn = formData.get("wasCheckedIn") === "true";
+
+            // Delete the booking record entirely
+            const { error: delErr } = await supabaseAdmin
+                .from("bookings")
+                .delete()
+                .eq("class_id", classId)
+                .eq("user_id", userId);
+
+            if (delErr) return { success: false, error: delErr.message, intent };
+
+            // Decrement enrolled count
+            const { data: cls } = await supabaseAdmin
+                .from("classes")
+                .select("current_enrolled")
+                .eq("id", classId)
+                .single();
+            if (cls && cls.current_enrolled > 0) {
+                await supabaseAdmin
+                    .from("classes")
+                    .update({ current_enrolled: cls.current_enrolled - 1 })
+                    .eq("id", classId);
+            }
+
+            // Refund 1 credit if member was already checked-in (credit was deducted)
+            if (wasCheckedIn) {
+                const { data: membership } = await supabaseAdmin
+                    .from("memberships")
+                    .select("id, credits_included, plan_type")
+                    .eq("user_id", userId)
+                    .eq("gym_id", gymId)
+                    .eq("status", "active")
+                    .order("created_at", { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (membership && (membership.plan_type === "creditos" || membership.plan_type === null)) {
+                    await supabaseAdmin
+                        .from("memberships")
+                        .update({ credits_included: membership.credits_included + 1 })
+                        .eq("id", membership.id);
+                }
+            }
+
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al eliminar asistencia", intent };
+        }
     }
 
     return { success: true, intent };
@@ -176,7 +428,7 @@ export async function action({ request }: Route.ActionArgs) {
 
 // ─── Main Component ──────────────────────────────────────────────
 export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
-    const { classes: rawClasses, coaches, rooms, classTypes, bookingsByClass } = loaderData;
+    const { classes: rawClasses, coaches, rooms, classTypes, bookingsByClass, activeMembers } = loaderData;
     const fetcher = useFetcher();
 
     // ── Navigation & Date State ──
@@ -553,33 +805,49 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                 ))}
                             </div>
 
-                            {/* Time rows */}
+                            {/* Time rows — 64px per hour, cards positioned proportionally to minutes */}
                             {filteredHours.map((hour) => (
-                                <div key={hour} className="grid grid-cols-[60px_repeat(6,1fr)] border-b border-white/5 min-h-[48px]">
-                                    <div className="p-2 text-xs text-white/40 text-center border-r border-white/5 flex items-start justify-center pt-1">
+                                <div key={hour} className="grid grid-cols-[60px_repeat(6,1fr)] border-b border-white/5" style={{ height: "64px" }}>
+                                    <div className="text-xs text-white/40 text-center border-r border-white/5 flex items-start justify-center pt-1.5">
                                         {hour}:00
                                     </div>
                                     {weekDays.map((date, dayIdx) => {
-                                        const cls = filteredCalendar.find((c) => {
+                                        const dayCls = filteredCalendar.filter((c) => {
                                             const classDate = new Date(rawClasses.find(rc => rc.id === c.id)?.start_time || "");
                                             return classDate.toDateString() === date.toDateString() && c.hour === hour;
                                         });
+                                        const total = dayCls.length;
                                         return (
-                                            <div key={dayIdx} className="p-0.5 border-r border-white/5 relative">
-                                                {cls && (
-                                                    <button
-                                                        onClick={() => setSelectedClass(cls)}
-                                                        className="w-full text-left text-[11px] rounded-lg p-2 text-white hover:opacity-90 transition-opacity relative shadow-sm"
-                                                        style={{ backgroundColor: cls.color, minHeight: `${Math.max(cls.duration * 44, 40)}px` }}
-                                                    >
-                                                        <p className="font-bold leading-tight flex items-center gap-1">
-                                                            {cls.type === 'event' && <span className="text-[10px] bg-black/20 px-1 py-0.5 rounded uppercase tracking-wider">Evento</span>}
-                                                            {cls.title}
-                                                        </p>
-                                                        <p className="opacity-80 leading-tight mt-0.5">{cls.coach}</p>
-                                                        <p className="opacity-70 mt-1">{cls.enrolled}/{cls.capacity}</p>
-                                                    </button>
-                                                )}
+                                            <div key={dayIdx} className="border-r border-white/5 relative" style={{ overflow: "visible" }}>
+                                                {/* 30-min guide line */}
+                                                <div className="absolute left-0 right-0 border-t border-white/[0.04]" style={{ top: "32px" }} />
+                                                {dayCls.map((cls, i) => {
+                                                    const topPx = (cls.minute / 60) * 64;
+                                                    const heightPx = Math.max(cls.duration * 64, 34);
+                                                    return (
+                                                        <button
+                                                            key={cls.id}
+                                                            onClick={() => setSelectedClass(cls)}
+                                                            className="absolute text-left text-[11px] rounded-lg p-2 text-white hover:opacity-90 transition-opacity shadow-sm"
+                                                            style={{
+                                                                backgroundColor: cls.color,
+                                                                top: `${topPx}px`,
+                                                                height: `${heightPx}px`,
+                                                                left: `calc(${(i * 100) / total}% + 2px)`,
+                                                                width: `calc(${100 / total}% - 4px)`,
+                                                                zIndex: 10,
+                                                                overflow: "hidden",
+                                                            }}
+                                                        >
+                                                            <p className="font-bold leading-tight flex items-center gap-1 truncate">
+                                                                {cls.type === 'event' && <span className="text-[10px] bg-black/20 px-1 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Evento</span>}
+                                                                {cls.title}
+                                                            </p>
+                                                            <p className="opacity-80 leading-tight mt-0.5 truncate">{cls.coach}</p>
+                                                            <p className="opacity-70">{cls.enrolled}/{cls.capacity}</p>
+                                                        </button>
+                                                    );
+                                                })}
                                             </div>
                                         );
                                     })}
@@ -643,9 +911,9 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                                 onClick={() => setSelectedClass(cls)}
                                                 className="w-full text-left text-[10px] rounded p-1 truncate cursor-pointer transition-opacity hover:opacity-80 text-white shadow-sm"
                                                 style={{ backgroundColor: cls.color }}
-                                                title={`${cls.title} a las ${cls.hour}:00`}
+                                                title={`${cls.title} a las ${cls.hour}:${String(cls.minute).padStart(2, '0')}`}
                                             >
-                                                <span className="font-semibold">{cls.hour}:00</span> {cls.title}
+                                                <span className="font-semibold">{cls.hour}:{String(cls.minute).padStart(2, '0')}</span> {cls.title}
                                             </button>
                                         ))}
                                     </div>
@@ -679,7 +947,7 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                                         )}
                                     </div>
                                     <p className="text-white/80 text-sm mt-1">{selectedClass.coach} • {selectedClass.location}</p>
-                                    <p className="text-white/80 text-sm">{DAYS[selectedClass.day]} {selectedClass.hour}:00 • {selectedClass.enrolled}/{selectedClass.capacity} inscritos</p>
+                                    <p className="text-white/80 text-sm">{DAYS[selectedClass.day]} {selectedClass.hour}:{String(selectedClass.minute).padStart(2, '0')} • {selectedClass.enrolled}/{selectedClass.capacity} inscritos</p>
                                 </div>
                                 <button onClick={() => setSelectedClass(null)} className="p-2 hover:bg-black/10 rounded-lg transition-colors">
                                     <X className="w-5 h-5" />
@@ -687,88 +955,298 @@ export default function AdminSchedule({ loaderData }: Route.ComponentProps) {
                             </div>
                         </div>
 
-                        {/* Attendee List */}
-                        <div className="p-6">
-                            <h3 className="font-semibold text-stone-800 mb-4">Pase de lista</h3>
-                            {selectedClass.attendees.length > 0 ? (
-                                <div className="space-y-2">
-                                    {selectedClass.attendees.map((a) => (
-                                        <div key={a.id} className="flex items-center justify-between p-3 bg-[#ebe5d8] rounded-lg">
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${a.checkedIn ? "bg-green-600 text-white" : "bg-stone-300 text-stone-700"}`}>
-                                                    {a.checkedIn ? <Check className="w-4 h-4" /> : a.name[0]}
-                                                </div>
-                                                <div>
-                                                    <p className="text-sm font-medium text-stone-900">{a.name}</p>
-                                                    <p className="text-xs text-stone-500">{a.checkedIn ? "✓ Check-in" : "Pendiente"}</p>
-                                                </div>
-                                            </div>
-                                            {!a.checkedIn && (
-                                                <div className="flex gap-1.5">
-                                                    <fetcher.Form method="post">
-                                                        <input type="hidden" name="intent" value="checkin" />
-                                                        <input type="hidden" name="userId" value={a.id} />
-                                                        <input type="hidden" name="classId" value={selectedClass.id} />
-                                                        <button type="submit" className="text-xs bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg font-medium transition-colors">
-                                                            Check-in
-                                                        </button>
-                                                    </fetcher.Form>
-                                                    <fetcher.Form method="post">
-                                                        <input type="hidden" name="intent" value="no_show" />
-                                                        <input type="hidden" name="userId" value={a.id} />
-                                                        <input type="hidden" name="classId" value={selectedClass.id} />
-                                                        <button type="submit" className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1">
-                                                            <UserMinus className="w-3 h-3" />
-                                                            No Show
-                                                        </button>
-                                                    </fetcher.Form>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="text-sm text-stone-500 text-center py-4">No hay inscritos para mostrar.</p>
-                            )}
-
-                            {/* Drop-in Button */}
-                            <div className="mt-6 pt-4 border-t border-stone-300">
-                                <fetcher.Form method="post" className="flex items-center gap-2">
-                                    <input type="hidden" name="intent" value="drop_in" />
-                                    <input type="hidden" name="classId" value={selectedClass.id} />
-                                    <input
-                                        name="userName"
-                                        placeholder="Nombre del drop-in…"
-                                        className="flex-1 bg-[#ebe5d8] border border-stone-300 rounded-lg px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:border-stone-500"
-                                    />
-                                    <button
-                                        type="submit"
-                                        className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                                    >
-                                        <UserPlus className="w-4 h-4" />
-                                        Drop-in
-                                    </button>
-                                </fetcher.Form>
-                                <p className="text-xs text-stone-500 mt-2 flex items-center gap-1">
-                                    <Clock className="w-3 h-3" />
-                                    Cobra $150 automáticamente al agregar.
-                                </p>
-                            </div>
-
-                            {/* Delete class */}
-                            <div className="mt-4 pt-4 border-t border-stone-300">
-                                <fetcher.Form method="post">
-                                    <input type="hidden" name="intent" value="delete" />
-                                    <input type="hidden" name="classId" value={selectedClass.id} />
-                                    <button type="submit" className="text-xs text-red-600 hover:text-red-800 font-medium">
-                                        Eliminar esta clase
-                                    </button>
-                                </fetcher.Form>
-                            </div>
-                        </div>
+                        {/* Attendee List + Add Member Panel */}
+                        <AttendancePanel
+                            selectedClass={selectedClass}
+                            activeMembers={activeMembers}
+                            fetcher={fetcher}
+                        />
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+// ─── Attendance Panel Component ───────────────────────────────────
+function AttendancePanel({
+    selectedClass,
+    activeMembers,
+    fetcher,
+}: {
+    selectedClass: CalendarClass;
+    activeMembers: { id: string; name: string; email: string; credits: number; planName: string | null; planType: string | null }[];
+    fetcher: any;
+}) {
+    const [memberSearch, setMemberSearch] = useState("");
+    const [selectedMember, setSelectedMember] = useState<typeof activeMembers[0] | null>(null);
+    const [showDropdown, setShowDropdown] = useState(false);
+    const searchRef = useRef<HTMLDivElement>(null);
+
+    // IDs of members already in the class
+    const enrolledIds = new Set(selectedClass.attendees.map((a) => a.id));
+
+    // Filter available members (not yet in class) by search
+    const availableMembers = activeMembers.filter(
+        (m) =>
+            !enrolledIds.has(m.id) &&
+            (memberSearch === "" ||
+                m.name.toLowerCase().includes(memberSearch.toLowerCase()) ||
+                m.email?.toLowerCase().includes(memberSearch.toLowerCase()))
+    );
+
+    const isUnlimited = (m: typeof activeMembers[0]) =>
+        m.planType === "ilimitado" || m.credits === 99;
+
+    const willDeductCredit = (m: typeof activeMembers[0]) =>
+        !isUnlimited(m) && m.planType !== null && m.credits > 0;
+
+    // Close dropdown when clicking outside
+    useEffect(() => {
+        function handleClick(e: MouseEvent) {
+            if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+                setShowDropdown(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClick);
+        return () => document.removeEventListener("mousedown", handleClick);
+    }, []);
+
+    // Reset selection when modal class changes
+    useEffect(() => {
+        setSelectedMember(null);
+        setMemberSearch("");
+        setShowDropdown(false);
+    }, [selectedClass.id]);
+
+    return (
+        <div className="p-6">
+            {/* ── Pase de lista ── */}
+            <h3 className="font-semibold text-stone-800 mb-3">Pase de lista</h3>
+
+            {selectedClass.attendees.length > 0 ? (
+                <div className="space-y-2 mb-4">
+                    {selectedClass.attendees.map((a) => (
+                        <div key={a.id} className="flex items-center justify-between p-3 bg-[#ebe5d8] rounded-lg">
+                            <div className="flex items-center gap-3">
+                                <div
+                                    className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                                        a.checkedIn ? "bg-green-600 text-white" : "bg-stone-300 text-stone-700"
+                                    }`}
+                                >
+                                    {a.checkedIn ? <Check className="w-4 h-4" /> : a.name[0]}
+                                </div>
+                                <div>
+                                    <p className="text-sm font-medium text-stone-900">{a.name}</p>
+                                    <p className="text-xs text-stone-500">{a.checkedIn ? "✓ Asistió" : "Pendiente"}</p>
+                                </div>
+                            </div>
+                            {!a.checkedIn ? (
+                                <div className="flex gap-1.5">
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="checkin" />
+                                        <input type="hidden" name="userId" value={a.id} />
+                                        <input type="hidden" name="classId" value={selectedClass.id} />
+                                        <button
+                                            type="submit"
+                                            className="text-xs bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
+                                        >
+                                            <Check className="w-3 h-3" /> Check-in
+                                        </button>
+                                    </fetcher.Form>
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="no_show" />
+                                        <input type="hidden" name="userId" value={a.id} />
+                                        <input type="hidden" name="classId" value={selectedClass.id} />
+                                        <button
+                                            type="submit"
+                                            className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
+                                        >
+                                            <UserMinus className="w-3 h-3" /> No Show
+                                        </button>
+                                    </fetcher.Form>
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="remove_attendance" />
+                                        <input type="hidden" name="userId" value={a.id} />
+                                        <input type="hidden" name="classId" value={selectedClass.id} />
+                                        <input type="hidden" name="wasCheckedIn" value="false" />
+                                        <button
+                                            type="submit"
+                                            title="Eliminar del pase de lista"
+                                            className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                    </fetcher.Form>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-1 rounded-full">✓ Asistió</span>
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="remove_attendance" />
+                                        <input type="hidden" name="userId" value={a.id} />
+                                        <input type="hidden" name="classId" value={selectedClass.id} />
+                                        <input type="hidden" name="wasCheckedIn" value="true" />
+                                        <button
+                                            type="submit"
+                                            title="Eliminar asistencia (se devuelve el crédito)"
+                                            className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                    </fetcher.Form>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <p className="text-sm text-stone-500 text-center py-4 mb-2">No hay inscritos para mostrar.</p>
+            )}
+
+            {/* ── Agregar miembro activo ── */}
+            <div className="mt-4 pt-4 border-t border-stone-200">
+                <h4 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
+                    <UserPlus className="w-4 h-4 text-violet-600" />
+                    Agregar cliente al pase de lista
+                </h4>
+
+                {/* Search Input */}
+                <div className="relative" ref={searchRef}>
+                    <div className="flex items-center gap-2 bg-[#ebe5d8] border border-stone-300 rounded-lg px-3 py-2">
+                        <Search className="w-4 h-4 text-stone-400 shrink-0" />
+                        <input
+                            type="text"
+                            placeholder="Buscar cliente por nombre o email…"
+                            value={memberSearch}
+                            onChange={(e) => {
+                                setMemberSearch(e.target.value);
+                                setSelectedMember(null);
+                                setShowDropdown(true);
+                            }}
+                            onFocus={() => setShowDropdown(true)}
+                            className="flex-1 bg-transparent text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none"
+                        />
+                        {selectedMember && (
+                            <button
+                                onClick={() => { setSelectedMember(null); setMemberSearch(""); }}
+                                className="text-stone-400 hover:text-stone-600"
+                            >
+                                <X className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Dropdown */}
+                    {showDropdown && !selectedMember && (
+                        <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-xl max-h-52 overflow-y-auto">
+                            {availableMembers.length === 0 ? (
+                                <p className="text-sm text-stone-400 text-center py-4">
+                                    {memberSearch ? "Sin resultados" : "Todos los miembros activos ya están en esta clase"}
+                                </p>
+                            ) : (
+                                availableMembers.map((m) => (
+                                    <button
+                                        key={m.id}
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedMember(m);
+                                            setMemberSearch(m.name);
+                                            setShowDropdown(false);
+                                        }}
+                                        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-stone-50 transition-colors text-left"
+                                    >
+                                        <div>
+                                            <p className="text-sm font-medium text-stone-900">{m.name}</p>
+                                            <p className="text-xs text-stone-400">{m.email}</p>
+                                        </div>
+                                        <div className="text-right shrink-0 ml-2">
+                                            {m.planName ? (
+                                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                                    isUnlimited(m)
+                                                        ? "bg-emerald-100 text-emerald-700"
+                                                        : m.credits > 0
+                                                        ? "bg-violet-100 text-violet-700"
+                                                        : "bg-red-100 text-red-600"
+                                                }`}>
+                                                    {isUnlimited(m) ? "∞ Ilimitado" : `${m.credits} créditos`}
+                                                </span>
+                                            ) : (
+                                                <span className="text-xs text-stone-400">Sin membresía</span>
+                                            )}
+                                        </div>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Selected member confirmation */}
+                {selectedMember && (
+                    <div className="mt-3 p-3 bg-violet-50 border border-violet-200 rounded-xl">
+                        <div className="flex items-center justify-between mb-2">
+                            <div>
+                                <p className="text-sm font-semibold text-violet-900">{selectedMember.name}</p>
+                                {selectedMember.planName && (
+                                    <p className="text-xs text-violet-600">
+                                        {selectedMember.planName} ·{" "}
+                                        {isUnlimited(selectedMember)
+                                            ? "Plan Ilimitado — sin descuento de crédito"
+                                            : selectedMember.credits > 0
+                                            ? `${selectedMember.credits} créditos disponibles — se descontará 1`
+                                            : "Sin créditos disponibles"}
+                                    </p>
+                                )}
+                                {!selectedMember.planName && (
+                                    <p className="text-xs text-stone-500">Sin membresía activa — sin descuento</p>
+                                )}
+                            </div>
+                            <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                                isUnlimited(selectedMember)
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : selectedMember.credits > 0
+                                    ? "bg-violet-200 text-violet-800"
+                                    : "bg-stone-100 text-stone-500"
+                            }`}>
+                                {isUnlimited(selectedMember) ? "∞" : `${selectedMember.credits} créditos`}
+                            </span>
+                        </div>
+
+                        <fetcher.Form method="post">
+                            <input type="hidden" name="intent" value="add_to_class" />
+                            <input type="hidden" name="classId" value={selectedClass.id} />
+                            <input type="hidden" name="userId" value={selectedMember.id} />
+                            <input
+                                type="hidden"
+                                name="deductCredit"
+                                value={willDeductCredit(selectedMember) ? "true" : "false"}
+                            />
+                            <button
+                                type="submit"
+                                className="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Check className="w-4 h-4" />
+                                Registrar asistencia
+                                {willDeductCredit(selectedMember) && (
+                                    <span className="text-violet-200 font-normal text-xs">(-1 crédito)</span>
+                                )}
+                            </button>
+                        </fetcher.Form>
+                    </div>
+                )}
+            </div>
+
+            {/* Delete class */}
+            <div className="mt-6 pt-4 border-t border-stone-200">
+                <fetcher.Form method="post">
+                    <input type="hidden" name="intent" value="delete" />
+                    <input type="hidden" name="classId" value={selectedClass.id} />
+                    <button type="submit" className="text-xs text-red-600 hover:text-red-800 font-medium">
+                        Eliminar esta clase
+                    </button>
+                </fetcher.Form>
+            </div>
         </div>
     );
 }

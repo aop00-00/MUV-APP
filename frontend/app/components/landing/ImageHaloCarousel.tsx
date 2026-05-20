@@ -6,8 +6,10 @@ import {
   useMotionValue,
   useSpring,
   useTransform,
+  MotionValue,
 } from "framer-motion"
 import React, { useEffect, useMemo, useRef, useState } from "react"
+import { cn } from "~/lib/utils"
 
 interface ImageItems {
   id: number
@@ -56,7 +58,7 @@ function useMediaQuery(query: string) {
   return matches
 }
 
-function RingCard({
+const RingCard = React.memo(function RingCard({
   image,
   index,
   stepDeg,
@@ -70,7 +72,7 @@ function RingCard({
   image: ImageItems
   index: number
   stepDeg: number
-  angle: ReturnType<typeof useSpring>
+  angle: MotionValue<number>
   radiusX: number
   radiusZ: number
   cardW: number
@@ -79,37 +81,41 @@ function RingCard({
 }) {
   // a = (index*step + angle) en radianes
   const a = useTransform(angle, (deg) => ((index * stepDeg + deg) * Math.PI) / 180)
-
   const x = useTransform(a, (rad) => Math.cos(rad) * radiusX)
   const z = useTransform(a, (rad) => Math.sin(rad) * radiusZ)
-  const y = useTransform(a, (rad) => Math.sin(rad) * (isMobile ? 8 : 12))
 
-  // depth 0..1 según z
-  const depth01 = useTransform(z, (zz) => (zz + radiusZ) / (2 * radiusZ))
+  // Consolidamos todos los cálculos en un solo transform por propiedad para evitar errores de iteración y mejorar performance
+  const scale = useTransform(a, (rad) => {
+    const f = (Math.cos(rad) + 1) / 2
+    return 0.7 + f * 0.38
+  })
 
-  const scale = useTransform(depth01, (d) => 0.7 + d * 0.38)
-  const opacity = useTransform(depth01, (d) => 0.25 + d * 0.75)
+  const opacity = useTransform(a, (rad) => {
+    const f = (Math.cos(rad) + 1) / 2
+    // Mapeo: 0..0.2..1 -> 0.15..0.4..1
+    if (f < 0.2) return 0.15 + (f / 0.2) * (0.4 - 0.15)
+    return 0.4 + ((f - 0.2) / 0.8) * (1 - 0.4)
+  })
 
-  /**
-   * ROTATEY FLUIDO:
-   * En vez de normalizeAngleDeg (que tiene salto en 180/-180),
-   * usamos una función periódica continua.
-   * - sin(rad) es continua, sin cortes.
-   * - Máxima rotación en los lados, 0 al frente/atrás.
-   */
+  const y = useTransform(a, (rad) => (isMobile ? 0 : Math.sin(rad) * 12))
+
   const rotateYRaw = useTransform(a, (rad) => {
-    const max = isMobile ? 16 : 22 // grados máximos de giro
+    const max = isMobile ? 16 : 22
     return -Math.sin(rad) * max
   })
 
-  // Suaviza aún más el giro propio (evita “micro-jitters”)
-  const rotateY = useSpring(rotateYRaw, { stiffness: 260, damping: 34, mass: 0.9 })
+  const rotateYSpring = useSpring(rotateYRaw, { stiffness: 260, damping: 34, mass: 0.9 })
+  const rotateY = isMobile ? rotateYRaw : rotateYSpring
 
-  const shadow = useTransform(depth01, (d) =>
-    d > 0.85
+  const shadow = useTransform(a, (rad) => {
+    const f = (Math.cos(rad) + 1) / 2
+    if (isMobile) {
+      return f > 0.8 ? "0 10px 20px rgba(0,0,0,0.4)" : "0 4px 10px rgba(0,0,0,0.2)"
+    }
+    return f > 0.8
       ? "0 28px 60px -16px rgba(255,255,255,0.18), 0 0 0 1px rgba(255,255,255,0.06)"
-      : "0 12px 34px -14px rgba(255,255,255,0.10)",
-  )
+      : "0 12px 34px -14px rgba(255,255,255,0.10)"
+  })
 
   return (
     <motion.div
@@ -122,6 +128,7 @@ function RingCard({
         scale,
         opacity,
         rotateY,
+        willChange: "transform, opacity",
       }}
     >
       <motion.div
@@ -136,19 +143,23 @@ function RingCard({
         <img
           src={image.src || "/placeholder.svg"}
           alt={image.alt}
+          decoding="async"
           className="h-full w-full object-cover"
           draggable={false}
         />
         {/* Label overlay */}
-        <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex flex-col justify-end p-6">
-          <span className="text-white text-xl font-bold tracking-tight transform-gpu translate-z-10">
+        <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/95 via-black/40 to-transparent flex flex-col justify-end p-6">
+          <span className={cn(
+            "text-white text-xl font-bold tracking-tight",
+            !isMobile && "transform-gpu translate-z-10"
+          )}>
             {image.label}
           </span>
         </div>
       </motion.div>
     </motion.div>
   )
-}
+})
 
 export default function ImageHaloCarousel({
   images,
@@ -169,8 +180,8 @@ export default function ImageHaloCarousel({
   const cw = isMobile ? Math.round(cardW * 0.8) : cardW
   const ch = isMobile ? Math.round(cardH * 0.8) : cardH
 
-  // “Más alejado” en móvil: cámara más lejos
-  const perspective = isMobile ? 1700 : 1200
+  // “Más alejado” en móvil: cámara más lejos (perspectiva alta = menos distorsión 3D costosa)
+  const perspective = isMobile ? 2200 : 1200
   const mobileRingScale = isMobile ? 0.9 : 1
   const mobileRingZ = isMobile ? -140 : 0 // aleja el aro en el eje Z
 
@@ -194,26 +205,22 @@ export default function ImageHaloCarousel({
     inertiaAnimRef.current = null
   }
 
-  // Auto-rotación: estable y sin “cosas raras”
+  // Unificamos loops de animación para mejorar el rendimiento
   useAnimationFrame((_t, deltaMs) => {
     if (total <= 1) return
 
     const now = Date.now()
     const recently = now - lastInteractTs.current < 800
-    if (isInteractingRef.current || recently) return
-
-    // Evita números enormes con el tiempo (sin brincos visibles)
     const a = angleRaw.get()
-    if (Math.abs(a) > 100000) angleRaw.set(normalizeAngleDeg(a))
 
-    const deltaSec = deltaMs / 1000
-    angleRaw.set(angleRaw.get() + autoRotateSpeedDeg * deltaSec)
-  })
+    // 1. Auto-rotación
+    if (!isInteractingRef.current && !recently) {
+      if (Math.abs(a) > 100000) angleRaw.set(normalizeAngleDeg(a))
+      const deltaSec = deltaMs / 1000
+      angleRaw.set(a + autoRotateSpeedDeg * deltaSec)
+    }
 
-  // Active index
-  useAnimationFrame(() => {
-    if (total <= 0) return
-    const a = angleRaw.get()
+    // 2. Cálculo de Active Index (solo actualiza si cambia)
     let bestI = 0
     let best = Number.POSITIVE_INFINITY
     for (let i = 0; i < total; i++) {

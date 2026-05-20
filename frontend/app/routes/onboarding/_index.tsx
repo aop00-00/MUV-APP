@@ -251,173 +251,7 @@ export async function action({ request }: Route.ActionArgs) {
                     // Precios calculados siempre en el servidor — nunca desde el cliente
                     const { getSaasPlanPrice, getSaasCycleMonths } = await import("~/services/payment.server");
 
-                    // ── FLUJO MENSUAL: Preapproval ───────────────────────────────────
-                    // IMPORTANTE: MP primero, Supabase después — el cardToken expira en segundos
-                    if (cycle === "monthly") {
-                        const cardToken = formData.get("cardToken") as string | null;
-                        const payMethod = formData.get("payMethod") as string;
-
-
-                        // Transferencia: crear pending y esperar activación manual
-                        if (payMethod === "transfer" || !cardToken) {
-                            const { data: pendingReg, error: pendingError } = await supabaseAdmin
-                                .from("pending_registrations")
-                                .insert({
-                                    email, password_hash: password, owner_name: ownerName,
-                                    studio_name: studioName.trim(), studio_type: studioType || null,
-                                    plan_id: plan, cycle, country_code: country,
-                                    city: city?.trim() || null, phone: phone?.trim() || null,
-                                    landing_page_upsell: landingPageUpsell,
-                                    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                                })
-                                .select("id").single();
-                            if (pendingError || !pendingReg) return { error: "Error al iniciar el registro." };
-                            return { pendingTransfer: true };
-                        }
-
-                        const monthlyPrice = getSaasPlanPrice(plan, "monthly");
-
-                        // 1. Llamar a MP PRIMERO — el token expira en segundos
-                        const tempRef = `flow:saas:sub:monthly:tmp:${Date.now()}:plan:${plan}`;
-                        const preapprovalBody: Record<string, unknown> = {
-                            payer_email: email,
-                            card_token_id: cardToken,
-                            reason: `Grind ${plan.charAt(0).toUpperCase() + plan.slice(1)} — Mensual`,
-                            external_reference: tempRef,
-                            auto_recurring: {
-                                frequency: 1,
-                                frequency_type: "months",
-                                transaction_amount: monthlyPrice,
-                                currency_id: currency,
-                            },
-                            back_url: `${APP_URL}/onboarding/success`,
-                            status: "authorized",
-                            notification_url: "https://duvnfeuinxbrnmcslugm.supabase.co/functions/v1/mercado-pago",
-                        };
-
-                        const mpRes = await fetch("https://api.mercadopago.com/preapproval", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                Authorization: `Bearer ${saasToken}`,
-                                "X-Idempotency-Key": `preapproval-${email}-${plan}`,
-                            },
-                            body: JSON.stringify(preapprovalBody),
-                        });
-
-                        if (!mpRes.ok) {
-                            const errBody = await mpRes.text();
-                            console.error("[Onboarding] ❌ MP preapproval error HTTP", mpRes.status, ":", errBody);
-                            const isDev = process.env.NODE_ENV !== "production";
-                            return {
-                                error: parseMpError(errBody),
-                                ...(isDev ? { mpDebug: errBody } : {}),
-                            };
-                        }
-
-                        const preapproval = await mpRes.json();
-                        console.log("[Onboarding] ✅ Preapproval creado:", preapproval.id, "status:", preapproval.status);
-
-                        // 2. Ahora sí crear pending_registration con el preapproval_id real
-                        const { data: pendingReg, error: pendingError } = await supabaseAdmin
-                            .from("pending_registrations")
-                            .insert({
-                                email, password_hash: password, owner_name: ownerName,
-                                studio_name: studioName.trim(), studio_type: studioType || null,
-                                plan_id: plan, cycle, country_code: country,
-                                city: city?.trim() || null, phone: phone?.trim() || null,
-                                landing_page_upsell: landingPageUpsell,
-                                mp_preapproval_id: preapproval.id,
-                                expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                            })
-                            .select("id").single();
-
-                        if (pendingError || !pendingReg) {
-                            console.error("[Onboarding] ❌ Error guardando pending_registration:", pendingError);
-                            return { error: "Error al registrar. Contacta a soporte con tu comprobante de pago." };
-                        }
-
-                        const pendingId = pendingReg.id;
-                        console.log("[Onboarding] ✅ pending_registration creado:", pendingId);
-
-                        // 3. Actualizar external_reference del preapproval con el pendingId real
-                        await fetch(`https://api.mercadopago.com/preapproval/${preapproval.id}`, {
-                            method: "PUT",
-                            headers: {
-                                "Content-Type": "application/json",
-                                Authorization: `Bearer ${saasToken}`,
-                            },
-                            body: JSON.stringify({
-                                external_reference: `flow:saas:sub:monthly:pending:${pendingId}:plan:${plan}`,
-                            }),
-                        });
-
-                        console.log("[Onboarding] ✅ Preapproval creado:", preapproval.id, "status:", preapproval.status);
-
-                        // Provisionar user+gym directamente — claim atómico primero
-                        try {
-                            const { data: claimed } = await supabaseAdmin
-                                .from("pending_registrations")
-                                .update({ status: "processing" })
-                                .eq("id", pendingId).eq("status", "pending")
-                                .select("*").single();
-
-                            if (!claimed) {
-                                // Otro proceso (webhook) ya lo reclamó
-                                return { pendingPayment: true };
-                            }
-
-                            const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-                                email, password, email_confirm: true,
-                                user_metadata: { full_name: ownerName, role: "admin" },
-                            });
-                            if (authError || !authData.user) throw new Error(authError?.message ?? "createUser failed");
-
-                            const userId = authData.user.id;
-                            const slugBase = studioName.toLowerCase().trim()
-                                .replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
-                            let gymSlug = slugBase + "-" + Math.random().toString(36).substring(2, 7);
-                            const { data: slugExists } = await supabaseAdmin.from("gyms").select("id").eq("slug", gymSlug).maybeSingle();
-                            if (slugExists) gymSlug = slugBase + "-" + Math.random().toString(36).substring(2, 9);
-
-                            const { data: gymData, error: gymError } = await supabaseAdmin.from("gyms").insert({
-                                name: studioName.trim(), slug: gymSlug, owner_id: userId,
-                                plan_id: plan, plan_status: "active",
-                                tax_region: country, country_code: country,
-                                city: city?.trim() || null, studio_type: studioType || null,
-                                timezone: gymTimezone, currency,
-                                features: { fiscal: true, fitcoins: true, qrAccess: true, waitlist: true },
-                                primary_color: "#7c3aed", accent_color: "#2563eb",
-                                metadata: { landingPageUpsell },
-                                saas_mp_preapproval_id: preapproval.id,
-                            }).select().single();
-
-                            if (gymError) {
-                                await supabaseAdmin.auth.admin.deleteUser(userId);
-                                throw new Error(gymError.message);
-                            }
-
-                            await supabaseAdmin.from("profiles").upsert({
-                                id: userId, email, full_name: ownerName, phone: phone?.trim() || null,
-                                role: "admin", gym_id: gymData.id, credits: 0,
-                            }, { onConflict: "id" });
-
-                            await supabaseAdmin.from("pending_registrations")
-                                .update({ status: "completed" })
-                                .eq("id", pendingId);
-
-                            console.log("[Onboarding] ✅ User+gym provisionados:", userId, gymData.id);
-                            return { success: true, slug: gymSlug };
-                        } catch (provErr: any) {
-                            console.error("[Onboarding] ❌ Error provisionando:", provErr.message);
-                            await supabaseAdmin.from("pending_registrations")
-                                .update({ status: "pending" })
-                                .eq("id", pendingId);
-                            return { pendingPayment: true };
-                        }
-                    }
-
-                    // ── FLUJO TRIMESTRAL / ANUAL: Checkout Pro ───────────────────────
+                    // ── FLUJO MENSUAL + TRIMESTRAL + ANUAL: Checkout Pro (pago único) ────────
                     // Para trimestral/anual no hay cardToken — crear pending primero está bien
                     const { data: pendingReg, error: pendingError } = await supabaseAdmin
                         .from("pending_registrations")
@@ -446,7 +280,7 @@ export async function action({ request }: Route.ActionArgs) {
                     const prefBody: Record<string, unknown> = {
                         items: [{
                             id: `plan-${plan}-${cycle}`,
-                            title: `Grind ${plan.charAt(0).toUpperCase() + plan.slice(1)} — ${cycle === "quarterly" ? "Trimestral" : "Anual"}`,
+                            title: `Grind ${plan.charAt(0).toUpperCase() + plan.slice(1)} — ${cycle === "monthly" ? "Mensual" : cycle === "quarterly" ? "Trimestral" : "Anual"}`,
                             quantity: 1,
                             currency_id: currency,
                             unit_price: price,
@@ -1693,7 +1527,7 @@ function StepPayment({ form, setForm, onBack, isSubmitting, onTokenReady, mpPubl
 
     const isMonthly = form.cycle === "monthly";
     // Para ciclos no-mensuales la tarjeta no se necesita (redirect externo)
-    const canPay = !isMonthly || form.payMethod === "transfer" || form.brickReady;
+    const canPay = true;
 
     // Checkout Bricks — solo para ciclo mensual con tarjeta
     const mpPublicKey = isMonthly && form.payMethod === "card" ? mpPublicKeyProp : null;
@@ -1738,7 +1572,7 @@ function StepPayment({ form, setForm, onBack, isSubmitting, onTokenReady, mpPubl
     }, [mp, form.payMethod, isMonthly]);
 
     const trialLabel = isMonthly
-        ? "Cobro inmediato, luego renovación mensual automática."
+        ? "Pago único mensual. Recibirás un recordatorio para renovar cada mes."
         : form.cycle === "quarterly"
         ? "Cobro único hoy. Acceso por 3 meses."
         : "Cobro único hoy. Acceso por 12 meses.";
@@ -1769,70 +1603,17 @@ function StepPayment({ form, setForm, onBack, isSubmitting, onTokenReady, mpPubl
                     </p>
                 </div>
 
-                {/* Selector de método — solo para ciclo mensual */}
+
+                {/* Mensual — redirect a MP (igual que trimestral/anual) */}
                 {isMonthly && (
-                    <div className="grid grid-cols-2 gap-3 p-1 bg-white/5 rounded-2xl border border-white/10 mb-6">
-                        <button
-                            type="button"
-                            onClick={() => setForm({ ...form, payMethod: "card", brickReady: false })}
-                            className={`flex flex-col items-center gap-1 py-4 rounded-xl transition-all border ${form.payMethod === "card"
-                                ? "bg-amber-400 border-amber-400 text-white shadow-lg shadow-amber-400/20"
-                                : "text-gray-400 border-transparent hover:text-white"}`}
-                        >
-                            <span className="text-2xl">💳</span>
-                            <span className="text-xs font-bold uppercase tracking-widest">Tarjeta</span>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setForm({ ...form, payMethod: "transfer", brickReady: false })}
-                            className={`flex flex-col items-center gap-1 py-4 rounded-xl transition-all border ${form.payMethod === "transfer"
-                                ? "bg-amber-400 border-amber-400 text-white shadow-lg shadow-amber-400/20"
-                                : "text-gray-400 border-transparent hover:text-white"}`}
-                        >
-                            <span className="text-2xl">🏦</span>
-                            <span className="text-xs font-bold uppercase tracking-widest">Transferencia</span>
-                        </button>
-                    </div>
-                )}
-
-                {/* Checkout Bricks — mensual + tarjeta */}
-                {isMonthly && form.payMethod === "card" && (
-                    <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                        {!mp && (
-                            <div className="flex items-center justify-center h-32 text-white/40 text-sm gap-2">
-                                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                </svg>
-                                Cargando formulario seguro...
-                            </div>
-                        )}
-                        <div id="mp-card-brick" className="min-h-[200px]" />
-                        <p className="text-center text-[11px] text-amber-400/70 mt-2">
-                            Escribe tu nombre <strong>sin acentos ni ñ</strong>, tal como aparece en tu tarjeta (ej: Jose en vez de José).
-                        </p>
-                        <p className="text-center text-[10px] text-white/30 mt-1">
-                            🔒 Encriptado por MercadoPago — tus datos nunca tocan nuestros servidores
+                    <div className="p-6 bg-amber-500/5 border border-amber-500/20 rounded-2xl animate-in fade-in duration-300">
+                        <p className="text-amber-300 text-sm font-bold mb-2">Pago seguro con MercadoPago</p>
+                        <p className="text-white/50 text-xs">
+                            Al continuar serás redirigido a MercadoPago para completar el pago con tarjeta, transferencia o cualquier método disponible.
                         </p>
                     </div>
                 )}
 
-                {/* Transferencia */}
-                {isMonthly && form.payMethod === "transfer" && (
-                    <div className="p-6 bg-blue-500/5 border border-blue-500/20 rounded-2xl space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                        <p className="text-blue-300 text-xs leading-relaxed">
-                            Un asesor validará tu pago y activará tu cuenta. Te notificaremos por correo cuando tu acceso esté listo.
-                        </p>
-                        <div className="space-y-1">
-                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">Banco</p>
-                            <p className="text-sm text-white font-bold">BBVA Bancomer</p>
-                        </div>
-                        <div className="space-y-1">
-                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">CLABE Interbancaria</p>
-                            <p className="text-sm text-white font-bold tracking-wider">0123 4567 8901 2345 67</p>
-                        </div>
-                    </div>
-                )}
 
                 {/* Trimestral / Anual — no requiere tarjeta aquí, se paga en MP */}
                 {!isMonthly && (
@@ -1854,18 +1635,8 @@ function StepPayment({ form, setForm, onBack, isSubmitting, onTokenReady, mpPubl
                         ← Atrás
                     </button>
                     <button
-                        type={isMonthly && form.payMethod === "card" ? "button" : "submit"}
+                        type="submit"
                         disabled={!canPay || isSubmitting}
-                        onClick={isMonthly && form.payMethod === "card" ? async () => {
-                            const brick = (window as any).__mpBrick__;
-                            if (!brick) { console.error("[Brick] controller not found"); return; }
-                            try {
-                                const brickData = await brick.getFormData();
-                                if (brickData?.token) onTokenReady(brickData.token);
-                            } catch {
-                                // Brick muestra errores de validación en su propio UI
-                            }
-                        } : undefined}
                         className="flex-1 bg-amber-400 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white py-3 rounded-xl font-bold text-sm transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:scale-100 flex items-center justify-center gap-2"
                     >
                         {isSubmitting ? (

@@ -21,6 +21,7 @@ import type { Route } from "./+types/root";
 import "./app.css";
 
 import { Toaster } from "react-hot-toast";
+import { Analytics } from "@vercel/analytics/react";
 
 // ─── Types ────────────────────────────────────────────────────────
 type TenantConfig = {
@@ -43,7 +44,7 @@ type TenantConfig = {
 const DEFAULT_TENANT: TenantConfig = {
   id: "default",
   name: "GRIND PROJECT",
-  logo: "/images/Logo_Project_Studio_Blanco.png",
+  logo: "/images/logo-white.png",
   primaryColor: "#3b82f6",
   accentColor: "#8b5cf6",
   taxRegion: "MX",
@@ -55,6 +56,7 @@ const DEFAULT_TENANT: TenantConfig = {
 
 // ─── Google Fonts ─────────────────────────────────────────────────
 export const links: Route.LinksFunction = () => [
+  { rel: "icon", type: "image/png", href: "/images/logo-white.png" },
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
     rel: "preconnect",
@@ -81,6 +83,7 @@ export function Layout({ children }: { children: ReactNode }) {
         {children}
         <ScrollRestoration />
         <Scripts />
+        <Analytics />
       </body>
     </html>
   );

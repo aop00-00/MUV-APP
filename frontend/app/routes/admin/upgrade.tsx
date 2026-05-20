@@ -21,7 +21,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     const { data: gym } = await supabaseAdmin
         .from("gyms")
-        .select("plan_id, plan_status, trial_ends_at, name")
+        .select("plan_id, plan_status, trial_ends_at, plan_expires_at, name")
         .eq("id", profile.gym_id)
         .single();
 
@@ -31,10 +31,23 @@ export async function loader({ request }: Route.LoaderArgs) {
             gym?.trial_ends_at &&
             new Date(gym.trial_ends_at) < new Date());
 
+    // Fecha legible de vencimiento para mostrar en el banner
+    let expiredAt: string | null = null;
+    if (gym?.plan_expires_at && new Date(gym.plan_expires_at) < new Date()) {
+        expiredAt = new Date(gym.plan_expires_at).toLocaleDateString("es-MX", {
+            day: "numeric", month: "long", year: "numeric",
+        });
+    } else if (gym?.trial_ends_at && new Date(gym.trial_ends_at) < new Date()) {
+        expiredAt = new Date(gym.trial_ends_at).toLocaleDateString("es-MX", {
+            day: "numeric", month: "long", year: "numeric",
+        });
+    }
+
     return {
         gymName: gym?.name || "Tu Estudio",
         currentPlan: gym?.plan_id || "starter",
         isExpired,
+        expiredAt,
     };
 }
 
@@ -223,7 +236,7 @@ const PLANS: UpgradePlan[] = [
 // ─── Component ────────────────────────────────────────────────────
 
 export default function UpgradePage({ loaderData }: Route.ComponentProps) {
-    const { gymName, currentPlan, isExpired } = loaderData;
+    const { gymName, currentPlan, isExpired, expiredAt } = loaderData;
     const fetcher = useFetcher<typeof action>();
     const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
 
@@ -255,10 +268,10 @@ export default function UpgradePage({ loaderData }: Route.ComponentProps) {
                     {isExpired ? (
                         <>
                             <div className="inline-flex items-center gap-2 bg-red-500/20 border border-red-500/30 text-red-300 px-4 py-2 rounded-full text-sm font-medium mb-6">
-                                Tu periodo de prueba ha terminado
+                                {expiredAt ? `Tu plan venció el ${expiredAt}` : "Tu acceso ha expirado"}
                             </div>
                             <h1 className="text-3xl md:text-4xl font-black text-white mb-4">
-                                Elige un plan para continuar usando {gymName}
+                                Renueva tu plan para continuar usando {gymName}
                             </h1>
                             <p className="text-white/50 text-lg">
                                 Selecciona el plan que mejor se adapte a tu estudio. Puedes cambiar en cualquier momento.

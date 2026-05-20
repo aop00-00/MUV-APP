@@ -8,6 +8,7 @@ import React from "react";
 interface ParticleBackgroundProps {
     isAbsolute?: boolean;
     transparent?: boolean;
+    variant?: "dark" | "light";
 }
 
 export default function ParticleBackground({ isAbsolute = false, transparent = false, variant = "dark" }: ParticleBackgroundProps) {

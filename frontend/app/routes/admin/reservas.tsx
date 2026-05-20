@@ -118,6 +118,10 @@ export async function action({ request }: Route.ActionArgs) {
             } catch (e) {
                 console.error("[reservas] fitcoin award failed:", e);
             }
+
+            if (booking.class_id) {
+                triggerClassConfirmationEmail(supabaseAdmin, gymId, booking.user_id, booking.class_id);
+            }
         }
     }
     if (intent === "mark_cancelled") {
@@ -129,10 +133,67 @@ export async function action({ request }: Route.ActionArgs) {
         if (wl) {
             await supabaseAdmin.from("bookings").insert({ user_id: wl.user_id, class_id: wl.class_id, status: "confirmed", gym_id: gymId });
             await supabaseAdmin.from("waitlist").delete().eq("id", bookingId);
+
+            triggerClassConfirmationEmail(supabaseAdmin, gymId, wl.user_id, wl.class_id);
         }
     }
 
     return { success: true };
+}
+
+// Helper to trigger class confirmation email (non-blocking)
+async function triggerClassConfirmationEmail(supabaseAdmin: any, gymId: string, userId: string, classId: string) {
+    try {
+        const { data: profileData } = await supabaseAdmin
+            .from("profiles")
+            .select("full_name, email")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        const { data: classData } = await supabaseAdmin
+            .from("classes")
+            .select("title, start_time, coach_name")
+            .eq("id", classId)
+            .single();
+
+        const { data: gymData } = await supabaseAdmin
+            .from("gyms")
+            .select("name")
+            .eq("id", gymId)
+            .single();
+
+        if (profileData?.email && classData) {
+            const { sendClassConfirmation } = await import("~/services/email.server");
+            
+            // Parse class time and date
+            const start = new Date(classData.start_time);
+            const formattedDate = start.toLocaleDateString("es-MX", {
+                weekday: "long",
+                day: "numeric",
+                month: "long"
+            });
+            const formattedTime = start.toLocaleTimeString("es-MX", {
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true
+            });
+
+            sendClassConfirmation({
+                to: profileData.email,
+                memberName: profileData.full_name ?? "Cliente",
+                studioName: gymData?.name ?? "tu estudio",
+                className: classData.title,
+                classDate: formattedDate,
+                classTime: formattedTime,
+                instructorName: classData.coach_name ?? undefined,
+            }).catch(err => {
+                console.error("[reservas] sendClassConfirmation background error:", err);
+            });
+        }
+    } catch (err: any) {
+        console.error("[reservas] triggerClassConfirmationEmail background fetch/send error:", err);
+    }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

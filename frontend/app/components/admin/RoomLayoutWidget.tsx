@@ -386,6 +386,8 @@ export function RoomLayoutWidget({ gym, rooms, nextClass }: RoomLayoutWidgetProp
                                         <div className="bg-white/5 border border-white/10 p-4 rounded-xl">
                                             <div className="text-[10px] text-indigo-400 font-bold uppercase mb-1">
                                                 {new Intl.DateTimeFormat("es-MX", { weekday: "long", day: "numeric", month: "long" }).format(new Date(nextClass.start_time))}
+                                                {" · "}
+                                                {new Intl.DateTimeFormat("es-MX", { hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(nextClass.start_time))}
                                             </div>
                                             <div className="flex items-center gap-2 mb-2">
                                                 <h4 className="text-2xl font-black text-white leading-none">{nextClass.title}</h4>

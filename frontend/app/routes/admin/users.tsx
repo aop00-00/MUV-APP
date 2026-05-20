@@ -198,6 +198,16 @@ export async function action({ request }: Route.ActionArgs) {
             }
         }
 
+        // Send welcome email (non-blocking — fire and forget)
+        const { sendMemberWelcome } = await import("~/services/email.server");
+        const { data: gymData2 } = await supabaseAdmin.from("gyms").select("name").eq("id", gymId).single();
+        sendMemberWelcome({
+            to: email,
+            memberName: full_name,
+            studioName: gymData2?.name ?? "tu estudio",
+            tempPassword: (formData.get("password") as string) || "Grind2026!",
+        }).catch((err: any) => console.error("[email] welcome send failed:", err?.message));
+
         return { success: true, message: "Usuario creado y vinculado exitosamente." };
     }
 
@@ -308,7 +318,7 @@ export async function action({ request }: Route.ActionArgs) {
 
         const { data: profileData } = await supabaseAdmin
             .from("profiles")
-            .select("full_name")
+            .select("full_name, email")
             .eq("id", userId)
             .eq("gym_id", gymId)
             .single();
@@ -339,6 +349,63 @@ export async function action({ request }: Route.ActionArgs) {
             return { error: err.message };
         }
         return { success: true, intent: "assign_membership" };
+    }
+
+    if (intent === "send_expiring_reminder") {
+        const userId = formData.get("userId") as string;
+        const membershipId = formData.get("membershipId") as string;
+
+        const { data: profileData } = await supabaseAdmin
+            .from("profiles")
+            .select("full_name, email")
+            .eq("id", userId)
+            .eq("gym_id", gymId)
+            .single();
+
+        const { data: membership } = await supabaseAdmin
+            .from("memberships")
+            .select("plan_name, end_date")
+            .eq("id", membershipId)
+            .single();
+
+        const { data: gymData } = await supabaseAdmin
+            .from("gyms")
+            .select("name")
+            .eq("id", gymId)
+            .single();
+
+        if (profileData?.email && membership) {
+            try {
+                const { sendMembershipExpiringSoon } = await import("~/services/email.server");
+                
+                // Calculate days remaining
+                const end = new Date(membership.end_date);
+                const now = new Date();
+                const diffTime = end.getTime() - now.getTime();
+                const daysRemaining = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+                
+                const formattedEndDate = end.toLocaleDateString("es-MX", {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric"
+                });
+
+                sendMembershipExpiringSoon({
+                    to: profileData.email,
+                    memberName: profileData.full_name ?? "Cliente",
+                    studioName: gymData?.name ?? "tu estudio",
+                    planName: membership.plan_name,
+                    endDate: formattedEndDate,
+                    daysRemaining: daysRemaining,
+                }).catch((err: any) => console.error("[email] expiring reminder send failed:", err?.message));
+
+                return { success: true, message: "Recordatorio de vencimiento enviado por correo.", intent: "send_expiring_reminder" };
+            } catch (err: any) {
+                return { error: "No se pudo inicializar el envío de recordatorio: " + err.message };
+            }
+        }
+
+        return { error: "No se encontró el email del usuario o su membresía." };
     }
 
     if (intent === "extend_membership") {
@@ -733,7 +800,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                         </thead>
                         <tbody className="divide-y divide-white/5">
                             {filteredUsers.map((user) => {
-                                const isExpired = user.membership && new Date(user.membership.end_date) < new Date();
+                                const isExpired = user.membership && new Date(user.membership.end_date + "T00:00:00") < new Date();
 
                                 return (
                                     <tr key={user.id} className="hover:bg-white/5">
@@ -773,7 +840,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                             <input
                                                                 type="date"
                                                                 name="endDate"
-                                                                defaultValue={editingExpiry.currentDate}
+                                                                defaultValue={editingExpiry?.currentDate}
                                                                 className="bg-white/5 border border-blue-400 rounded px-1.5 py-0.5 text-xs text-white w-30 focus:outline-none"
                                                                 autoFocus
                                                             />
@@ -795,17 +862,32 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                                             </button>
                                                         </expiryFetcher.Form>
                                                     ) : (
-                                                        <button
-                                                            onClick={() => setEditingExpiry({
-                                                                userId: user.id,
-                                                                membershipId: user.membership!.id,
-                                                                currentDate: user.membership!.end_date.split("T")[0],
-                                                            })}
-                                                            className="text-xs text-white/40 hover:text-blue-400 transition-colors mt-0.5"
-                                                            title="Clic para cambiar fecha de vencimiento"
-                                                        >
-                                                            Vence {new Date(user.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
-                                                        </button>
+                                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                                            <button
+                                                                onClick={() => setEditingExpiry({
+                                                                    userId: user.id,
+                                                                    membershipId: user.membership!.id,
+                                                                    currentDate: user.membership!.end_date.split("T")[0],
+                                                                })}
+                                                                className="text-xs text-white/40 hover:text-blue-400 transition-colors"
+                                                                title="Clic para cambiar fecha de vencimiento"
+                                                            >
+                                                                Vence {new Date(user.membership.end_date + "T00:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
+                                                            </button>
+                                                            <expiryFetcher.Form method="post" className="inline">
+                                                                <input type="hidden" name="intent" value="send_expiring_reminder" />
+                                                                <input type="hidden" name="userId" value={user.id} />
+                                                                <input type="hidden" name="membershipId" value={user.membership.id} />
+                                                                <button
+                                                                    type="submit"
+                                                                    disabled={expiryFetcher.state !== "idle"}
+                                                                    className="text-white/30 hover:text-rose-400 transition-colors disabled:opacity-50 inline-flex items-center"
+                                                                    title="Enviar aviso de vencimiento por correo"
+                                                                >
+                                                                    <Mail className="w-3 h-3" />
+                                                                </button>
+                                                            </expiryFetcher.Form>
+                                                        </div>
                                                     )}
                                                 </div>
                                             ) : (
@@ -1106,7 +1188,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             {assignMembershipFor && (() => {
                 const target = users.find(u => u.id === assignMembershipFor);
                 if (!target) return null;
-                const targetExpired = target.membership && new Date(target.membership.end_date) < new Date();
+                const targetExpired = target.membership && new Date(target.membership.end_date + "T00:00:00") < new Date();
                 const isRenew = target.membership && !targetExpired;
                 return (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -1140,7 +1222,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                             {target.membership.plan_name}
                                         </p>
                                         <p className={`text-[10px] ${targetExpired ? "text-red-400/70" : "text-white/30"}`}>
-                                            {targetExpired ? "Vencida" : `Vence ${new Date(target.membership.end_date).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}`}
+                                            {targetExpired ? "Vencida" : `Vence ${new Date(target.membership.end_date + "T00:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "short" })}`}
                                         </p>
                                     </div>
                                 </div>

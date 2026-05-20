@@ -71,6 +71,7 @@ export interface Product {
     name: string;
     description: string | null;
     price: number;
+    cost: number;
     image_url: string | null;
     category: ProductCategory;
     stock: number;
@@ -80,7 +81,7 @@ export interface Product {
 
 // ─── Orders ──────────────────────────────────────────────────────
 export type OrderStatus = "pending" | "paid" | "failed" | "refunded";
-export type PaymentMethod = "mercado_pago" | "cash" | "card";
+export type PaymentMethod = "mercado_pago" | "cash" | "card" | "transfer";
 
 export interface OrderItem {
     id: string;

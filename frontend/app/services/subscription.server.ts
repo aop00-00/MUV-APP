@@ -177,6 +177,36 @@ export async function createMembership({
         }).catch(err => console.error("[createMembership] order insert failed:", err.message));
     }
 
+    // Send membership email (non-blocking)
+    try {
+        const [profileResult, gymResult] = await Promise.all([
+            supabaseAdmin.from("profiles").select("email, full_name").eq("id", userId).single(),
+            supabaseAdmin.from("gyms").select("name").eq("id", gymId).single(),
+        ]);
+
+        if (profileResult.data?.email) {
+            const { sendMembershipAssigned } = await import("./email.server");
+            const formattedEndDate = endDate.toLocaleDateString("es-MX", {
+                day: "numeric",
+                month: "long",
+                year: "numeric"
+            });
+
+            sendMembershipAssigned({
+                to: profileResult.data.email,
+                memberName: profileResult.data.full_name ?? "Cliente",
+                studioName: gymResult.data?.name ?? "tu estudio",
+                planName: planName,
+                price: price,
+                credits: planType === "creditos" ? credits : 0,
+                planType: planType,
+                endDate: formattedEndDate,
+            }).catch((err: any) => console.error("[email] assign membership send failed:", err?.message));
+        }
+    } catch (emailErr: any) {
+        console.error("[email] membership assigned trigger failed:", emailErr?.message);
+    }
+
     return data as Subscription;
 }
 

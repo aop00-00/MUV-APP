@@ -1,17 +1,21 @@
 // app/routes/admin/finanzas.tsx
+import { useState } from "react";
 import type { Route } from "./+types/finanzas";
-import { 
-    Download, 
-    TrendingUp, 
-    Wallet, 
-    CreditCard, 
-    PieChart, 
-    Activity, 
-    ArrowUpRight, 
+import {
+    Download,
+    TrendingUp,
+    Wallet,
+    CreditCard,
+    PieChart,
+    Activity,
+    ArrowUpRight,
     ArrowDownRight,
     DollarSign,
     Calendar,
-    Briefcase
+    Briefcase,
+    ShoppingBag,
+    X,
+    Info
 } from "lucide-react";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -71,6 +75,31 @@ export async function loader({ request }: Route.LoaderArgs) {
     const totalLeads = (leads ?? []).length;
     const convertedLeads = (leads ?? []).filter((l: any) => l.stage === "converted").length;
     const crmStats = { totalLeads, convertedLeads, leadConversionRate: totalLeads > 0 ? Math.round((convertedLeads / totalLeads) * 100) : 0, newLeadsThisMonth: (leads ?? []).filter((l: any) => l.created_at >= monthStart).length };
+    // 8b. MARGEN BRUTO POS (order_items + products.cost)
+    let posRevenue = 0, posCost = 0;
+    const paidOrderIds = paidOrders.map((o: any) => o.id);
+    if (paidOrderIds.length > 0) {
+        const { data: orderItems } = await supabaseAdmin
+            .from("order_items")
+            .select("quantity, unit_price, product_id")
+            .in("order_id", paidOrderIds);
+        if (orderItems && orderItems.length > 0) {
+            const productIds = [...new Set(orderItems.map((i: any) => i.product_id).filter(Boolean))];
+            const { data: productCosts } = productIds.length > 0
+                ? await supabaseAdmin.from("products").select("id, cost").in("id", productIds)
+                : { data: [] };
+            const costMap = new Map((productCosts ?? []).map((p: any) => [p.id, Number(p.cost ?? 0)]));
+            for (const item of orderItems) {
+                const qty = Number(item.quantity ?? 1);
+                const unitPrice = Number(item.unit_price ?? 0);
+                const unitCost = costMap.get(item.product_id) ?? 0;
+                posRevenue += unitPrice * qty;
+                posCost += unitCost * qty;
+            }
+        }
+    }
+    const posGrossMargin = posRevenue > 0 ? Math.round(((posRevenue - posCost) / posRevenue) * 100) : 0;
+
     // 8. FITCOINS
     let fitcoinsIssued = 0, fitcoinsRedeemed = 0;
     const { data: fitcoinTx } = await supabaseAdmin.from("fitcoin_transactions").select("amount").eq("gym_id", gymId).gte("created_at", monthStart).lte("created_at", monthEnd);
@@ -85,13 +114,79 @@ export async function loader({ request }: Route.LoaderArgs) {
         ...(payrolls ?? []).filter((p: any) => p.is_paid).map((p: any) => { const c = coaches?.find((x: any) => x.id === p.coach_id); return { id: `pay-${p.coach_id}`, type: "expense", title: `Nomina - ${(c as any)?.name || "Coach"}`, amount: Number(p.total || 0), date: "Periodo Actual", status: "Pagado" }; }),
         ...(!expensesError && expensesList ? expensesList.map((e: any) => ({ id: `exp-${Math.random()}`, type: "expense", title: e.title || "Gasto", amount: Number(e.amount), date: new Date(e.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short" }), status: "Pagado" })) : []),
     ].slice(0, 15);
-    return { currentMonth, metrics: { revenue, expenses: totalExpenses, payroll: totalPayroll, netProfit, packagesSold, mrr, avgTicket, revenueProjection, pendingRevenue, newCustomers }, membershipStats, attendanceStats: { attendanceRate, occupancyRate, totalBookings, completedBookings }, crmStats, fitcoinsStats: { issued: fitcoinsIssued, redeemed: fitcoinsRedeemed }, revenueByMethod, topPlans, coachStats, recentTransactions, chartData };
+    return { currentMonth, daysElapsed, daysInMonth, metrics: { revenue, expenses: totalExpenses, payroll: totalPayroll, netProfit, packagesSold, mrr, avgTicket, revenueProjection, pendingRevenue, newCustomers }, posMarginStats: { posRevenue, posCost, posGrossMargin }, membershipStats, attendanceStats: { attendanceRate, occupancyRate, totalBookings, completedBookings }, crmStats, fitcoinsStats: { issued: fitcoinsIssued, redeemed: fitcoinsRedeemed }, revenueByMethod, topPlans, coachStats, recentTransactions, chartData };
 }
 
 
+type CardInfo = { title: string; description: string; formula: string; context: string };
+
 export default function FinanzasDashboard({ loaderData }: Route.ComponentProps) {
-    const { currentMonth, metrics, membershipStats, attendanceStats, crmStats, fitcoinsStats, revenueByMethod, topPlans, coachStats, recentTransactions, chartData } = loaderData;
+    const { currentMonth, daysElapsed, daysInMonth, metrics, posMarginStats, membershipStats, attendanceStats, crmStats, fitcoinsStats, revenueByMethod, topPlans, coachStats, recentTransactions, chartData } = loaderData;
     const maxChartValue = Math.max(1, ...chartData.map((d: any) => Math.max(d.income, d.expense)));
+    const [activeInfo, setActiveInfo] = useState<CardInfo | null>(null);
+
+    const fmt = (n: number) => "$" + n.toLocaleString("es-MX");
+
+    const cardInfos: Record<string, CardInfo> = {
+        ingresos: {
+            title: "Ingresos del Mes",
+            description: "Total facturado y efectivamente cobrado durante el mes en curso. Solo incluye órdenes con pago confirmado — excluye pendientes y canceladas.",
+            formula: "Σ órdenes con status = 'paid'",
+            context: `Este mes (${currentMonth}) se cerraron ${metrics.packagesSold} venta${metrics.packagesSold !== 1 ? "s" : ""} pagada${metrics.packagesSold !== 1 ? "s" : ""} que suman ${fmt(metrics.revenue)}. Día ${daysElapsed} de ${daysInMonth}.`,
+        },
+        mrr: {
+            title: "MRR — Ingresos Recurrentes",
+            description: "Monthly Recurring Revenue: la suma del precio de todas las membresías activas. Representa el ingreso base predecible antes de ventas adicionales.",
+            formula: "Σ precio de membresías con status = 'active'",
+            context: `Tienes ${membershipStats.active} membresía${membershipStats.active !== 1 ? "s" : ""} activa${membershipStats.active !== 1 ? "s" : ""} con un valor total de ${fmt(metrics.mrr)}. Promedio por membresía: ${membershipStats.active > 0 ? fmt(Math.round(metrics.mrr / membershipStats.active)) : "$0"}.`,
+        },
+        ticket: {
+            title: "Ticket Promedio",
+            description: "Valor promedio de cada transacción pagada en el mes. Sirve para medir el impacto de cambios de precios o de mix de productos.",
+            formula: "Ingresos ÷ número de ventas pagadas",
+            context: `${fmt(metrics.revenue)} ingresos ÷ ${metrics.packagesSold} venta${metrics.packagesSold !== 1 ? "s" : ""} = ${fmt(metrics.avgTicket)} por transacción.${metrics.packagesSold === 0 ? " Sin ventas aún este mes." : ""}`,
+        },
+        proyeccion: {
+            title: "Proyección al Cierre",
+            description: "Estimación de cuánto cerrarás el mes si el ritmo de ventas actual se mantiene constante hasta el último día.",
+            formula: "(Ingresos ÷ días transcurridos) × días totales del mes",
+            context: `A día ${daysElapsed} de ${daysInMonth} con ${fmt(metrics.revenue)} de ingresos, se proyectan ${fmt(metrics.revenueProjection)} al cierre de ${currentMonth}.`,
+        },
+        ganancia: {
+            title: "Ganancia Neta",
+            description: "Lo que realmente queda después de cubrir nómina de coaches y demás gastos operativos. Es la utilidad real del período.",
+            formula: "Ingresos − Nómina − Otros Gastos",
+            context: `${fmt(metrics.revenue)} − ${fmt(metrics.payroll)} (nómina) − ${fmt(metrics.expenses)} (gastos) = ${fmt(metrics.netProfit)}.${metrics.netProfit < 0 ? ` Estás en pérdida de ${fmt(Math.abs(metrics.netProfit))} este mes.` : " Operando con utilidad positiva."}`,
+        },
+        nomina: {
+            title: "Nómina de Coaches",
+            description: "Total estimado a pagar a coaches activos: sesiones impartidas × su tarifa por sesión, más cualquier bono registrado.",
+            formula: "Σ (sesiones del coach × tarifa) + bonos",
+            context: `La nómina acumulada de ${currentMonth} es ${fmt(metrics.payroll)}, representando el ${metrics.revenue > 0 ? Math.round((metrics.payroll / metrics.revenue) * 100) : 0}% de los ingresos.${coachStats.length > 0 ? ` Coach con mayor costo: ${coachStats[0].name} (${fmt(coachStats[0].subtotal)}).` : ""}`,
+        },
+        gastos: {
+            title: "Otros Gastos",
+            description: "Gastos operativos registrados manualmente en el período, excluyendo nómina. Renta, servicios, insumos, mantenimiento, etc.",
+            formula: "Σ registros en tabla 'expenses' del mes",
+            context: metrics.expenses === 0
+                ? `No hay gastos adicionales registrados en ${currentMonth}. Si tienes gastos operativos, recuerda registrarlos para que la Ganancia Neta sea precisa.`
+                : `Se registraron ${fmt(metrics.expenses)} en gastos adicionales durante ${currentMonth}.`,
+        },
+        pendiente: {
+            title: "Cobro Pendiente",
+            description: "Órdenes creadas este mes que aún no han sido pagadas. Representan ingresos por cobrar, no confirmados.",
+            formula: "Σ órdenes con status = 'pending'",
+            context: metrics.pendingRevenue === 0
+                ? `No hay órdenes pendientes de cobro en ${currentMonth}. Todas las órdenes están liquidadas o canceladas.`
+                : `Tienes ${fmt(metrics.pendingRevenue)} sin cobrar. Si se liquidan, los ingresos totales del mes subirían a ${fmt(metrics.revenue + metrics.pendingRevenue)}.`,
+        },
+        clientes: {
+            title: "Nuevos Clientes",
+            description: "Perfiles de usuarios creados en el sistema durante el mes actual. Indica el ritmo de captación de nuevos miembros.",
+            formula: "Σ perfiles con created_at en el mes actual",
+            context: `${metrics.newCustomers} cliente${metrics.newCustomers !== 1 ? "s" : ""} nuevo${metrics.newCustomers !== 1 ? "s" : ""} registrado${metrics.newCustomers !== 1 ? "s" : ""} en ${currentMonth}. Ritmo promedio: ${daysElapsed > 0 ? (metrics.newCustomers / daysElapsed).toFixed(1) : "0"} por día.`,
+        },
+    };
 
     const exportToCSV = () => {
         const rows = [
@@ -101,6 +196,8 @@ export default function FinanzasDashboard({ loaderData }: Route.ComponentProps) 
             ["Ticket Promedio", "$" + metrics.avgTicket], ["Proyeccion Mes", "$" + metrics.revenueProjection],
             ["Pendiente Cobro", "$" + metrics.pendingRevenue],
             ["Nomina", "$" + metrics.payroll], ["Gastos", "$" + metrics.expenses], ["Ganancia Neta", "$" + metrics.netProfit],
+            [""], ["MARGEN POS"],
+            ["Ingresos POS", "$" + posMarginStats.posRevenue], ["Costo Productos", "$" + posMarginStats.posCost], ["Margen Bruto", posMarginStats.posGrossMargin + "%"],
             [""], ["MEMBRESIAS"],
             ["Activas", membershipStats.active], ["Congeladas", membershipStats.frozen], ["Vencidas", membershipStats.expired],
             ["Por vencer (7d)", membershipStats.expiringSoon], ["Nuevos Clientes", metrics.newCustomers],
@@ -118,10 +215,10 @@ export default function FinanzasDashboard({ loaderData }: Route.ComponentProps) 
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
     };
 
-    const fmt = (n: number) => "$" + n.toLocaleString("es-MX");
     const pct = (a: number, b: number) => b > 0 ? Math.max(0, Math.min(100, Math.round((a / b) * 100))) : 0;
 
     return (
+        <>
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -143,20 +240,52 @@ export default function FinanzasDashboard({ loaderData }: Route.ComponentProps) 
 
             {/* KPIs Row 1: Revenue */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                <MetricCard title="Ingresos" value={metrics.revenue} icon={TrendingUp} color="text-green-400" bg="bg-green-400/10" border="border-green-400/20" />
-                <MetricCard title="MRR" value={metrics.mrr} icon={DollarSign} color="text-violet-400" bg="bg-violet-400/10" border="border-violet-400/20" />
-                <MetricCard title="Ticket Prom." value={metrics.avgTicket} icon={CreditCard} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-400/20" />
-                <MetricCard title="Proyección" value={metrics.revenueProjection} icon={Activity} color="text-cyan-400" bg="bg-cyan-400/10" border="border-cyan-400/20" />
-                <MetricCard title="Ganancia Neta" value={metrics.netProfit} icon={Briefcase} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-400/20" />
+                <MetricCard title="Ingresos" value={metrics.revenue} icon={TrendingUp} color="text-green-400" bg="bg-green-400/10" border="border-green-400/20" info={cardInfos.ingresos} onInfoClick={setActiveInfo} />
+                <MetricCard title="MRR" value={metrics.mrr} icon={DollarSign} color="text-violet-400" bg="bg-violet-400/10" border="border-violet-400/20" info={cardInfos.mrr} onInfoClick={setActiveInfo} />
+                <MetricCard title="Ticket Prom." value={metrics.avgTicket} icon={CreditCard} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-400/20" info={cardInfos.ticket} onInfoClick={setActiveInfo} />
+                <MetricCard title="Proyección" value={metrics.revenueProjection} icon={Activity} color="text-cyan-400" bg="bg-cyan-400/10" border="border-cyan-400/20" info={cardInfos.proyeccion} onInfoClick={setActiveInfo} />
+                <MetricCard title="Ganancia Neta" value={metrics.netProfit} icon={Briefcase} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-400/20" info={cardInfos.ganancia} onInfoClick={setActiveInfo} />
             </div>
 
             {/* KPIs Row 2: Costs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <MetricCard title="Nómina" value={metrics.payroll} icon={Wallet} color="text-red-400" bg="bg-red-400/10" border="border-red-400/20" />
-                <MetricCard title="Otros Gastos" value={metrics.expenses} icon={Wallet} color="text-orange-400" bg="bg-orange-400/10" border="border-orange-400/20" />
-                <MetricCard title="Cobro Pendiente" value={metrics.pendingRevenue} icon={DollarSign} color="text-yellow-400" bg="bg-yellow-400/10" border="border-yellow-400/20" />
-                <MetricCard title="Nuevos Clientes" value={metrics.newCustomers} icon={TrendingUp} color="text-green-400" bg="bg-green-400/10" border="border-green-400/20" isCurrency={false} />
+                <MetricCard title="Nómina" value={metrics.payroll} icon={Wallet} color="text-red-400" bg="bg-red-400/10" border="border-red-400/20" info={cardInfos.nomina} onInfoClick={setActiveInfo} />
+                <MetricCard title="Otros Gastos" value={metrics.expenses} icon={Wallet} color="text-orange-400" bg="bg-orange-400/10" border="border-orange-400/20" info={cardInfos.gastos} onInfoClick={setActiveInfo} />
+                <MetricCard title="Cobro Pendiente" value={metrics.pendingRevenue} icon={DollarSign} color="text-yellow-400" bg="bg-yellow-400/10" border="border-yellow-400/20" info={cardInfos.pendiente} onInfoClick={setActiveInfo} />
+                <MetricCard title="Nuevos Clientes" value={metrics.newCustomers} icon={TrendingUp} color="text-green-400" bg="bg-green-400/10" border="border-green-400/20" isCurrency={false} info={cardInfos.clientes} onInfoClick={setActiveInfo} />
             </div>
+
+            {/* Margen Bruto POS */}
+            {posMarginStats.posRevenue > 0 && (
+                <div className="bg-white/[0.02] backdrop-blur-xl border border-white/[0.08] rounded-3xl p-6">
+                    <h2 className="font-bold text-white mb-5 flex items-center gap-2">
+                        <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                        Margen Bruto — Productos POS
+                    </h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4">
+                            <p className="text-white/50 text-xs font-medium mb-1 uppercase tracking-wider">Ingresos POS</p>
+                            <p className="text-emerald-400 font-black text-2xl">{fmt(posMarginStats.posRevenue)}</p>
+                        </div>
+                        <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-4">
+                            <p className="text-white/50 text-xs font-medium mb-1 uppercase tracking-wider">Costo de Productos</p>
+                            <p className="text-red-400 font-black text-2xl">{fmt(posMarginStats.posCost)}</p>
+                        </div>
+                        <div className={`rounded-2xl p-4 border ${posMarginStats.posGrossMargin >= 40 ? "bg-green-500/10 border-green-500/20" : posMarginStats.posGrossMargin >= 20 ? "bg-amber-500/10 border-amber-500/20" : "bg-red-500/10 border-red-500/20"}`}>
+                            <p className="text-white/50 text-xs font-medium mb-1 uppercase tracking-wider">Margen Bruto</p>
+                            <p className={`font-black text-2xl ${posMarginStats.posGrossMargin >= 40 ? "text-green-400" : posMarginStats.posGrossMargin >= 20 ? "text-amber-400" : "text-red-400"}`}>
+                                {posMarginStats.posGrossMargin}%
+                            </p>
+                            <div className="mt-2 h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full transition-all duration-700 ${posMarginStats.posGrossMargin >= 40 ? "bg-green-400" : posMarginStats.posGrossMargin >= 20 ? "bg-amber-400" : "bg-red-400"}`}
+                                    style={{ width: `${Math.min(100, posMarginStats.posGrossMargin)}%` }}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Chart + Salud */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -409,16 +538,66 @@ export default function FinanzasDashboard({ loaderData }: Route.ComponentProps) 
                 </div>
             </div>
         </div>
+
+            {/* Info Modal */}
+            {activeInfo && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4"
+                    onClick={() => setActiveInfo(null)}
+                >
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+                    <div
+                        className="relative w-full max-w-md bg-[#111] border border-white/[0.12] rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <button
+                            onClick={() => setActiveInfo(null)}
+                            className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-white/50 hover:text-white transition-all"
+                        >
+                            <X className="w-4 h-4" />
+                        </button>
+
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-9 h-9 rounded-xl bg-amber-400/10 border border-amber-400/20 flex items-center justify-center">
+                                <Info className="w-4 h-4 text-amber-400" />
+                            </div>
+                            <h3 className="text-white font-black text-lg">{activeInfo.title}</h3>
+                        </div>
+
+                        <p className="text-white/60 text-sm leading-relaxed mb-5">{activeInfo.description}</p>
+
+                        <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl px-4 py-3 mb-5">
+                            <p className="text-white/30 text-[10px] uppercase tracking-widest font-semibold mb-1">Fórmula</p>
+                            <p className="text-amber-300 text-sm font-mono">{activeInfo.formula}</p>
+                        </div>
+
+                        <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl px-4 py-3">
+                            <p className="text-white/30 text-[10px] uppercase tracking-widest font-semibold mb-1">Contexto actual</p>
+                            <p className="text-white/80 text-sm leading-relaxed">{activeInfo.context}</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }
 
-function MetricCard({ title, value, icon: Icon, color, bg, border, isCurrency = true }: any) {
+function MetricCard({ title, value, icon: Icon, color, bg, border, isCurrency = true, info, onInfoClick }: any) {
     return (
         <div className="bg-white/[0.02] backdrop-blur-xl border border-white/[0.08] rounded-3xl p-5 relative overflow-hidden group hover:border-white/[0.15] transition-all">
             <div className="flex justify-between items-start mb-3">
-                <div className={`w-10 h-10 rounded-xl ${bg} ${border} border flex items-center justify-center ${color} group-hover:scale-110 transition-transform duration-300`}>
+                <button
+                    onClick={() => info && onInfoClick?.(info)}
+                    className={`w-10 h-10 rounded-xl ${bg} ${border} border flex items-center justify-center ${color} transition-all duration-300 group-hover:scale-110 ${info ? "cursor-pointer hover:ring-2 hover:ring-white/20 hover:brightness-125" : "cursor-default"}`}
+                    title={info ? "Ver explicación" : undefined}
+                >
                     <Icon className="w-5 h-5" />
-                </div>
+                </button>
+                {info && (
+                    <span className="text-white/20 text-[9px] font-semibold uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity select-none pt-1">
+                        toca el ícono
+                    </span>
+                )}
             </div>
             <p className="text-white/50 text-xs font-medium mb-1">{title}</p>
             <h3 className="text-2xl font-black text-white tracking-tight">

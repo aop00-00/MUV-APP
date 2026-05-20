@@ -66,9 +66,32 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const { completeOnboarding } = await import("~/services/onboarding.server");
-    const { gymId } = await requireGymAdmin(request);
+    const { supabaseAdmin } = await import("~/services/supabase.server");
+    const { gymId, profile } = await requireGymAdmin(request);
 
     await completeOnboarding(gymId);
+
+    // Send studio welcome email to the admin (non-blocking)
+    try {
+        const { sendStudioWelcomeEmail } = await import("~/services/email.server");
+        const { data: gym } = await supabaseAdmin
+            .from("gyms")
+            .select("name, studio_type")
+            .eq("id", gymId)
+            .single();
+
+        if (gym && profile?.email) {
+            sendStudioWelcomeEmail({
+                to: profile.email,
+                adminName: profile.full_name ?? profile.email,
+                gymName: gym.name ?? "Tu Estudio",
+                studioType: gym.studio_type ?? "pilates",
+            }).catch((err: any) => console.error("[email] studio welcome failed:", err?.message));
+        }
+    } catch (emailErr: any) {
+        console.error("[email] studio welcome setup failed:", emailErr?.message);
+    }
+
     return { success: true };
 }
 

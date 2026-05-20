@@ -3,13 +3,22 @@
 import type { Route } from "./+types/pos";
 import { useFetcher } from "react-router";
 import { useState, useEffect } from "react";
-import { ShoppingCart, Trash2, Search, User, CreditCard, Banknote, AlertTriangle, X, Plus, Minus, Package, Edit, Save, UserPlus } from "lucide-react";
+import { ShoppingCart, Trash2, Search, User, CreditCard, Banknote, AlertTriangle, X, Plus, Minus, Package, Edit, Save, UserPlus, Sparkles, Eye, ArrowRightLeft } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────
+interface POSEvent {
+    id: string;
+    name: string;
+    price: number;
+    date: string;
+    location: string;
+}
+
 interface POSProduct {
     id: string;
     name: string;
     price: number;
+    cost: number;
     stock: number;
     category: string;
     is_active: boolean;
@@ -28,16 +37,19 @@ export async function loader({ request }: Route.LoaderArgs) {
     const { requireGymAdmin } = await import("~/services/gym.server");
     const { profile, gymId } = await requireGymAdmin(request);
     const { getPosProducts, getPosCustomers } = await import("~/services/order.server");
+    const { getGymEvents } = await import("~/services/event.server");
 
-    const [rawProducts, customers] = await Promise.all([
+    const [rawProducts, customers, rawEvents] = await Promise.all([
         getPosProducts(gymId),
         getPosCustomers(gymId),
+        getGymEvents(gymId),
     ]);
 
     const products: POSProduct[] = rawProducts.map((p: any) => ({
         id: p.id,
         name: p.name,
         price: p.price,
+        cost: p.cost ?? 0,
         stock: p.stock ?? 0,
         category: p.category ?? "Otro",
         is_active: p.is_active ?? true,
@@ -45,7 +57,17 @@ export async function loader({ request }: Route.LoaderArgs) {
         metadata: p.metadata ?? null,
     }));
 
-    return { products, customers };
+    const events: POSEvent[] = rawEvents
+        .filter((e: any) => e.is_active)
+        .map((e: any) => ({
+            id: e.id,
+            name: e.name,
+            price: e.price,
+            date: new Date(e.start_time).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
+            location: e.location ?? "",
+        }));
+
+    return { products, customers, events };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -56,13 +78,10 @@ export async function action({ request }: Route.ActionArgs) {
 
     if (intent === "checkout") {
         const { createOrder } = await import("~/services/order.server");
-        const method = formData.get("method") as "cash" | "card";
+        const method = formData.get("method") as "cash" | "card" | "transfer";
         const total = Number(formData.get("total") ?? 0);
         const itemsJson = formData.get("items") as string;
         const items = itemsJson ? JSON.parse(itemsJson) : [];
-        const subtotal = Math.round(total / 1.16 * 100) / 100;
-        const tax = Math.round((total - subtotal) * 100) / 100;
-
         try {
             await createOrder({
                 gymId,
@@ -70,8 +89,8 @@ export async function action({ request }: Route.ActionArgs) {
                 customerName: null,
                 paymentMethod: method,
                 items,
-                subtotal,
-                tax,
+                subtotal: total,
+                tax: 0,
                 total,
             });
         } catch (err: any) {
@@ -87,23 +106,48 @@ export async function action({ request }: Route.ActionArgs) {
         const total = Number(formData.get("total") ?? 0);
         const itemsJson = formData.get("items") as string;
         const items = itemsJson ? JSON.parse(itemsJson) : [];
-        const subtotal = Math.round(total / 1.16 * 100) / 100;
-        const tax = Math.round((total - subtotal) * 100) / 100;
-
         try {
             await chargeToAccount({
                 gymId,
                 customerId,
                 total,
                 items,
-                subtotal,
-                tax,
+                subtotal: total,
+                tax: 0,
             });
         } catch (err: any) {
             return { success: false, message: `Error al cargar a cuenta: ${err?.message ?? "Error desconocido"}` };
         }
 
         return { success: true, message: "Cargo a cuenta registrado." };
+    }
+
+    if (intent === "guest_checkout") {
+        const { createOrder } = await import("~/services/order.server");
+        const method = formData.get("method") as "cash" | "card" | "transfer";
+        const total = Number(formData.get("total") ?? 0);
+        const itemsJson = formData.get("items") as string;
+        const items = itemsJson ? JSON.parse(itemsJson) : [];
+        const guestName = (formData.get("guest_name") as string)?.trim() || "Visitante";
+        const guestPhone = (formData.get("guest_phone") as string)?.trim() || null;
+        const customerName = guestPhone ? `${guestName} (${guestPhone})` : guestName;
+
+        try {
+            await createOrder({
+                gymId,
+                userId: profile.id,
+                customerName,
+                paymentMethod: method,
+                items,
+                subtotal: total,
+                tax: 0,
+                total,
+            });
+        } catch (err: any) {
+            return { success: false, message: `Error al procesar la venta: ${err?.message ?? "Error desconocido"}`, intent: "guest_checkout" };
+        }
+
+        return { success: true, message: `Venta registrada para ${guestName}.`, intent: "guest_checkout" };
     }
 
     if (intent === "upsert_product") {
@@ -134,25 +178,35 @@ export async function action({ request }: Route.ActionArgs) {
         const name = formData.get("name") as string;
         const category = formData.get("category") as any;
         const price = Number(formData.get("price"));
+        const cost = Number(formData.get("cost") ?? 0);
         const stock = Number(formData.get("stock"));
         const description = formData.get("description") as string;
 
-        await upsertProduct(gymId, {
-            id: id || undefined,
-            name,
-            category,
-            price,
-            stock,
-            description,
-        });
-        return { success: true, message: id ? "Producto actualizado." : "Producto creado." };
+        try {
+            await upsertProduct(gymId, {
+                id: id || undefined,
+                name,
+                category,
+                price,
+                cost,
+                stock,
+                description,
+            });
+            return { success: true, message: id ? "Producto actualizado." : "Producto creado." };
+        } catch (e: any) {
+            return { success: false, message: e.message ?? "Error al guardar el producto" };
+        }
     }
 
     if (intent === "delete_product") {
-        const { deleteProduct } = await import("~/services/product.server");
-        const productId = formData.get("productId") as string;
-        await deleteProduct(gymId, productId);
-        return { success: true, message: "Producto eliminado." };
+        try {
+            const { deleteProduct } = await import("~/services/product.server");
+            const productId = formData.get("productId") as string;
+            await deleteProduct(gymId, productId);
+            return { success: true, message: "Producto eliminado." };
+        } catch (e: any) {
+            return { success: false, message: e.message ?? "Error al eliminar el producto" };
+        }
     }
 
     if (intent === "plan_checkout") {
@@ -168,9 +222,6 @@ export async function action({ request }: Route.ActionArgs) {
         const total = Number(formData.get("total") ?? 0);
         const itemsJson = formData.get("items") as string;
         const items: Array<{ productId: string; name: string; quantity: number; unitPrice: number; category: string; metadata: any }> = itemsJson ? JSON.parse(itemsJson) : [];
-        const subtotal = Math.round((total / 1.16) * 100) / 100;
-        const tax = Math.round((total - subtotal) * 100) / 100;
-
         // 1. Crear usuario en auth
         const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
             email,
@@ -228,8 +279,8 @@ export async function action({ request }: Route.ActionArgs) {
                 paymentMethod: method as any,
                 type: "membership",
                 items: items.map(i => ({ productId: i.productId, name: i.name, quantity: i.quantity, unitPrice: i.unitPrice })),
-                subtotal,
-                tax,
+                subtotal: total,
+                tax: 0,
                 total,
             });
         } catch (err: any) {
@@ -240,21 +291,27 @@ export async function action({ request }: Route.ActionArgs) {
     }
 
     if (intent === "toggle_active") {
-        const { toggleProductActive } = await import("~/services/product.server");
-        const productId = formData.get("productId") as string;
-        const isActive = formData.get("isActive") === "true";
-        await toggleProductActive(gymId, productId, !isActive);
-        return { success: true };
+        try {
+            const { toggleProductActive } = await import("~/services/product.server");
+            const productId = formData.get("productId") as string;
+            const isActive = formData.get("isActive") === "true";
+            await toggleProductActive(gymId, productId, !isActive);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, message: e.message ?? "Error al cambiar estado del producto" };
+        }
     }
 
     return { success: true };
 }
 
 export default function POS({ loaderData }: Route.ComponentProps) {
-    const { products, customers } = loaderData;
+    const { products, customers, events } = loaderData;
     const fetcher = useFetcher<{ success?: boolean; message?: string; intent?: string }>();
     const newMemberFetcher = useFetcher<{ success?: boolean; message?: string; intent?: string }>();
+    const guestFetcher = useFetcher<{ success?: boolean; message?: string; intent?: string }>();
     const [view, setView] = useState<"pos" | "inventory">("pos");
+    const [productTab, setProductTab] = useState<"products" | "events">("products");
     const [cart, setCart] = useState<CartItem[]>([]);
     const [customerSearch, setCustomerSearch] = useState("");
     const [selectedCustomer, setSelectedCustomer] = useState<typeof customers[0] | null>(null);
@@ -263,16 +320,24 @@ export default function POS({ loaderData }: Route.ComponentProps) {
     const [showAddModal, setShowAddModal] = useState(false);
     const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
     const [showNewMemberForm, setShowNewMemberForm] = useState(false);
+    const [showGuestForm, setShowGuestForm] = useState(false);
     const [newMember, setNewMember] = useState({ full_name: "", email: "", phone: "", password: "", confirmPassword: "" });
+    const [guest, setGuest] = useState({ name: "", phone: "" });
 
     const hasPlan = cart.some(c => c.product.category === "plan");
     const passwordValid = newMember.password.length >= 8 && newMember.password === newMember.confirmPassword;
     const newMemberIsValid = newMember.full_name.trim() !== "" && newMember.email.includes("@") && passwordValid;
+    const guestIsValid = guest.name.trim() !== "";
 
     // Ocultar formulario si ya no hay plan en el carrito
     useEffect(() => {
         if (!hasPlan) setShowNewMemberForm(false);
     }, [hasPlan]);
+
+    // Ocultar guest form si el carrito queda vacío
+    useEffect(() => {
+        if (cart.length === 0) setShowGuestForm(false);
+    }, [cart.length]);
 
     useEffect(() => {
         const data = fetcher.data;
@@ -300,6 +365,34 @@ export default function POS({ loaderData }: Route.ComponentProps) {
         return () => clearTimeout(t);
     }, [newMemberFetcher.data]);
 
+    useEffect(() => {
+        const data = guestFetcher.data;
+        if (!data?.message) return;
+        setToast({ type: data.success ? "success" : "error", message: data.message });
+        if (data.success && data.intent === "guest_checkout") {
+            setCart([]);
+            setShowGuestForm(false);
+            setGuest({ name: "", phone: "" });
+        }
+        const t = setTimeout(() => setToast(null), 4000);
+        return () => clearTimeout(t);
+    }, [guestFetcher.data]);
+
+    const addEventToCart = (ev: POSEvent) => {
+        const virtual: POSProduct = {
+            id: `event-${ev.id}`,
+            name: ev.name,
+            price: ev.price,
+            cost: 0,
+            stock: 999,
+            category: "event",
+            is_active: true,
+            description: `${ev.date}${ev.location ? ` · ${ev.location}` : ""}`,
+            metadata: { event_id: ev.id },
+        };
+        addToCart(virtual);
+    };
+
     const addToCart = (product: POSProduct) => {
         setCart((prev) => {
             const existing = prev.find((c) => c.product.id === product.id);
@@ -320,9 +413,7 @@ export default function POS({ loaderData }: Route.ComponentProps) {
         setCart((prev) => prev.filter((c) => c.product.id !== productId));
     };
 
-    const subtotal = cart.reduce((s, c) => s + c.product.price * c.qty, 0);
-    const tax = Math.round(subtotal * 0.16 * 100) / 100;
-    const total = subtotal + tax;
+    const total = cart.reduce((s, c) => s + c.product.price * c.qty, 0);
 
     const filteredCustomers = customers.filter((c) =>
         c.name.toLowerCase().includes(customerSearch.toLowerCase())
@@ -365,46 +456,93 @@ export default function POS({ loaderData }: Route.ComponentProps) {
 
             {view === "pos" ? (
                 <div className="flex flex-col lg:flex-row gap-6 min-h-[calc(100vh-220px)]">
-                    {/* ── Product Grid (left) ──────────────────── */}
+                    {/* ── Product / Events Grid (left) ─────────── */}
                     <div className="flex-1 space-y-4 w-full">
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                            {products.filter(p => p.is_active).map((product) => {
-                                const isLowStock = product.stock <= LOW_STOCK_THRESHOLD;
-                                const isOutOfStock = product.stock <= 0;
-
-                                return (
-                                    <button
-                                        key={product.id}
-                                        onClick={() => !isOutOfStock && addToCart(product)}
-                                        disabled={isOutOfStock}
-                                        className={`text-left rounded-xl p-4 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm ${isOutOfStock
-                                            ? "bg-white/5 border-2 border-white/10 opacity-50 cursor-not-allowed"
-                                            : isLowStock
-                                                ? "bg-white/5 border-2 border-red-300 hover:border-red-400"
-                                                : "bg-white/5 border border-white/[0.08] hover:border-purple-400 hover:shadow-md"
-                                            }`}
-                                    >
-                                        {isLowStock && !isOutOfStock && (
-                                            <div className="flex items-center gap-1 text-[10px] font-bold text-red-500 mb-1.5">
-                                                <AlertTriangle className="w-3 h-3" />
-                                                LOW STOCK
-                                            </div>
-                                        )}
-                                        {isOutOfStock && (
-                                            <div className="text-[10px] font-bold text-white/40 mb-1.5">AGOTADO</div>
-                                        )}
-                                        <p className="font-semibold text-white text-sm">{product.name}</p>
-                                        <p className="text-purple-600 font-bold mt-1">${product.price.toFixed(2)}</p>
-                                        <div className="flex items-center justify-between mt-1.5">
-                                            <p className={`text-xs ${isLowStock ? "text-red-500 font-medium" : "text-white/40"}`}>
-                                                Stock: {product.stock}
-                                            </p>
-                                            <span className="text-[10px] text-white/40 bg-white/5/10 px-1.5 py-0.5 rounded">{product.category}</span>
-                                        </div>
-                                    </button>
-                                );
-                            })}
+                        {/* Pestañas */}
+                        <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 w-fit">
+                            <button
+                                onClick={() => setProductTab("products")}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${productTab === "products" ? "bg-purple-600 text-white shadow-lg" : "text-white/40 hover:text-white"}`}
+                            >
+                                <Package className="w-4 h-4" />
+                                Productos
+                            </button>
+                            <button
+                                onClick={() => setProductTab("events")}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${productTab === "events" ? "bg-amber-500 text-black shadow-lg" : "text-white/40 hover:text-white"}`}
+                            >
+                                <Sparkles className="w-4 h-4" />
+                                Eventos
+                                {events.length > 0 && (
+                                    <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${productTab === "events" ? "bg-black/20 text-black" : "bg-amber-500 text-black"}`}>{events.length}</span>
+                                )}
+                            </button>
                         </div>
+
+                        {productTab === "products" ? (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {products.filter(p => p.is_active).map((product) => {
+                                    const isLowStock = product.stock <= LOW_STOCK_THRESHOLD;
+                                    const isOutOfStock = product.stock <= 0;
+                                    return (
+                                        <button
+                                            key={product.id}
+                                            onClick={() => !isOutOfStock && addToCart(product)}
+                                            disabled={isOutOfStock}
+                                            className={`text-left rounded-xl p-4 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm ${isOutOfStock
+                                                ? "bg-white/5 border-2 border-white/10 opacity-50 cursor-not-allowed"
+                                                : isLowStock
+                                                    ? "bg-white/5 border-2 border-red-300 hover:border-red-400"
+                                                    : "bg-white/5 border border-white/[0.08] hover:border-purple-400 hover:shadow-md"
+                                                }`}
+                                        >
+                                            {isLowStock && !isOutOfStock && (
+                                                <div className="flex items-center gap-1 text-[10px] font-bold text-red-500 mb-1.5">
+                                                    <AlertTriangle className="w-3 h-3" />
+                                                    LOW STOCK
+                                                </div>
+                                            )}
+                                            {isOutOfStock && (
+                                                <div className="text-[10px] font-bold text-white/40 mb-1.5">AGOTADO</div>
+                                            )}
+                                            <p className="font-semibold text-white text-sm">{product.name}</p>
+                                            <p className="text-purple-600 font-bold mt-1">${product.price.toFixed(2)}</p>
+                                            <div className="flex items-center justify-between mt-1.5">
+                                                <p className={`text-xs ${isLowStock ? "text-red-500 font-medium" : "text-white/40"}`}>
+                                                    Stock: {product.stock}
+                                                </p>
+                                                <span className="text-[10px] text-white/40 bg-white/5/10 px-1.5 py-0.5 rounded">{product.category}</span>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {events.length === 0 ? (
+                                    <div className="col-span-full text-center py-12 text-white/30">
+                                        <Sparkles className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                                        <p className="text-sm">No hay eventos activos.</p>
+                                        <p className="text-xs mt-1">Crea eventos en el panel de Eventos.</p>
+                                    </div>
+                                ) : events.map((ev) => (
+                                    <button
+                                        key={ev.id}
+                                        onClick={() => addEventToCart(ev)}
+                                        className="text-left rounded-xl p-4 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 hover:shadow-md"
+                                    >
+                                        <div className="flex items-center gap-1 text-[10px] font-black text-amber-400 mb-1.5 uppercase tracking-wider">
+                                            <Sparkles className="w-3 h-3" />
+                                            Evento
+                                        </div>
+                                        <p className="font-semibold text-white text-sm leading-tight">{ev.name}</p>
+                                        <p className="text-amber-400 font-bold mt-1">${ev.price.toFixed(2)}</p>
+                                        <p className="text-[10px] text-white/40 mt-1.5 leading-tight">{ev.date}</p>
+                                        {ev.location && <p className="text-[10px] text-white/30 truncate">{ev.location}</p>}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* ── Cart Panel (right) ───────────────────── */}
@@ -456,15 +594,7 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                         {/* Cart totals + actions */}
                         <div className="border-t border-white/5 p-4 space-y-3 bg-white/5">
                             <div className="space-y-1 text-sm">
-                                <div className="flex justify-between text-white/50">
-                                    <span>Subtotal</span>
-                                    <span>${subtotal.toFixed(2)}</span>
-                                </div>
-                                <div className="flex justify-between text-white/50">
-                                    <span>IVA (16%)</span>
-                                    <span>${tax.toFixed(2)}</span>
-                                </div>
-                                <div className="flex justify-between font-black text-lg text-white pt-1 border-t border-white/5">
+                                <div className="flex justify-between font-black text-lg text-white">
                                     <span>Total</span>
                                     <span>${total.toFixed(2)}</span>
                                 </div>
@@ -541,8 +671,45 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                 </div>
                             )}
 
-                            {/* Customer assignment (solo si NO está en modo nuevo alumno) */}
+                            {/* ── Visitante / Exhibición ── */}
                             {!showNewMemberForm && (
+                                <div className={`rounded-xl border transition-all ${showGuestForm ? "border-emerald-500/40 bg-emerald-500/10" : "border-white/10 bg-white/5"}`}>
+                                    <button
+                                        onClick={() => { setShowGuestForm(!showGuestForm); setSelectedCustomer(null); setShowCustomerSearch(false); }}
+                                        className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-bold transition-colors"
+                                    >
+                                        <span className={`flex items-center gap-2 ${showGuestForm ? "text-emerald-300" : "text-white/50"}`}>
+                                            <Eye className="w-3.5 h-3.5" />
+                                            Venta a visitante
+                                        </span>
+                                        <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${showGuestForm ? "bg-emerald-500/30 text-emerald-300" : "bg-white/10 text-white/30"}`}>
+                                            {showGuestForm ? "activo" : "exhibición"}
+                                        </span>
+                                    </button>
+                                    {showGuestForm && (
+                                        <div className="px-3 pb-3 space-y-2 border-t border-emerald-500/20 pt-2">
+                                            <p className="text-[9px] text-emerald-300/70 italic">Solo captura datos de contacto. No crea cuenta de usuario.</p>
+                                            <input
+                                                type="text"
+                                                placeholder="Nombre del visitante *"
+                                                value={guest.name}
+                                                onChange={e => setGuest(p => ({ ...p, name: e.target.value }))}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-emerald-400 placeholder-white/30"
+                                            />
+                                            <input
+                                                type="tel"
+                                                placeholder="Teléfono (opcional)"
+                                                value={guest.phone}
+                                                onChange={e => setGuest(p => ({ ...p, phone: e.target.value }))}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-emerald-400 placeholder-white/30"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Customer assignment (solo si NO está en modo nuevo alumno ni visitante) */}
+                            {!showNewMemberForm && !showGuestForm && (
                                 selectedCustomer ? (
                                     <div className="flex items-center justify-between bg-purple-600/20 border border-purple-500/30 rounded-lg p-2.5">
                                         <div className="flex items-center gap-2">
@@ -594,10 +761,39 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                             )}
 
                             {/* ── Botones de pago ── */}
-                            {showNewMemberForm ? (
+                            {showGuestForm ? (
+                                // Modo visitante: guest_checkout
+                                <div className="grid grid-cols-3 gap-2">
+                                    {(["cash", "card", "transfer"] as const).map(method => (
+                                        <guestFetcher.Form key={method} method="post">
+                                            <input type="hidden" name="intent" value="guest_checkout" />
+                                            <input type="hidden" name="method" value={method} />
+                                            <input type="hidden" name="guest_name" value={guest.name} />
+                                            <input type="hidden" name="guest_phone" value={guest.phone} />
+                                            <input type="hidden" name="total" value={total} />
+                                            <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id.startsWith("event-") ? null : c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
+                                            <button
+                                                type="submit"
+                                                disabled={cart.length === 0 || !guestIsValid || guestFetcher.state !== "idle"}
+                                                className={`w-full flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors ${method === "cash" ? "bg-amber-500 hover:bg-amber-600" : method === "card" ? "bg-blue-600 hover:bg-blue-700" : "bg-teal-600 hover:bg-teal-700"}`}
+                                            >
+                                                {guestFetcher.state !== "idle" ? (
+                                                    <span className="text-xs">…</span>
+                                                ) : method === "cash" ? (
+                                                    <><Banknote className="w-4 h-4" /><span className="hidden sm:inline"> Efectivo</span></>
+                                                ) : method === "card" ? (
+                                                    <><CreditCard className="w-4 h-4" /><span className="hidden sm:inline"> Tarjeta</span></>
+                                                ) : (
+                                                    <><ArrowRightLeft className="w-4 h-4" /><span className="hidden sm:inline"> Transfer</span></>
+                                                )}
+                                            </button>
+                                        </guestFetcher.Form>
+                                    ))}
+                                </div>
+                            ) : showNewMemberForm ? (
                                 // Modo nuevo alumno: plan_checkout
-                                <div className="grid grid-cols-2 gap-2">
-                                    {(["cash", "card"] as const).map(method => (
+                                <div className="grid grid-cols-3 gap-2">
+                                    {(["cash", "card", "transfer"] as const).map(method => (
                                         <newMemberFetcher.Form key={method} method="post">
                                             <input type="hidden" name="intent" value="plan_checkout" />
                                             <input type="hidden" name="method" value={method} />
@@ -610,14 +806,16 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                             <button
                                                 type="submit"
                                                 disabled={cart.length === 0 || !newMemberIsValid || newMemberFetcher.state !== "idle"}
-                                                className={`w-full flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors ${method === "cash" ? "bg-amber-500 hover:bg-amber-600" : "bg-blue-600 hover:bg-blue-700"}`}
+                                                className={`w-full flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors ${method === "cash" ? "bg-amber-500 hover:bg-amber-600" : method === "card" ? "bg-blue-600 hover:bg-blue-700" : "bg-teal-600 hover:bg-teal-700"}`}
                                             >
                                                 {newMemberFetcher.state !== "idle" ? (
-                                                    <span className="text-xs">Procesando…</span>
+                                                    <span className="text-xs">…</span>
                                                 ) : method === "cash" ? (
-                                                    <><Banknote className="w-4 h-4" /> Efectivo</>
+                                                    <><Banknote className="w-4 h-4" /><span className="hidden sm:inline"> Efectivo</span></>
+                                                ) : method === "card" ? (
+                                                    <><CreditCard className="w-4 h-4" /><span className="hidden sm:inline"> Tarjeta</span></>
                                                 ) : (
-                                                    <><CreditCard className="w-4 h-4" /> Tarjeta</>
+                                                    <><ArrowRightLeft className="w-4 h-4" /><span className="hidden sm:inline"> Transfer</span></>
                                                 )}
                                             </button>
                                         </newMemberFetcher.Form>
@@ -625,7 +823,7 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                 </div>
                             ) : (
                                 // Modo normal: checkout estándar
-                                <div className="grid grid-cols-2 gap-2">
+                                <div className="grid grid-cols-3 gap-2">
                                     <fetcher.Form method="post">
                                         <input type="hidden" name="intent" value="checkout" />
                                         <input type="hidden" name="method" value="cash" />
@@ -634,10 +832,10 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                         <button
                                             type="submit"
                                             disabled={cart.length === 0 || fetcher.state !== "idle"}
-                                            className="w-full flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
+                                            className="w-full flex items-center justify-center gap-1 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
                                         >
                                             <Banknote className="w-4 h-4" />
-                                            Efectivo
+                                            <span className="hidden sm:inline">Efectivo</span>
                                         </button>
                                     </fetcher.Form>
                                     <fetcher.Form method="post">
@@ -648,16 +846,30 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                         <button
                                             type="submit"
                                             disabled={cart.length === 0 || fetcher.state !== "idle"}
-                                            className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
+                                            className="w-full flex items-center justify-center gap-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
                                         >
                                             <CreditCard className="w-4 h-4" />
-                                            Tarjeta
+                                            <span className="hidden sm:inline">Tarjeta</span>
+                                        </button>
+                                    </fetcher.Form>
+                                    <fetcher.Form method="post">
+                                        <input type="hidden" name="intent" value="checkout" />
+                                        <input type="hidden" name="method" value="transfer" />
+                                        <input type="hidden" name="total" value={total} />
+                                        <input type="hidden" name="items" value={JSON.stringify(cart.map(c => ({ productId: c.product.id, name: c.product.name, quantity: c.qty, unitPrice: c.product.price })))} />
+                                        <button
+                                            type="submit"
+                                            disabled={cart.length === 0 || fetcher.state !== "idle"}
+                                            className="w-full flex items-center justify-center gap-1 bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm transition-colors"
+                                        >
+                                            <ArrowRightLeft className="w-4 h-4" />
+                                            <span className="hidden sm:inline">Transfer</span>
                                         </button>
                                     </fetcher.Form>
                                 </div>
                             )}
 
-                            {selectedCustomer && !showNewMemberForm && (
+                            {selectedCustomer && !showNewMemberForm && !showGuestForm && (
                                 <fetcher.Form method="post">
                                     <input type="hidden" name="intent" value="charge_account" />
                                     <input type="hidden" name="customerId" value={selectedCustomer.id} />
@@ -696,13 +908,17 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                     <th className="px-4 py-3 font-medium">Producto</th>
                                     <th className="px-4 py-3 font-medium">Categoría</th>
                                     <th className="px-4 py-3 font-medium">Precio</th>
+                                    <th className="px-4 py-3 font-medium">Costo</th>
+                                    <th className="px-4 py-3 font-medium">Margen</th>
                                     <th className="px-4 py-3 font-medium">Stock</th>
                                     <th className="px-4 py-3 font-medium">Estado</th>
                                     <th className="px-4 py-3 font-medium text-right">Acciones</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5">
-                                {products.map((p) => (
+                                {products.map((p) => {
+                                    const margin = p.price > 0 ? Math.round(((p.price - p.cost) / p.price) * 100) : 0;
+                                    return (
                                     <tr key={p.id} className="text-white hover:bg-white/5 transition-colors group">
                                         <td className="px-4 py-4">
                                             <div className="font-bold">{p.name}</div>
@@ -712,6 +928,12 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                             <span className="text-xs bg-white/10 px-2 py-1 rounded text-white/60 uppercase">{p.category}</span>
                                         </td>
                                         <td className="px-4 py-4 font-bold text-purple-400">${p.price.toFixed(2)}</td>
+                                        <td className="px-4 py-4 text-white/50">${p.cost.toFixed(2)}</td>
+                                        <td className="px-4 py-4">
+                                            <span className={`text-xs font-bold ${margin >= 40 ? "text-green-400" : margin >= 20 ? "text-amber-400" : "text-red-400"}`}>
+                                                {margin}%
+                                            </span>
+                                        </td>
                                         <td className="px-4 py-4">
                                             <span className={`font-medium ${p.stock <= LOW_STOCK_THRESHOLD ? "text-red-400" : "text-white/60"}`}>
                                                 {p.stock} uni.
@@ -748,7 +970,8 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                             </div>
                                         </td>
                                     </tr>
-                                ))}
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
@@ -797,7 +1020,7 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-white/40 mb-1.5 uppercase tracking-wider">Precio ($)</label>
+                                    <label className="block text-xs font-bold text-white/40 mb-1.5 uppercase tracking-wider">Precio de Venta ($)</label>
                                     <input
                                         name="price"
                                         type="number"
@@ -807,6 +1030,24 @@ export default function POS({ loaderData }: Route.ComponentProps) {
                                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500 transition-all"
                                         placeholder="0.00"
                                     />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-white/40 mb-1.5 uppercase tracking-wider">Costo de Producción ($)</label>
+                                    <input
+                                        name="cost"
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        defaultValue={editingProduct?.cost ?? 0}
+                                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500 transition-all"
+                                        placeholder="0.00"
+                                    />
+                                </div>
+                                <div className="flex flex-col justify-end pb-1">
+                                    <p className="text-[10px] text-white/30 italic">Costo por unidad. Visible solo en Finanzas para calcular margen bruto.</p>
                                 </div>
                             </div>
 

@@ -78,21 +78,29 @@ export async function action({ request }: Route.ActionArgs) {
                 };
             }
         }
-        await createCoach({
-            gymId,
-            name: formData.get("name") as string,
-            email: formData.get("email") as string,
-            role: formData.get("role") as string,
-            specialties: specialtiesRaw.split(",").map(s => s.trim()).filter(Boolean),
-        });
-        return { success: true, intent };
+        try {
+            await createCoach({
+                gymId,
+                name: formData.get("name") as string,
+                email: formData.get("email") as string,
+                role: formData.get("role") as string,
+                specialties: specialtiesRaw.split(",").map(s => s.trim()).filter(Boolean),
+            });
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al crear el coach", intent };
+        }
     }
 
     if (intent === "delete") {
-        const { deleteCoach } = await import("~/services/coach.server");
-        const coachId = formData.get("coachId") as string;
-        await deleteCoach(coachId, gymId);
-        return { success: true, intent };
+        try {
+            const { deleteCoach } = await import("~/services/coach.server");
+            const coachId = formData.get("coachId") as string;
+            await deleteCoach(coachId, gymId);
+            return { success: true, intent };
+        } catch (e: any) {
+            return { success: false, error: e.message ?? "Error al eliminar el coach", intent };
+        }
     }
 
     return { success: false };

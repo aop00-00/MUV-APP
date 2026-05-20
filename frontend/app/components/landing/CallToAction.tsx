@@ -117,7 +117,7 @@ export default function CallToAction() {
                 <div className="relative h-full w-full overflow-hidden rounded-2xl">
                     {/* Dashboard screenshot */}
                     <video
-                        src="/mi-video-hero.mp4.mp4"
+                        src="/video-hero.mp4"
                         autoPlay
                         loop
                         muted

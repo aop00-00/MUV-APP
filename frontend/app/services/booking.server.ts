@@ -50,17 +50,6 @@ export async function createClass(params: {
 }): Promise<ClassSlot> {
     const { gymId, title, color, coach_id, start_time, end_time, capacity, location, room_id } = params;
 
-    // Resolve coach name so it's stored directly and never shows "Staff"
-    let coach_name: string | null = null;
-    if (coach_id) {
-        const { data: coachRow } = await supabaseAdmin
-            .from("coaches")
-            .select("name")
-            .eq("id", coach_id)
-            .single();
-        coach_name = coachRow?.name ?? null;
-    }
-
     const { data, error } = await supabaseAdmin
         .from("classes")
         .insert({
@@ -68,7 +57,6 @@ export async function createClass(params: {
             title,
             color: color || null,
             coach_id,
-            coach_name,
             start_time,
             end_time,
             capacity,
