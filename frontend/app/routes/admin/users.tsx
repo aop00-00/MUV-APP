@@ -105,6 +105,7 @@ export async function action({ request }: Route.ActionArgs) {
         const full_name = formData.get("full_name") as string;
         const password = formData.get("password") as string || "Grind2026!";
         const planId = formData.get("planId") as string;
+        const customPrice = formData.get("customPrice") as string;
 
         // Enforce per-plan member limits
         // DB trigger is the hard stop, this is the UX layer
@@ -175,7 +176,7 @@ export async function action({ request }: Route.ActionArgs) {
                         userId: data.user.id,
                         gymId: gymId,
                         planName: plan.name,
-                        price: plan.price,
+                        price: customPrice ? parseFloat(customPrice) : plan.price,
                         credits: creditsToAssign,
                         planType,
                         validityDays: plan.validity_days,
@@ -311,6 +312,7 @@ export async function action({ request }: Route.ActionArgs) {
         const userId = formData.get("userId") as string;
         const planId = formData.get("planId") as string;
         const paymentMethod = (formData.get("paymentMethod") as string) || "cash";
+        const customPrice = formData.get("customPrice") as string;
 
         const gymPlans = await getGymPlans(gymId);
         const plan = gymPlans.find(p => p.id === planId);
@@ -330,7 +332,7 @@ export async function action({ request }: Route.ActionArgs) {
                 userId,
                 gymId,
                 planName: plan.name,
-                price: plan.price,
+                price: customPrice ? parseFloat(customPrice) : plan.price,
                 credits: creditsToAssign,
                 planType,
                 validityDays: plan.validity_days,
@@ -513,12 +515,14 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
     const wasExpirySubmitting = useRef(false);
     const [confirmDeleteFor, setConfirmDeleteFor] = useState<{ id: string; name: string } | null>(null);
     const [editingExpiry, setEditingExpiry] = useState<{ userId: string; membershipId: string; currentDate: string } | null>(null);
+    const [newMemberPlanId, setNewMemberPlanId] = useState<string>("none");
+    const [assignPlanId, setAssignPlanId] = useState<string>("");
 
 
     // Close modal on success
     useEffect(() => {
         if (fetcher.data?.success && fetcher.state === "idle") {
-            const timer = setTimeout(() => setShowAddModal(false), 2000);
+            const timer = setTimeout(() => { setShowAddModal(false); setNewMemberPlanId("none"); }, 2000);
             return () => clearTimeout(timer);
         }
     }, [fetcher.data, fetcher.state]);
@@ -688,8 +692,8 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
             {showAddModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
                     <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl relative">
-                        <button 
-                            onClick={() => setShowAddModal(false)}
+                        <button
+                            onClick={() => { setShowAddModal(false); setNewMemberPlanId("none"); }}
                             className="absolute right-4 top-4 text-white/40 hover:text-white"
                         >
                             <X className="w-5 h-5" />
@@ -712,7 +716,12 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
 
                             <div>
                                 <label className="block text-xs font-bold text-white/40 uppercase mb-1">Vincular Plan (Créditos)</label>
-                                <select name="planId" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white appearance-none">
+                                <select
+                                    name="planId"
+                                    value={newMemberPlanId}
+                                    onChange={(e) => setNewMemberPlanId(e.target.value)}
+                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white appearance-none"
+                                >
                                     <option value="none" className="bg-slate-900 text-white">Sin plan (Solo registro)</option>
                                     {plans?.map((plan: any) => (
                                         <option key={plan.id} value={plan.id} className="bg-slate-900 text-white">
@@ -724,6 +733,27 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                     <p className="text-xs text-amber-400 mt-1">No hay planes creados. Ve a Planes para crear tus paquetes.</p>
                                 )}
                             </div>
+
+                            {newMemberPlanId !== "none" && (() => {
+                                const selectedPlan = plans?.find((p: any) => p.id === newMemberPlanId);
+                                return (
+                                    <div>
+                                        <label className="block text-xs font-bold text-white/40 uppercase mb-1">Precio preferencial (opcional)</label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-sm">$</span>
+                                            <input
+                                                name="customPrice"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                placeholder={selectedPlan?.price?.toLocaleString("es-MX") ?? ""}
+                                                className="w-full bg-white/5 border border-white/10 rounded-lg pl-7 pr-3 py-2 text-white placeholder:text-white/20"
+                                            />
+                                        </div>
+                                        <p className="text-[11px] text-white/30 mt-1">Precio público: ${selectedPlan?.price?.toLocaleString("es-MX")}. Vacío = precio normal.</p>
+                                    </div>
+                                );
+                            })()}
 
                             {fetcher.data?.error && (
                                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
@@ -1194,7 +1224,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
                         <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl relative">
                             <button
-                                onClick={() => setAssignMembershipFor(null)}
+                                onClick={() => { setAssignMembershipFor(null); setAssignPlanId(""); }}
                                 className="absolute right-4 top-4 text-white/30 hover:text-white transition-colors"
                             >
                                 <X className="w-4 h-4" />
@@ -1237,7 +1267,8 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                         <label className="block text-xs font-bold text-white/40 uppercase mb-1.5">Plan</label>
                                         <select
                                             name="planId"
-                                            defaultValue=""
+                                            value={assignPlanId}
+                                            onChange={(e) => setAssignPlanId(e.target.value)}
                                             required
                                             className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm appearance-none focus:border-blue-500/50 focus:outline-none transition-colors"
                                         >
@@ -1249,6 +1280,27 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                             ))}
                                         </select>
                                     </div>
+
+                                    {assignPlanId && (() => {
+                                        const selectedPlan = plans.find((p: any) => p.id === assignPlanId);
+                                        return (
+                                            <div>
+                                                <label className="block text-xs font-bold text-white/40 uppercase mb-1.5">Precio preferencial (opcional)</label>
+                                                <div className="relative">
+                                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-sm">$</span>
+                                                    <input
+                                                        name="customPrice"
+                                                        type="number"
+                                                        min="0"
+                                                        step="1"
+                                                        placeholder={selectedPlan?.price?.toLocaleString("es-MX") ?? ""}
+                                                        className="w-full bg-white/5 border border-white/10 rounded-xl pl-7 pr-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:border-blue-500/50 focus:outline-none transition-colors"
+                                                    />
+                                                </div>
+                                                <p className="text-[11px] text-white/30 mt-1">Precio público: ${selectedPlan?.price?.toLocaleString("es-MX")}. Vacío = precio normal.</p>
+                                            </div>
+                                        );
+                                    })()}
 
                                     <div>
                                         <label className="block text-xs font-bold text-white/40 uppercase mb-1.5">Método de pago</label>
@@ -1271,7 +1323,7 @@ export default function AdminUsers({ loaderData }: Route.ComponentProps) {
                                     <div className="flex gap-2 pt-1">
                                         <button
                                             type="button"
-                                            onClick={() => setAssignMembershipFor(null)}
+                                            onClick={() => { setAssignMembershipFor(null); setAssignPlanId(""); }}
                                             className="flex-1 py-2.5 rounded-xl text-sm font-semibold border border-white/10 text-white/60 hover:bg-white/5 transition-all"
                                         >
                                             Cancelar
